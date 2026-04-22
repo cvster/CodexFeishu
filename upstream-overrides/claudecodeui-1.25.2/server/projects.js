@@ -1698,10 +1698,20 @@ async function loadCodexDesktopThreadMetadata() {
   const titlesByRolloutPath = new Map();
   const archivedSessionIds = new Set();
   const archivedRolloutPaths = new Set();
+  const activeSessionIds = new Set();
+  const activeRolloutPaths = new Set();
   const stateDbPath = await findCodexStateDatabasePath();
 
   if (!stateDbPath) {
-    return { titlesBySessionId, titlesByRolloutPath, archivedSessionIds, archivedRolloutPaths };
+    return {
+      hasDesktopState: false,
+      titlesBySessionId,
+      titlesByRolloutPath,
+      archivedSessionIds,
+      archivedRolloutPaths,
+      activeSessionIds,
+      activeRolloutPaths,
+    };
   }
 
   let db;
@@ -1736,6 +1746,14 @@ async function loadCodexDesktopThreadMetadata() {
         continue;
       }
 
+      if (sessionId) {
+        activeSessionIds.add(sessionId);
+      }
+
+      if (normalizedRolloutPath) {
+        activeRolloutPaths.add(normalizedRolloutPath);
+      }
+
       if (sessionId && title) {
         titlesBySessionId.set(sessionId, title);
       }
@@ -1752,7 +1770,15 @@ async function loadCodexDesktopThreadMetadata() {
     }
   }
 
-  return { titlesBySessionId, titlesByRolloutPath, archivedSessionIds, archivedRolloutPaths };
+  return {
+    hasDesktopState: true,
+    titlesBySessionId,
+    titlesByRolloutPath,
+    archivedSessionIds,
+    archivedRolloutPaths,
+    activeSessionIds,
+    activeRolloutPaths,
+  };
 }
 
 async function buildCodexSessionsIndex() {
@@ -1767,10 +1793,13 @@ async function buildCodexSessionsIndex() {
 
   const jsonlFiles = await findCodexJsonlFiles(codexSessionsDir);
   const {
+    hasDesktopState,
     titlesBySessionId: desktopTitlesBySessionId,
     titlesByRolloutPath: desktopTitlesByRolloutPath,
     archivedSessionIds,
     archivedRolloutPaths,
+    activeSessionIds,
+    activeRolloutPaths,
   } = await loadCodexDesktopThreadMetadata();
   const threadNames = await loadCodexThreadNames();
 
@@ -1787,6 +1816,14 @@ async function buildCodexSessionsIndex() {
       }
 
       if (archivedSessionIds.has(sessionData.id)) {
+        continue;
+      }
+
+      if (
+        hasDesktopState &&
+        !activeSessionIds.has(sessionData.id) &&
+        !(normalizedFilePath && activeRolloutPaths.has(normalizedFilePath))
+      ) {
         continue;
       }
 
