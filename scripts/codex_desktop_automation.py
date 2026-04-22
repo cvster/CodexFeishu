@@ -4,9 +4,10 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any, Iterable
 
 try:
     from pywinauto import Desktop, clipboard, mouse
@@ -502,6 +503,8 @@ def _build_parser() -> argparse.ArgumentParser:
     send_message.add_argument("--message-file")
     send_message.add_argument("--json", action="store_true")
 
+    subparsers.add_parser("worker")
+
     return parser
 
 
@@ -519,77 +522,62 @@ def _load_message_text(args: argparse.Namespace) -> str:
 
 
 def _emit(payload: Any, as_json: bool) -> None:
+    print(_render_payload(payload, as_json))
+
+
+def _render_payload(payload: Any, as_json: bool) -> str:
     if as_json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     if isinstance(payload, dict):
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     if isinstance(payload, list):
-        for entry in payload:
-            print(json.dumps(entry, ensure_ascii=False))
-        return
+        return "\n".join(json.dumps(entry, ensure_ascii=False) for entry in payload)
 
-    print(payload)
+    return str(payload)
 
 
-def main() -> int:
-    _configure_stdio()
-    parser = _build_parser()
-    args = parser.parse_args()
-    automation = CodexDesktopAutomation()
-
+def _execute_command(automation: CodexDesktopAutomation, args: argparse.Namespace) -> Any:
     if args.command == "dump-state":
-        _emit(automation.snapshot(), as_json=args.json)
-        return 0
+        return automation.snapshot()
 
     if args.command == "list-projects":
-        _emit(automation.list_projects(), as_json=args.json)
-        return 0
+        return automation.list_projects()
 
     if args.command == "list-sessions":
-        payload = automation.list_sessions(
+        return automation.list_sessions(
             project_name=args.project,
             project_exact=not args.project_contains,
             max_scrolls=args.max_scrolls,
             expand=args.expand,
         )
-        _emit(payload, as_json=args.json)
-        return 0
 
     if args.command == "expand-project":
-        payload = automation.expand_project(
+        return automation.expand_project(
             project_name=args.project,
             exact=not args.project_contains,
             max_scrolls=args.max_scrolls,
         ).to_json()
-        _emit(payload, as_json=args.json)
-        return 0
 
     if args.command == "open-session":
-        payload = automation.open_session(
+        return automation.open_session(
             project_name=args.project,
             session_name=args.session,
             project_exact=not args.project_contains,
             session_exact=args.session_exact,
             max_scrolls=args.max_scrolls,
         )
-        _emit(payload, as_json=args.json)
-        return 0
 
     if args.command == "open-latest-session":
-        payload = automation.open_latest_session(
+        return automation.open_latest_session(
             project_name=args.project,
             project_exact=not args.project_contains,
             max_scrolls=args.max_scrolls,
         )
-        _emit(payload, as_json=args.json)
-        return 0
 
     if args.command == "send-message":
-        payload = automation.send_message(
+        return automation.send_message(
             project_name=args.project,
             message=_load_message_text(args),
             session_name=args.session,
@@ -597,11 +585,72 @@ def main() -> int:
             session_exact=args.session_exact,
             max_scrolls=args.max_scrolls,
         )
-        _emit(payload, as_json=args.json)
-        return 0
 
-    parser.error(f"Unsupported command: {args.command}")
-    return 2
+    raise RuntimeError(f"Unsupported command: {args.command}")
+
+
+def _run_worker() -> int:
+    parser = _build_parser()
+    automation = CodexDesktopAutomation()
+    print(json.dumps({"event": "ready"}, ensure_ascii=False), flush=True)
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        request_id: Any = None
+        try:
+            request = json.loads(line)
+            request_id = request.get("id")
+            argv = request.get("argv")
+
+            if request_id is None:
+                raise ValueError("Worker request is missing 'id'.")
+            if not isinstance(argv, list) or not all(isinstance(entry, str) for entry in argv):
+                raise ValueError("Worker request 'argv' must be a list of strings.")
+
+            args = parser.parse_args(argv)
+            if args.command == "worker":
+                raise ValueError("Nested worker command is not allowed.")
+
+            payload = _execute_command(automation, args)
+            response = {
+                "id": request_id,
+                "ok": True,
+                "payload": payload,
+                "asJson": bool(getattr(args, "json", False)),
+            }
+        except SystemExit as exc:
+            response = {
+                "id": request_id,
+                "ok": False,
+                "error": f"Argument parsing failed with exit code {exc.code}.",
+            }
+        except Exception as exc:  # pragma: no cover - exercised via desktop automation bridge
+            response = {
+                "id": request_id,
+                "ok": False,
+                "error": str(exc) or exc.__class__.__name__,
+                "traceback": traceback.format_exc(limit=6),
+            }
+
+        print(json.dumps(response, ensure_ascii=False), flush=True)
+
+    return 0
+
+
+def main() -> int:
+    _configure_stdio()
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.command == "worker":
+        return _run_worker()
+
+    automation = CodexDesktopAutomation()
+    payload = _execute_command(automation, args)
+    _emit(payload, as_json=bool(getattr(args, "json", False)))
+    return 0
 
 
 if __name__ == "__main__":

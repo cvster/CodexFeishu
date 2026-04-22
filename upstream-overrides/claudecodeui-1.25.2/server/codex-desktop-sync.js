@@ -20,10 +20,19 @@ const AUTOMATION_RUNNER =
 const MAX_METADATA_ATTEMPTS = 6;
 const METADATA_RETRY_DELAY_MS = 750;
 const AUTOMATION_TIMEOUT_MS = 90000;
+const AUTOMATION_WORKER_READY_TIMEOUT_MS = 45000;
+const DESKTOP_AUTOMATION_WORKER_ENABLED =
+  process.env.MOBILE_CODEX_DESKTOP_AUTOMATION_WORKER !== 'false';
 const automationQueues = new Map();
+const sessionNavigationTargetCache = new Map();
+let desktopAutomationWorker = null;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function elapsedMs(startedAt) {
+  return Date.now() - startedAt;
 }
 
 function toComparableText(value) {
@@ -43,6 +52,50 @@ function getProjectDisplayName(projectPath) {
   const resolved = path.resolve(projectPath);
   const parsed = path.parse(resolved);
   return path.basename(resolved) || parsed.root || resolved;
+}
+
+function getSessionCacheKey(sessionId, projectPath) {
+  const normalizedProjectPath = path.resolve(projectPath);
+  return `${normalizedProjectPath}::${sessionId}`;
+}
+
+function getCachedNavigationTarget(sessionId, projectPath) {
+  if (!sessionId || !projectPath) {
+    return null;
+  }
+
+  const cached = sessionNavigationTargetCache.get(getSessionCacheKey(sessionId, projectPath));
+  if (!cached) {
+    return null;
+  }
+
+  return {
+    projectDisplayName: cached.projectDisplayName,
+    sessionTitle: cached.sessionTitle,
+    selectionMode: cached.selectionMode,
+    resolutionSource: 'cache',
+  };
+}
+
+function clearNavigationTargetCache(sessionId, projectPath) {
+  if (!sessionId || !projectPath) {
+    return;
+  }
+
+  sessionNavigationTargetCache.delete(getSessionCacheKey(sessionId, projectPath));
+}
+
+function cacheNavigationTarget(sessionId, projectPath, target) {
+  if (!sessionId || !projectPath || !target?.sessionTitle) {
+    return;
+  }
+
+  sessionNavigationTargetCache.set(getSessionCacheKey(sessionId, projectPath), {
+    projectDisplayName: target.projectDisplayName,
+    sessionTitle: target.sessionTitle,
+    selectionMode: target.selectionMode === 'latest' ? 'latest' : 'session-title',
+    cachedAt: Date.now(),
+  });
 }
 
 function isLikelyMobileUserAgent(userAgent = '') {
@@ -73,7 +126,7 @@ function normalizeSourceContext(sourceContext = null) {
   };
 }
 
-function runDesktopAutomation(args) {
+function runDesktopAutomationOnce(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       'powershell.exe',
@@ -120,6 +173,257 @@ function runDesktopAutomation(args) {
   });
 }
 
+function renderWorkerPayload(payload, asJson = false) {
+  if (asJson || (payload && typeof payload === 'object' && !Array.isArray(payload))) {
+    return JSON.stringify(payload, null, 2);
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.map((entry) => JSON.stringify(entry)).join('\n');
+  }
+
+  return typeof payload === 'string' ? payload : String(payload ?? '');
+}
+
+class DesktopAutomationWorkerClient {
+  constructor() {
+    this.child = null;
+    this.ready = false;
+    this.startPromise = null;
+    this.stdoutBuffer = '';
+    this.stderrBuffer = '';
+    this.requestCounter = 0;
+    this.pendingRequests = new Map();
+  }
+
+  async ensureStarted() {
+    if (this.ready && this.child && !this.child.killed) {
+      return;
+    }
+
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    this.startPromise = new Promise((resolve, reject) => {
+      let settled = false;
+      const child = spawn(
+        'powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', AUTOMATION_RUNNER, 'worker'],
+        {
+          cwd: REPO_ROOT,
+          windowsHide: true,
+        },
+      );
+
+      this.child = child;
+      this.ready = false;
+      this.stdoutBuffer = '';
+      this.stderrBuffer = '';
+
+      const cleanupStartup = () => {
+        clearTimeout(readyTimeout);
+      };
+
+      const failStartup = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanupStartup();
+        this._handleWorkerExit(error);
+        reject(error);
+      };
+
+      const readyTimeout = setTimeout(() => {
+        failStartup(new Error(`Desktop automation worker did not become ready within ${AUTOMATION_WORKER_READY_TIMEOUT_MS} ms.`));
+      }, AUTOMATION_WORKER_READY_TIMEOUT_MS);
+
+      child.stdout.on('data', (chunk) => {
+        this._handleStdout(chunk, {
+          onReady: () => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            cleanupStartup();
+            this.ready = true;
+            resolve();
+          },
+        });
+      });
+
+      child.stderr.on('data', (chunk) => {
+        this.stderrBuffer += chunk.toString();
+      });
+
+      child.on('error', (error) => {
+        failStartup(error);
+      });
+
+      child.on('close', (code, signal) => {
+        const reason = new Error(
+          `Desktop automation worker exited with code ${code ?? 'unknown'}${signal ? ` (signal ${signal})` : ''}. ${
+            this.stderrBuffer.trim() || 'No stderr output.'
+          }`,
+        );
+        if (!settled) {
+          failStartup(reason);
+          return;
+        }
+        this._handleWorkerExit(reason);
+      });
+    }).finally(() => {
+      if (!this.ready) {
+        this.startPromise = null;
+      }
+    });
+
+    return this.startPromise;
+  }
+
+  async run(args) {
+    await this.ensureStarted();
+    const requestId = `${Date.now()}-${++this.requestCounter}`;
+    const request = { id: requestId, argv: args };
+
+    return new Promise((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Desktop automation worker request timed out after ${AUTOMATION_TIMEOUT_MS} ms.`));
+      }, AUTOMATION_TIMEOUT_MS);
+
+      this.pendingRequests.set(requestId, {
+        resolve: (message) => {
+          clearTimeout(timeoutHandle);
+          if (!message.ok) {
+            reject(
+              new Error(
+                [message.error || 'Desktop automation worker request failed.', message.traceback || '']
+                  .filter(Boolean)
+                  .join('\n'),
+              ),
+            );
+            return;
+          }
+
+          resolve({
+            stdout: renderWorkerPayload(message.payload, message.asJson),
+            stderr: '',
+          });
+        },
+        reject: (error) => {
+          clearTimeout(timeoutHandle);
+          reject(error);
+        },
+      });
+
+      try {
+        this.child.stdin.write(`${JSON.stringify(request)}\n`);
+      } catch (error) {
+        clearTimeout(timeoutHandle);
+        this.pendingRequests.delete(requestId);
+        reject(error);
+      }
+    });
+  }
+
+  _handleStdout(chunk, callbacks = {}) {
+    this.stdoutBuffer += chunk.toString();
+    const lines = this.stdoutBuffer.split(/\r?\n/);
+    this.stdoutBuffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      let message = null;
+      try {
+        message = JSON.parse(trimmed);
+      } catch (error) {
+        console.warn('[Codex Desktop Worker] Failed to parse stdout line:', trimmed);
+        continue;
+      }
+
+      if (message?.event === 'ready') {
+        callbacks.onReady?.();
+        continue;
+      }
+
+      if (message?.id) {
+        const pending = this.pendingRequests.get(message.id);
+        if (!pending) {
+          continue;
+        }
+
+        this.pendingRequests.delete(message.id);
+        pending.resolve(message);
+      }
+    }
+  }
+
+  _handleWorkerExit(error) {
+    const pending = Array.from(this.pendingRequests.values());
+    this.pendingRequests.clear();
+    this.child = null;
+    this.ready = false;
+    this.startPromise = null;
+
+    for (const request of pending) {
+      request.reject(error);
+    }
+  }
+}
+
+function getDesktopAutomationWorker() {
+  if (!desktopAutomationWorker) {
+    desktopAutomationWorker = new DesktopAutomationWorkerClient();
+  }
+  return desktopAutomationWorker;
+}
+
+function warmDesktopAutomationWorker() {
+  if (!DESKTOP_SYNC_ENABLED || !DESKTOP_AUTOMATION_WORKER_ENABLED) {
+    return;
+  }
+
+  getDesktopAutomationWorker()
+    .ensureStarted()
+    .then(() => {
+      console.log('[Codex Desktop Worker] Ready.');
+    })
+    .catch((error) => {
+      console.warn('[Codex Desktop Worker] Warmup failed, will fall back to one-shot mode:', error.message);
+    });
+}
+
+async function runDesktopAutomation(args) {
+  const commandName = Array.isArray(args) && typeof args[0] === 'string' ? args[0] : '';
+  const isSideEffectfulSend = commandName === 'send-message';
+
+  if (DESKTOP_AUTOMATION_WORKER_ENABLED) {
+    try {
+      return await getDesktopAutomationWorker().run(args);
+    } catch (error) {
+      if (isSideEffectfulSend) {
+        throw error;
+      }
+      console.warn('[Codex Desktop Worker] Falling back to one-shot automation:', error.message);
+    }
+  }
+
+  return runDesktopAutomationOnce(args);
+}
+
+if (DESKTOP_SYNC_ENABLED && DESKTOP_AUTOMATION_WORKER_ENABLED) {
+  const warmupHandle = setTimeout(() => {
+    warmDesktopAutomationWorker();
+  }, 1000);
+  warmupHandle.unref?.();
+}
+
 async function withDesktopMessageFile(message, callback) {
   const bridgeDir = path.join(REPO_ROOT, 'tmp', 'desktop-bridge');
   await fs.mkdir(bridgeDir, { recursive: true });
@@ -138,19 +442,40 @@ async function resolveNavigationTarget({
   projectPath,
   sessionTitleHint,
   allowLatestFallback,
+  preferImmediateHint = false,
+  allowSessionTitleHintFallback = false,
+  skipCache = false,
 }) {
   const projectDisplayName = getProjectDisplayName(projectPath);
+  const fallbackTitle = truncateSessionHint(sessionTitleHint);
+  const cachedTarget = skipCache ? null : getCachedNavigationTarget(sessionId, projectPath);
+
+  if (cachedTarget) {
+    return cachedTarget;
+  }
+
+  if (preferImmediateHint && fallbackTitle) {
+    return {
+      projectDisplayName,
+      sessionTitle: fallbackTitle,
+      selectionMode: 'session-hint',
+      resolutionSource: 'hint',
+    };
+  }
 
   for (let attempt = 0; attempt < MAX_METADATA_ATTEMPTS; attempt += 1) {
     const sessions = await getCodexSessions(projectPath, { limit: 0 });
     const matchingSession = sessions.find((session) => session.id === sessionId);
     if (matchingSession) {
-      const title = truncateSessionHint(matchingSession.summary);
-      return {
+      const title = truncateSessionHint(matchingSession.title || null);
+      const resolvedTarget = {
         projectDisplayName,
         sessionTitle: title,
         selectionMode: title ? 'session-title' : 'latest',
+        resolutionSource: 'metadata',
       };
+      cacheNavigationTarget(sessionId, projectPath, resolvedTarget);
+      return resolvedTarget;
     }
 
     if (attempt < MAX_METADATA_ATTEMPTS - 1) {
@@ -163,22 +488,26 @@ async function resolveNavigationTarget({
       projectDisplayName,
       sessionTitle: null,
       selectionMode: 'latest',
+      resolutionSource: 'latest-fallback',
     };
   }
 
-  const fallbackTitle = truncateSessionHint(sessionTitleHint);
-  if (fallbackTitle) {
-    return {
+  if (allowSessionTitleHintFallback && fallbackTitle) {
+    const hintedTarget = {
       projectDisplayName,
       sessionTitle: fallbackTitle,
       selectionMode: 'session-hint',
+      resolutionSource: 'hint-fallback',
     };
+    cacheNavigationTarget(sessionId, projectPath, hintedTarget);
+    return hintedTarget;
   }
 
   return {
     projectDisplayName,
     sessionTitle: null,
     selectionMode: 'unresolved',
+    resolutionSource: 'unresolved',
   };
 }
 
@@ -280,10 +609,13 @@ export function enqueueCodexDesktopSync(payload) {
 export function enqueueCodexDesktopMessageBridge(payload) {
   const queueKey = payload.sessionId || `${payload.projectPath}:desktop-message`;
   const previous = automationQueues.get(queueKey) || Promise.resolve();
+  const enqueuedAt = Date.now();
 
   const next = previous
     .catch(() => {})
     .then(async () => {
+      const bridgeStartedAt = Date.now();
+      const queueWaitMs = bridgeStartedAt - enqueuedAt;
       const normalizedContext = normalizeSourceContext(payload.sourceContext);
       if (!shouldSyncDesktop(normalizedContext)) {
         return {
@@ -301,12 +633,16 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         };
       }
 
-      const target = await resolveNavigationTarget({
+      const resolveStartedAt = Date.now();
+      let target = await resolveNavigationTarget({
         sessionId: payload.sessionId,
         projectPath: payload.projectPath,
         sessionTitleHint: payload.sessionTitleHint || null,
         allowLatestFallback: false,
+        preferImmediateHint: false,
+        allowSessionTitleHintFallback: false,
       });
+      const initialResolveMs = elapsedMs(resolveStartedAt);
 
       if (target.selectionMode === 'unresolved') {
         return {
@@ -318,16 +654,61 @@ export function enqueueCodexDesktopMessageBridge(payload) {
       }
 
       return withDesktopMessageFile(messageText, async (messagePath) => {
-        const automationArgs = ['send-message', '--project', target.projectDisplayName, '--message-file', messagePath, '--json'];
-        if (target.selectionMode !== 'latest' && target.sessionTitle) {
-          automationArgs.push('--session', target.sessionTitle);
+        const runSendAutomation = async (resolvedTarget) => {
+          const automationArgs = ['send-message', '--project', resolvedTarget.projectDisplayName, '--message-file', messagePath, '--json'];
+          if (resolvedTarget.selectionMode !== 'latest' && resolvedTarget.sessionTitle) {
+            automationArgs.push('--session', resolvedTarget.sessionTitle);
+          }
+
+          return runDesktopAutomation(automationArgs);
+        };
+
+        let result;
+        let automationStartedAt = Date.now();
+
+        try {
+          result = await runSendAutomation(target);
+        } catch (error) {
+          const shouldRetryWithMetadata =
+            typeof payload.sessionId === 'string' &&
+            typeof payload.projectPath === 'string';
+
+          if (!shouldRetryWithMetadata) {
+            throw error;
+          }
+
+          clearNavigationTargetCache(payload.sessionId, payload.projectPath);
+          const retryResolveStartedAt = Date.now();
+          target = await resolveNavigationTarget({
+            sessionId: payload.sessionId,
+            projectPath: payload.projectPath,
+            sessionTitleHint: payload.sessionTitleHint || null,
+            allowLatestFallback: false,
+            preferImmediateHint: false,
+            allowSessionTitleHintFallback: false,
+            skipCache: true,
+          });
+          const retryResolveMs = elapsedMs(retryResolveStartedAt);
+
+          if (target.selectionMode === 'unresolved') {
+            throw error;
+          }
+
+          automationStartedAt = Date.now();
+          result = await runSendAutomation(target);
+          console.log(
+            `[Codex Desktop Bridge] retried metadata resolve in ${retryResolveMs}ms after hint miss.`,
+          );
         }
 
-        const result = await runDesktopAutomation(automationArgs);
+        const automationMs = elapsedMs(automationStartedAt);
+        cacheNavigationTarget(payload.sessionId, payload.projectPath, target);
         console.log(
           `[Codex Desktop Bridge] submit -> ${target.projectDisplayName} / ${
             target.sessionTitle || '<latest>'
-          } (${target.selectionMode})`,
+          } (${target.selectionMode}, ${target.resolutionSource || 'unknown'}) | queue=${queueWaitMs}ms resolve=${initialResolveMs}ms automation=${automationMs}ms total=${elapsedMs(
+            bridgeStartedAt,
+          )}ms`,
         );
         if (result.stderr) {
           console.warn('[Codex Desktop Bridge] stderr:', result.stderr);

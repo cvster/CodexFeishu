@@ -1701,6 +1701,7 @@ function handleChatConnection(ws, request = null) {
                         sessionId: resolvedCodexOptions.sessionId || null,
                         projectPath: bridgedProjectPath,
                         message: data.command || '',
+                        sessionTitleHint: resolvedCodexOptions.sessionTitleHint || null,
                         sourceContext: bridgeSourceContext
                     }).then((bridgeResult) => {
                         if (bridgeResult?.error || bridgeResult?.skipped) {

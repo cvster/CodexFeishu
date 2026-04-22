@@ -1834,6 +1834,11 @@ async function buildCodexSessionsIndex() {
 
       const session = {
         id: sessionData.id,
+        title:
+          desktopTitlesBySessionId.get(sessionData.id) ||
+          desktopTitlesByRolloutPath.get(normalizedFilePath) ||
+          threadNames.get(sessionData.id) ||
+          null,
         summary:
           desktopTitlesBySessionId.get(sessionData.id) ||
           desktopTitlesByRolloutPath.get(normalizedFilePath) ||
