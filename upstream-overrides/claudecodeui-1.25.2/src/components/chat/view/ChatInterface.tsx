@@ -206,14 +206,12 @@ function ChatInterface({
     if (!selectedProject || !selectedSession) return;
     const provider = selectedSession.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude');
     const messages = await loadSessionMessages(selectedProject.name, selectedSession.id, false, provider);
-    if (messages && messages.length > 0) {
-      setChatMessages(messages);
-    }
+    setSessionMessages(Array.isArray(messages) ? messages : []);
     // Reset loading state — if the session is still active, new WebSocket messages will
     // set it back to true. If it died, this clears the permanent frozen state.
     setIsLoading(false);
     setCanAbortSession(false);
-  }, [selectedProject, selectedSession, loadSessionMessages, setChatMessages, setIsLoading, setCanAbortSession]);
+  }, [selectedProject, selectedSession, loadSessionMessages, setSessionMessages, setIsLoading, setCanAbortSession]);
 
   useChatRealtimeHandlers({
     latestMessage,

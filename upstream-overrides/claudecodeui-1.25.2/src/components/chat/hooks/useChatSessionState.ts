@@ -37,6 +37,32 @@ interface ScrollRestoreState {
   top: number;
 }
 
+function isPersistedChatMessage(value: unknown): value is ChatMessage {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.type !== 'string') {
+    return false;
+  }
+
+  if (!('timestamp' in candidate)) {
+    return false;
+  }
+
+  if ('content' in candidate && candidate.content !== undefined && typeof candidate.content !== 'string') {
+    return false;
+  }
+
+  // Raw session-message payloads were previously cached during reconnects and render as blank rows.
+  if ('message' in candidate && candidate.message && typeof candidate.message === 'object') {
+    return false;
+  }
+
+  return true;
+}
+
 export function useChatSessionState({
   selectedProject,
   selectedSession,
@@ -53,7 +79,13 @@ export function useChatSessionState({
       const saved = safeLocalStorage.getItem(`chat_messages_${selectedProject.name}`);
       if (saved) {
         try {
-          return JSON.parse(saved) as ChatMessage[];
+          const parsed = JSON.parse(saved) as unknown;
+          if (Array.isArray(parsed) && parsed.every(isPersistedChatMessage)) {
+            return parsed;
+          }
+
+          safeLocalStorage.removeItem(`chat_messages_${selectedProject.name}`);
+          return [];
         } catch {
           console.error('Failed to parse saved chat messages, resetting');
           safeLocalStorage.removeItem(`chat_messages_${selectedProject.name}`);
