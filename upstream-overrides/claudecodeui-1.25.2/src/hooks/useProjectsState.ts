@@ -24,6 +24,25 @@ type FetchProjectsOptions = {
 };
 
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
+const UUID_IN_FILENAME_PATTERN =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+const extractSessionIdFromChangedFile = (changedFile: string): string | null => {
+  const normalized = changedFile.replace(/\\/g, '/');
+  const filename = normalized.split('/').pop() || '';
+  const stem = filename.replace(/\.[^.]+$/, '');
+
+  if (!stem) {
+    return null;
+  }
+
+  const uuidMatches = stem.match(UUID_IN_FILENAME_PATTERN);
+  if (uuidMatches && uuidMatches.length > 0) {
+    return uuidMatches[uuidMatches.length - 1];
+  }
+
+  return stem;
+};
 
 const projectsHaveChanges = (
   prevProjects: Project[],
@@ -267,19 +286,13 @@ export function useProjectsState({
     const projectsMessage = latestMessage as ProjectsUpdatedMessage;
 
     if (projectsMessage.changedFile && selectedSession && selectedProject) {
-      const normalized = projectsMessage.changedFile.replace(/\\/g, '/');
-      const changedFileParts = normalized.split('/');
+      const changedSessionId = extractSessionIdFromChangedFile(projectsMessage.changedFile);
 
-      if (changedFileParts.length >= 2) {
-        const filename = changedFileParts[changedFileParts.length - 1];
-        const changedSessionId = filename.replace('.jsonl', '');
+      if (changedSessionId === selectedSession.id) {
+        const isSessionActive = activeSessions.has(selectedSession.id);
 
-        if (changedSessionId === selectedSession.id) {
-          const isSessionActive = activeSessions.has(selectedSession.id);
-
-          if (!isSessionActive) {
-            setExternalMessageUpdate((prev) => prev + 1);
-          }
+        if (!isSessionActive) {
+          setExternalMessageUpdate((prev) => prev + 1);
         }
       }
     }
