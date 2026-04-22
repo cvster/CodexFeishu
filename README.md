@@ -52,11 +52,64 @@
 - Tailscale：
   `C:\Program Files\Tailscale\tailscale.exe`
 
+## 依赖环境说明
+
+当前这套部署依赖的本机环境如下：
+
+- Python
+  - 实际使用版本：`Python 3.12.x`
+  - 用途：运行 `mobile_codex_control.py`
+  - 当前使用方式：直接调用 Codex 自带运行时，不依赖系统 Python
+  - 实际路径：`C:\Users\ps5000\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`
+- Node.js
+  - 实际安装版本：`Node.js 22.22.2`
+  - 用途：运行上游 `claudecodeui` 后端、安装 npm 依赖、构建前端
+  - 安装来源：`winget`
+  - 实际路径：`C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microsoft.Winget.Source_8wekyb3d8bbwe\node-v22.22.2-win-x64\node.exe`
+- nginx
+  - 实际安装版本：`nginx 1.29.8`
+  - 用途：监听 `127.0.0.1:8080`，给 `127.0.0.1:3001` 做本机反向代理，并提供额外安全头和登录限流
+  - 安装来源：`winget`
+  - 实际路径：`C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\nginxinc.nginx_Microsoft.Winget.Source_8wekyb3d8bbwe\nginx-1.29.8\nginx.exe`
+- Tailscale
+  - 实际安装版本：`1.96.3`
+  - 用途：让手机和电脑加入同一个 tailnet，并通过 `tailscale serve` 发布私网 HTTPS 地址
+  - 安装来源：`winget`
+  - 实际路径：`C:\Program Files\Tailscale\tailscale.exe`
+
+## 环境变量说明
+
 相关环境变量已经设置过：
 
 - `MOBILE_CODEX_NODE`
 - `MOBILE_CODEX_NGINX`
 - `MOBILE_CODEX_TAILSCALE`
+
+这些值现在也同步写在仓库根目录的本地 `.env` 里。
+脚本和 `mobile_codex_control.py` 会优先读这份本地配置；它已被 `.gitignore` 忽略，不会进入仓库。
+
+含义如下：
+
+- `MOBILE_CODEX_NODE`
+  指向实际使用的 `node.exe`
+- `MOBILE_CODEX_NGINX`
+  指向实际使用的 `nginx.exe`
+- `MOBILE_CODEX_TAILSCALE`
+  指向实际使用的 `tailscale.exe`
+- `MOBILE_CODEX_UPSTREAM_DIR`
+  可选。默认不需要；如果以后更换上游源码目录，可以用它覆盖默认 `vendor\claudecodeui-1.25.2`
+- `MOBILE_CODEX_ASCII_ALIAS`
+  可选。用于 Windows 非 ASCII 路径兼容；当前运行时默认会落到 `C:\mobileCodexHelper_ascii`
+
+服务启动脚本还会在运行时临时设置：
+
+- `NODE_ENV=production`
+- `HOST=127.0.0.1`
+- `PORT=3001`
+- `CODEX_ONLY_HARDENED_MODE=true`
+- `VITE_CODEX_ONLY_HARDENED_MODE=true`
+
+这意味着当前部署是“仅 Codex、收敛能力、默认本机监听”的模式。
 
 ## 常用命令
 
@@ -78,6 +131,12 @@ C:\Users\ps5000\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\
 
 ```powershell
 C:\Users\ps5000\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe C:\software\mobileCodexHelper\mobile_codex_control.py --action stop
+```
+
+### 验证 Codex 重连链路
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\smoke-test-codex-reconnect.ps1
 ```
 
 ### 打开桌面控制台 GUI

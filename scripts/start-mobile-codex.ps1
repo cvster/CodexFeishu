@@ -1,4 +1,5 @@
 $workspace = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'runtime-paths.ps1')
 $repo = if ($env:MOBILE_CODEX_UPSTREAM_DIR) {
   $env:MOBILE_CODEX_UPSTREAM_DIR
 } else {
@@ -9,24 +10,70 @@ if (-not (Test-Path $repo)) {
   throw "Upstream checkout not found: $repo"
 }
 
-$node = if ($env:MOBILE_CODEX_NODE) {
-  $env:MOBILE_CODEX_NODE
-} else {
-  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-  if (-not $nodeCmd) {
-    throw 'Node.js 22 LTS not found on PATH. Set MOBILE_CODEX_NODE if needed.'
-  }
-  $nodeCmd.Path
-}
+$node = Resolve-MobileCodexNodePath
 
 $logDir = Join-Path $workspace 'tmp\logs'
 $stdoutLog = Join-Path $logDir 'mobile-codex-app.stdout.log'
 $stderrLog = Join-Path $logDir 'mobile-codex-app.stderr.log'
 
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-Add-Content -Path $stdoutLog -Value ("`n==== START {0} ====`n" -f (Get-Date -Format s))
-Add-Content -Path $stderrLog -Value ("`n==== START {0} ====`n" -f (Get-Date -Format s))
+function Wait-MobileCodexLogReady {
+  param(
+    [string]$Path,
+    [int]$RetryCount = 40,
+    [int]$DelayMilliseconds = 250
+  )
 
+  for ($attempt = 0; $attempt -lt $RetryCount; $attempt++) {
+    try {
+      $stream = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::ReadWrite
+      )
+      $stream.Dispose()
+      return
+    } catch {
+      Start-Sleep -Milliseconds $DelayMilliseconds
+    }
+  }
+
+  throw "Log file is still locked: $Path"
+}
+
+function Append-MobileCodexLogMarker {
+  param(
+    [string]$Path,
+    [string]$Value
+  )
+
+  $stream = [System.IO.File]::Open(
+    $Path,
+    [System.IO.FileMode]::Append,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::ReadWrite
+  )
+
+  try {
+    $writer = New-Object System.IO.StreamWriter($stream)
+    $writer.Write($Value)
+    $writer.Flush()
+  } finally {
+    if ($writer) {
+      $writer.Dispose()
+    } else {
+      $stream.Dispose()
+    }
+  }
+}
+
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+Wait-MobileCodexLogReady -Path $stdoutLog
+Wait-MobileCodexLogReady -Path $stderrLog
+Append-MobileCodexLogMarker -Path $stdoutLog -Value ("`n==== START {0} ====`n" -f (Get-Date -Format s))
+Append-MobileCodexLogMarker -Path $stderrLog -Value ("`n==== START {0} ====`n" -f (Get-Date -Format s))
+
+$env:MOBILE_CODEX_NODE = $node
 $env:NODE_ENV = 'production'
 $env:HOST = '127.0.0.1'
 $env:PORT = '3001'

@@ -77,6 +77,23 @@ const getProjectSessions = (project: Project): ProjectSession[] => {
   ];
 };
 
+const normalizeSelectedSession = (
+  session: ProjectSession,
+  provider: ProjectSession['__provider'],
+  projectName?: string,
+): ProjectSession => {
+  const normalizedSession: ProjectSession = {
+    ...session,
+    ...(provider ? { __provider: provider } : {}),
+  };
+
+  if (projectName && !normalizedSession.__projectName) {
+    normalizedSession.__projectName = projectName;
+  }
+
+  return normalizedSession;
+};
+
 const isUpdateAdditive = (
   currentProjects: Project[],
   updatedProjects: Project[],
@@ -298,6 +315,17 @@ export function useProjectsState({
 
     if (!updatedSelectedSession) {
       setSelectedSession(null);
+      return;
+    }
+
+    const normalizedUpdatedSelectedSession = normalizeSelectedSession(
+      updatedSelectedSession,
+      updatedSelectedSession.__provider ?? selectedSession.__provider,
+      updatedSelectedProject.name,
+    );
+
+    if (serialize(normalizedUpdatedSelectedSession) !== serialize(selectedSession)) {
+      setSelectedSession(normalizedUpdatedSelectedSession);
     }
   }, [latestMessage, selectedProject, selectedSession, activeSessions, projects]);
 
@@ -319,14 +347,15 @@ export function useProjectsState({
       const codexSession = project.codexSessions?.find((session) => session.id === sessionId);
       if (codexSession) {
         const shouldUpdateProject = selectedProject?.name !== project.name;
+        const normalizedCodexSession = normalizeSelectedSession(codexSession, 'codex', project.name);
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'codex';
+          serialize(normalizedCodexSession) !== serialize(selectedSession);
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
         if (shouldUpdateSession) {
-          setSelectedSession({ ...codexSession, __provider: 'codex' });
+          setSelectedSession(normalizedCodexSession);
         }
         return;
       }
@@ -338,14 +367,15 @@ export function useProjectsState({
       const claudeSession = project.sessions?.find((session) => session.id === sessionId);
       if (claudeSession) {
         const shouldUpdateProject = selectedProject?.name !== project.name;
+        const normalizedClaudeSession = normalizeSelectedSession(claudeSession, 'claude', project.name);
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'claude';
+          serialize(normalizedClaudeSession) !== serialize(selectedSession);
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
         if (shouldUpdateSession) {
-          setSelectedSession({ ...claudeSession, __provider: 'claude' });
+          setSelectedSession(normalizedClaudeSession);
         }
         return;
       }
@@ -353,14 +383,15 @@ export function useProjectsState({
       const cursorSession = project.cursorSessions?.find((session) => session.id === sessionId);
       if (cursorSession) {
         const shouldUpdateProject = selectedProject?.name !== project.name;
+        const normalizedCursorSession = normalizeSelectedSession(cursorSession, 'cursor', project.name);
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'cursor';
+          serialize(normalizedCursorSession) !== serialize(selectedSession);
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
         if (shouldUpdateSession) {
-          setSelectedSession({ ...cursorSession, __provider: 'cursor' });
+          setSelectedSession(normalizedCursorSession);
         }
         return;
       }
@@ -368,14 +399,15 @@ export function useProjectsState({
       const geminiSession = project.geminiSessions?.find((session) => session.id === sessionId);
       if (geminiSession) {
         const shouldUpdateProject = selectedProject?.name !== project.name;
+        const normalizedGeminiSession = normalizeSelectedSession(geminiSession, 'gemini', project.name);
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'gemini';
+          serialize(normalizedGeminiSession) !== serialize(selectedSession);
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
         if (shouldUpdateSession) {
-          setSelectedSession({ ...geminiSession, __provider: 'gemini' });
+          setSelectedSession(normalizedGeminiSession);
         }
         return;
       }

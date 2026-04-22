@@ -1,8 +1,5 @@
-$asciiAlias = if ($env:MOBILE_CODEX_ASCII_ALIAS) {
-  $env:MOBILE_CODEX_ASCII_ALIAS
-} else {
-  Join-Path $env:SystemDrive 'mobileCodexHelper_ascii'
-}
+. (Join-Path $PSScriptRoot 'runtime-paths.ps1')
+$asciiAlias = Resolve-MobileCodexAsciiAliasPath
 
 $pidFile = Join-Path $asciiAlias '.runtime\nginx\logs\mobile-codex.pid'
 if (Test-Path $pidFile) {

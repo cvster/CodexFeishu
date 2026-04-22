@@ -47,7 +47,7 @@ import mime from 'mime-types';
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
-import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
+import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
@@ -72,16 +72,19 @@ import { IS_PLATFORM } from './constants/config.js';
 
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
 const VALID_PROVIDERS = CODEX_ONLY_HARDENED_MODE ? ['codex'] : ['claude', 'codex', 'cursor', 'gemini'];
+const CODEX_WATCH_PATHS = [
+    { provider: 'codex', rootPath: path.join(os.homedir(), '.codex', 'sessions') },
+    { provider: 'codex_index', rootPath: path.join(os.homedir(), '.codex', 'session_index.jsonl'), ensureParentDir: true },
+    { provider: 'codex_state', rootPath: path.join(os.homedir(), '.codex', 'state*.sqlite*'), ensureParentDir: true }
+];
 
 // File system watchers for provider project/session folders
 const PROVIDER_WATCH_PATHS = CODEX_ONLY_HARDENED_MODE
-    ? [
-        { provider: 'codex', rootPath: path.join(os.homedir(), '.codex', 'sessions') }
-    ]
+    ? CODEX_WATCH_PATHS
     : [
         { provider: 'claude', rootPath: path.join(os.homedir(), '.claude', 'projects') },
         { provider: 'cursor', rootPath: path.join(os.homedir(), '.cursor', 'chats') },
-        { provider: 'codex', rootPath: path.join(os.homedir(), '.codex', 'sessions') },
+        ...CODEX_WATCH_PATHS,
         { provider: 'gemini', rootPath: path.join(os.homedir(), '.gemini', 'projects') },
         { provider: 'gemini_sessions', rootPath: path.join(os.homedir(), '.gemini', 'sessions') }
     ];
@@ -100,6 +103,19 @@ let projectsWatcherDebounceTimer = null;
 const connectedClients = new Set();
 let isGetProjectsRunning = false; // Flag to prevent reentrant calls
 
+function hasGlobPattern(targetPath) {
+    return /[*?[\]{}()]/.test(targetPath);
+}
+
+function formatWatcherChangedFile(rootPath, filePath, ensureParentDir = false) {
+    const basePath = ensureParentDir || hasGlobPattern(rootPath)
+        ? path.dirname(rootPath)
+        : rootPath;
+    const relativePath = path.relative(basePath, filePath);
+
+    return relativePath || path.basename(filePath);
+}
+
 // Broadcast progress to all connected WebSocket clients
 function broadcastProgress(progress) {
     const message = JSON.stringify({
@@ -111,6 +127,44 @@ function broadcastProgress(progress) {
             client.send(message);
         }
     });
+}
+
+async function broadcastProjectsUpdated({
+    changeType = 'manual',
+    changedFile,
+    watchProvider,
+    provider,
+    projectName,
+    sessionId,
+    progressCallback = null,
+    clearProjectCache = false
+} = {}) {
+    try {
+        if (clearProjectCache) {
+            clearProjectDirectoryCache();
+        }
+
+        const updatedProjects = await getProjects(progressCallback);
+        const updateMessage = JSON.stringify({
+            type: 'projects_updated',
+            projects: updatedProjects,
+            timestamp: new Date().toISOString(),
+            ...(changeType ? { changeType } : {}),
+            ...(changedFile ? { changedFile } : {}),
+            ...(watchProvider ? { watchProvider } : {}),
+            ...(provider ? { provider } : {}),
+            ...(projectName ? { projectName } : {}),
+            ...(sessionId ? { sessionId } : {})
+        });
+
+        connectedClients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(updateMessage);
+            }
+        });
+    } catch (error) {
+        console.error('[ERROR] Error broadcasting project update:', error);
+    }
 }
 
 function blockDisabledFeature(res, feature) {
@@ -149,7 +203,7 @@ async function setupProjectsWatcher() {
     );
     projectsWatchers = [];
 
-    const debouncedUpdate = (eventType, filePath, provider, rootPath) => {
+    const debouncedUpdate = (eventType, filePath, provider, rootPath, ensureParentDir = false) => {
         if (projectsWatcherDebounceTimer) {
             clearTimeout(projectsWatcherDebounceTimer);
         }
@@ -162,42 +216,25 @@ async function setupProjectsWatcher() {
 
             try {
                 isGetProjectsRunning = true;
-
-                // Clear project directory cache when files change
-                clearProjectDirectoryCache();
-
-                // Get updated projects list
-                const updatedProjects = await getProjects(broadcastProgress);
-
-                // Notify all connected clients about the project changes
-                const updateMessage = JSON.stringify({
-                    type: 'projects_updated',
-                    projects: updatedProjects,
-                    timestamp: new Date().toISOString(),
+                await broadcastProjectsUpdated({
                     changeType: eventType,
-                    changedFile: path.relative(rootPath, filePath),
-                    watchProvider: provider
+                    changedFile: formatWatcherChangedFile(rootPath, filePath, ensureParentDir),
+                    watchProvider: provider,
+                    progressCallback: broadcastProgress,
+                    clearProjectCache: true
                 });
-
-                connectedClients.forEach(client => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(updateMessage);
-                    }
-                });
-
-            } catch (error) {
-                console.error('[ERROR] Error handling project changes:', error);
             } finally {
                 isGetProjectsRunning = false;
             }
         }, WATCHER_DEBOUNCE_MS);
     };
 
-    for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
+    for (const { provider, rootPath, ensureParentDir = false } of PROVIDER_WATCH_PATHS) {
         try {
             // chokidar v4 emits ENOENT via the "error" event for missing roots and will not auto-recover.
             // Ensure provider folders exist before creating the watcher so watching stays active.
-            await fsPromises.mkdir(rootPath, { recursive: true });
+            const pathToEnsure = ensureParentDir ? path.dirname(rootPath) : rootPath;
+            await fsPromises.mkdir(pathToEnsure, { recursive: true });
 
             // Initialize chokidar watcher with optimized settings
             const watcher = chokidar.watch(rootPath, {
@@ -214,11 +251,11 @@ async function setupProjectsWatcher() {
 
             // Set up event listeners
             watcher
-                .on('add', (filePath) => debouncedUpdate('add', filePath, provider, rootPath))
-                .on('change', (filePath) => debouncedUpdate('change', filePath, provider, rootPath))
-                .on('unlink', (filePath) => debouncedUpdate('unlink', filePath, provider, rootPath))
-                .on('addDir', (dirPath) => debouncedUpdate('addDir', dirPath, provider, rootPath))
-                .on('unlinkDir', (dirPath) => debouncedUpdate('unlinkDir', dirPath, provider, rootPath))
+                .on('add', (filePath) => debouncedUpdate('add', filePath, provider, rootPath, ensureParentDir))
+                .on('change', (filePath) => debouncedUpdate('change', filePath, provider, rootPath, ensureParentDir))
+                .on('unlink', (filePath) => debouncedUpdate('unlink', filePath, provider, rootPath, ensureParentDir))
+                .on('addDir', (dirPath) => debouncedUpdate('addDir', dirPath, provider, rootPath, ensureParentDir))
+                .on('unlinkDir', (dirPath) => debouncedUpdate('unlinkDir', dirPath, provider, rootPath, ensureParentDir))
                 .on('error', (error) => {
                     console.error(`[ERROR] ${provider} watcher error:`, error);
                 })
@@ -622,6 +659,11 @@ app.put('/api/sessions/:sessionId/rename', authenticateToken, async (req, res) =
             return res.status(400).json({ error: `Provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
         }
         sessionNamesDb.setName(safeSessionId, provider, summary.trim());
+        await broadcastProjectsUpdated({
+            changeType: 'session_renamed',
+            provider,
+            sessionId: safeSessionId
+        });
         res.json({ success: true });
     } catch (error) {
         console.error(`[API] Error renaming session ${req.params.sessionId}:`, error);
@@ -1651,6 +1693,9 @@ function handleChatConnection(ws) {
                     isActive = isCursorSessionActive(sessionId);
                 } else if (provider === 'codex') {
                     isActive = isCodexSessionActive(sessionId);
+                    if (isActive) {
+                        reconnectCodexSessionWriter(sessionId, ws);
+                    }
                 } else if (provider === 'gemini') {
                     isActive = isGeminiSessionActive(sessionId);
                 } else {

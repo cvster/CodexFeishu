@@ -17,6 +17,7 @@
 
 - [ ] Run `scripts/smoke-test-override-flow.ps1` against a clean upstream `v1.25.2` checkout
 - [ ] Test local start/stop scripts on a fresh machine profile
+- [ ] Run `powershell -ExecutionPolicy Bypass -File scripts/smoke-test-codex-reconnect.ps1` after logging in locally once
 - [ ] Run `python -m py_compile mobile_codex_control.py`
 - [ ] Package the desktop tool with `scripts/package-mobile-codex-control.cmd` if you plan to ship an EXE
 - [ ] Add GitHub issue templates and a release note explaining the threat model

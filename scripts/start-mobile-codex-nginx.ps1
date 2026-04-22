@@ -1,23 +1,13 @@
 $workspace = Split-Path -Parent $PSScriptRoot
-$asciiAlias = if ($env:MOBILE_CODEX_ASCII_ALIAS) {
-  $env:MOBILE_CODEX_ASCII_ALIAS
-} else {
-  Join-Path $env:SystemDrive 'mobileCodexHelper_ascii'
-}
+. (Join-Path $PSScriptRoot 'runtime-paths.ps1')
+$asciiAlias = Resolve-MobileCodexAsciiAliasPath
 
 if (-not (Test-Path $asciiAlias)) {
   New-Item -ItemType Junction -Path $asciiAlias -Target $workspace | Out-Null
 }
 
-$nginxCmd = if ($env:MOBILE_CODEX_NGINX) {
-  $env:MOBILE_CODEX_NGINX
-} else {
-  $found = Get-Command nginx -ErrorAction SilentlyContinue
-  if (-not $found) {
-    throw 'nginx not found on PATH. Set MOBILE_CODEX_NGINX if needed.'
-  }
-  $found.Path
-}
+$nginxCmd = Resolve-MobileCodexNginxPath
+$env:MOBILE_CODEX_NGINX = $nginxCmd
 
 $nginxRoot = Join-Path $asciiAlias '.runtime\nginx'
 $confRoot = Join-Path $nginxRoot 'conf'

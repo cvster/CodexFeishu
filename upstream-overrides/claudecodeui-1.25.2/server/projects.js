@@ -1637,6 +1637,126 @@ async function findCodexJsonlFiles(dir) {
   return files;
 }
 
+async function loadCodexThreadNames() {
+  const threadNames = new Map();
+  const sessionIndexPath = path.join(os.homedir(), '.codex', 'session_index.jsonl');
+
+  try {
+    await fs.access(sessionIndexPath);
+  } catch (error) {
+    return threadNames;
+  }
+
+  try {
+    const fileStream = fsSync.createReadStream(sessionIndexPath);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      try {
+        const entry = JSON.parse(line);
+        const sessionId = typeof entry.id === 'string' ? entry.id.trim() : '';
+        const threadName = typeof entry.thread_name === 'string' ? entry.thread_name.trim() : '';
+
+        if (sessionId && threadName) {
+          threadNames.set(sessionId, threadName);
+        }
+      } catch {
+        // Skip malformed session index entries.
+      }
+    }
+  } catch (error) {
+    console.warn('Could not load Codex session index:', error.message);
+  }
+
+  return threadNames;
+}
+
+async function findCodexStateDatabasePath() {
+  const codexDir = path.join(os.homedir(), '.codex');
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(codexDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const candidates = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const match = entry.name.match(/^state(?:_(\d+))?\.sqlite$/i);
+      if (!match) {
+        return null;
+      }
+
+      return {
+        version: match[1] ? Number.parseInt(match[1], 10) : 0,
+        fullPath: path.join(codexDir, entry.name),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.version - left.version);
+
+  return candidates[0]?.fullPath || null;
+}
+
+async function loadCodexDesktopThreadTitles() {
+  const titlesBySessionId = new Map();
+  const titlesByRolloutPath = new Map();
+  const stateDbPath = await findCodexStateDatabasePath();
+
+  if (!stateDbPath) {
+    return { titlesBySessionId, titlesByRolloutPath };
+  }
+
+  let db;
+  try {
+    db = await open({
+      filename: stateDbPath,
+      driver: sqlite3.Database,
+      mode: sqlite3.OPEN_READONLY,
+    });
+
+    const rows = await db.all(`
+      SELECT id, title, rollout_path
+      FROM threads
+      WHERE archived = 0
+    `);
+
+    for (const row of rows) {
+      const sessionId = typeof row.id === 'string' ? row.id.trim() : '';
+      const title = typeof row.title === 'string' ? row.title.trim() : '';
+      const rolloutPath = typeof row.rollout_path === 'string' ? row.rollout_path.trim() : '';
+
+      if (sessionId && title) {
+        titlesBySessionId.set(sessionId, title);
+      }
+
+      if (rolloutPath && title) {
+        const normalizedRolloutPath = normalizeComparablePath(rolloutPath);
+        if (normalizedRolloutPath) {
+          titlesByRolloutPath.set(normalizedRolloutPath, title);
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Could not load Codex desktop thread titles:', error.message);
+  } finally {
+    if (db) {
+      await db.close();
+    }
+  }
+
+  return { titlesBySessionId, titlesByRolloutPath };
+}
+
 async function buildCodexSessionsIndex() {
   const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
   const sessionsByProject = new Map();
@@ -1648,6 +1768,11 @@ async function buildCodexSessionsIndex() {
   }
 
   const jsonlFiles = await findCodexJsonlFiles(codexSessionsDir);
+  const {
+    titlesBySessionId: desktopTitlesBySessionId,
+    titlesByRolloutPath: desktopTitlesByRolloutPath,
+  } = await loadCodexDesktopThreadTitles();
+  const threadNames = await loadCodexThreadNames();
 
   for (const filePath of jsonlFiles) {
     try {
@@ -1663,7 +1788,12 @@ async function buildCodexSessionsIndex() {
 
       const session = {
         id: sessionData.id,
-        summary: sessionData.summary || 'Codex Session',
+        summary:
+          desktopTitlesBySessionId.get(sessionData.id) ||
+          desktopTitlesByRolloutPath.get(normalizeComparablePath(filePath)) ||
+          threadNames.get(sessionData.id) ||
+          sessionData.summary ||
+          'Codex Session',
         messageCount: sessionData.messageCount || 0,
         lastActivity: sessionData.timestamp ? new Date(sessionData.timestamp) : new Date(),
         cwd: resolveProjectPath(sessionData.cwd) || sessionData.cwd,

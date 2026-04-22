@@ -11,6 +11,7 @@
  * - abortCodexSession(sessionId) - Cancel an active session
  * - isCodexSessionActive(sessionId) - Check if a session is running
  * - getActiveCodexSessions() - List all active sessions
+ * - reconnectCodexSessionWriter(sessionId, ws) - Rebind an active session to a reconnected WebSocket
  */
 
 import { Codex } from '@openai/codex-sdk';
@@ -280,8 +281,13 @@ export async function queryCodex(command, options = {}, ws) {
       codex,
       status: 'running',
       abortController,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      writer: ws
     });
+
+    if (ws.setSessionId && typeof ws.setSessionId === 'function') {
+      ws.setSessionId(currentSessionId);
+    }
 
     // Send session created event
     sendMessage(ws, {
@@ -412,6 +418,24 @@ export function getActiveCodexSessions() {
   }
 
   return sessions;
+}
+
+/**
+ * Reconnect a session's WebSocketWriter to a new raw WebSocket.
+ * Called when client reconnects while Codex is still streaming.
+ * @param {string} sessionId - The session ID
+ * @param {Object} newRawWs - The new raw WebSocket connection
+ * @returns {boolean} True if writer was successfully reconnected
+ */
+export function reconnectCodexSessionWriter(sessionId, newRawWs) {
+  const session = activeCodexSessions.get(sessionId);
+  if (!session?.writer?.updateWebSocket) {
+    return false;
+  }
+
+  session.writer.updateWebSocket(newRawWs);
+  console.log(`[Codex] Writer swapped for session ${sessionId}`);
+  return true;
 }
 
 /**

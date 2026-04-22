@@ -1,9 +1,6 @@
 $workspace = Split-Path -Parent $PSScriptRoot
-$asciiAlias = if ($env:MOBILE_CODEX_ASCII_ALIAS) {
-  $env:MOBILE_CODEX_ASCII_ALIAS
-} else {
-  Join-Path $env:SystemDrive 'mobileCodexHelper_ascii'
-}
+. (Join-Path $PSScriptRoot 'runtime-paths.ps1')
+$asciiAlias = Resolve-MobileCodexAsciiAliasPath
 
 if (-not (Test-Path $asciiAlias)) {
   New-Item -ItemType Junction -Path $asciiAlias -Target $workspace | Out-Null

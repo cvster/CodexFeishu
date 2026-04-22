@@ -1,8 +1,5 @@
-$tailscale = if ($env:MOBILE_CODEX_TAILSCALE) {
-  $env:MOBILE_CODEX_TAILSCALE
-} else {
-  'C:\Program Files\Tailscale\tailscale.exe'
-}
+. (Join-Path $PSScriptRoot 'runtime-paths.ps1')
+$tailscale = Resolve-MobileCodexTailscalePath
 
 if (-not (Test-Path $tailscale)) {
   throw "Tailscale CLI not found: $tailscale"

@@ -52,6 +52,33 @@ def resolve_workspace() -> Path:
 
 
 WORKSPACE = resolve_workspace()
+
+
+def load_local_env(path: Path) -> None:
+    if not path.exists():
+        return
+
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+
+            os.environ[key] = value
+    except OSError:
+        return
+
+
+load_local_env(WORKSPACE / ".env")
 SCRIPTS_DIR = WORKSPACE / "scripts"
 APP_STDERR_LOG = WORKSPACE / "tmp" / "logs" / "mobile-codex-app.stderr.log"
 MOBILE_USER_AGENT = re.compile(r"android|iphone|ipad|mobile|ios|harmony", re.IGNORECASE)
