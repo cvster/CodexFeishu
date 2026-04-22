@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
@@ -47,6 +47,7 @@ function ChatInterface({
   const streamBufferRef = useRef('');
   const streamTimerRef = useRef<number | null>(null);
   const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
+  const [mobileComposerInset, setMobileComposerInset] = useState(0);
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -336,6 +337,7 @@ function ChatInterface({
           showThinking={showThinking}
           selectedProject={selectedProject}
           isLoading={isLoading}
+          mobileComposerInset={mobileComposerInset}
         />
 
         <ChatComposer
@@ -404,6 +406,7 @@ function ChatInterface({
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
           onTranscript={handleTranscript}
+          onMobileInsetChange={setMobileComposerInset}
         />
       </div>
 

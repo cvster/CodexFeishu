@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IS_CODEX_ONLY_HARDENED } from '../../../../constants/config';
 import type {
@@ -90,6 +91,7 @@ interface ChatComposerProps {
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
   onTranscript: (text: string) => void;
+  onMobileInsetChange?: (height: number) => void;
 }
 
 export default function ChatComposer({
@@ -145,8 +147,10 @@ export default function ChatComposer({
   isTextareaExpanded,
   sendByCtrlEnter,
   onTranscript,
+  onMobileInsetChange,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
+  const containerRef = useRef<HTMLDivElement>(null);
   const textareaRect = textareaRef.current?.getBoundingClientRect();
   const commandMenuPosition = {
     top: textareaRect ? Math.max(16, textareaRect.top - 316) : 0,
@@ -161,11 +165,54 @@ export default function ChatComposer({
 
   // On mobile, when input is focused, float the input box at the bottom
   const mobileFloatingClass = isInputFocused
-    ? 'max-sm:fixed max-sm:bottom-0 max-sm:left-0 max-sm:right-0 max-sm:z-50 max-sm:bg-background max-sm:shadow-[0_-4px_20px_rgba(0,0,0,0.15)]'
+    ? 'max-sm:sticky max-sm:bottom-0 max-sm:z-30 max-sm:bg-background/95 max-sm:backdrop-blur max-sm:shadow-[0_-4px_20px_rgba(0,0,0,0.15)]'
     : '';
 
+  useEffect(() => {
+    if (!onMobileInsetChange || typeof window === 'undefined') {
+      return;
+    }
+
+    const updateInset = () => {
+      const isMobileViewport = window.matchMedia('(max-width: 640px)').matches;
+      if (!isMobileViewport || !isInputFocused) {
+        onMobileInsetChange(0);
+        return;
+      }
+
+      const nextHeight = containerRef.current?.offsetHeight ?? 0;
+      onMobileInsetChange(nextHeight);
+    };
+
+    updateInset();
+
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined' && containerRef.current
+        ? new ResizeObserver(() => updateInset())
+        : null;
+    if (resizeObserver && containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
+
+    const visualViewport = window.visualViewport;
+    window.addEventListener('resize', updateInset);
+    visualViewport?.addEventListener('resize', updateInset);
+    visualViewport?.addEventListener('scroll', updateInset);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateInset);
+      visualViewport?.removeEventListener('resize', updateInset);
+      visualViewport?.removeEventListener('scroll', updateInset);
+      onMobileInsetChange(0);
+    };
+  }, [isInputFocused, onMobileInsetChange]);
+
   return (
-    <div className={`flex-shrink-0 p-2 pb-2 sm:p-4 sm:pb-4 md:p-4 md:pb-6 ${mobileFloatingClass}`}>
+    <div
+      ref={containerRef}
+      className={`flex-shrink-0 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:p-4 sm:pb-4 md:p-4 md:pb-6 ${mobileFloatingClass}`}
+    >
       <div className="mx-auto mb-3 max-w-4xl">
         <PermissionRequestsBanner
           pendingPermissionRequests={pendingPermissionRequests}

@@ -304,7 +304,7 @@ export async function queryCodex(command, options = {}, ws) {
     void enqueueCodexDesktopSync({
       sessionId: currentSessionId,
       projectPath: displayProjectPath,
-      sessionTitleHint: command,
+      sessionTitleHint: null,
       allowLatestFallback: !sessionId,
       reason: 'turn-start',
       sourceContext: desktopSync
@@ -358,7 +358,7 @@ export async function queryCodex(command, options = {}, ws) {
     void enqueueCodexDesktopSync({
       sessionId: currentSessionId,
       projectPath: displayProjectPath,
-      sessionTitleHint: command,
+      sessionTitleHint: null,
       allowLatestFallback: true,
       reason: 'turn-complete',
       sourceContext: desktopSync
