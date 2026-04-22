@@ -13,6 +13,7 @@ export const authenticatedFetch = (url, options = {}) => {
 
   return fetch(url, {
     ...options,
+    cache: 'no-store',
     credentials: 'same-origin',
     headers: {
       ...defaultHeaders,

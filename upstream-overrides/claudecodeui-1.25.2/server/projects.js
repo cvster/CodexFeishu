@@ -439,33 +439,19 @@ async function saveProjectConfig(config) {
   await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
 }
 
-// Generate better display name from path
+// Generate the default display name from the project folder name.
 async function generateDisplayName(projectName, actualProjectDir = null) {
-  // Use actual project directory if provided, otherwise decode from project name
-  let projectPath = actualProjectDir || projectName.replace(/-/g, '/');
+  const projectPath = actualProjectDir || projectName.replace(/-/g, '/');
+  const trimmedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : '';
 
-  // Try to read package.json from the project path
-  try {
-    const packageJsonPath = path.join(projectPath, 'package.json');
-    const packageData = await fs.readFile(packageJsonPath, 'utf8');
-    const packageJson = JSON.parse(packageData);
-
-    // Return the name from package.json if it exists
-    if (packageJson.name) {
-      return packageJson.name;
-    }
-  } catch (error) {
-    // Fall back to path-based naming if package.json doesn't exist or can't be read
+  if (!trimmedProjectPath) {
+    return projectName;
   }
 
-  // If it starts with /, it's an absolute path
-  if (projectPath.startsWith('/')) {
-    const parts = projectPath.split('/').filter(Boolean);
-    // Return only the last folder name
-    return parts[parts.length - 1] || projectPath;
-  }
+  const normalizedProjectPath = path.normalize(trimmedProjectPath.replace(/[\\/]+$/, ''));
+  const folderName = path.basename(normalizedProjectPath);
 
-  return projectPath;
+  return folderName || normalizedProjectPath || projectName;
 }
 
 // Extract the actual project directory from JSONL sessions (with caching)
@@ -1707,13 +1693,15 @@ async function findCodexStateDatabasePath() {
   return candidates[0]?.fullPath || null;
 }
 
-async function loadCodexDesktopThreadTitles() {
+async function loadCodexDesktopThreadMetadata() {
   const titlesBySessionId = new Map();
   const titlesByRolloutPath = new Map();
+  const archivedSessionIds = new Set();
+  const archivedRolloutPaths = new Set();
   const stateDbPath = await findCodexStateDatabasePath();
 
   if (!stateDbPath) {
-    return { titlesBySessionId, titlesByRolloutPath };
+    return { titlesBySessionId, titlesByRolloutPath, archivedSessionIds, archivedRolloutPaths };
   }
 
   let db;
@@ -1725,25 +1713,35 @@ async function loadCodexDesktopThreadTitles() {
     });
 
     const rows = await db.all(`
-      SELECT id, title, rollout_path
+      SELECT id, title, rollout_path, archived
       FROM threads
-      WHERE archived = 0
     `);
 
     for (const row of rows) {
       const sessionId = typeof row.id === 'string' ? row.id.trim() : '';
       const title = typeof row.title === 'string' ? row.title.trim() : '';
       const rolloutPath = typeof row.rollout_path === 'string' ? row.rollout_path.trim() : '';
+      const normalizedRolloutPath = rolloutPath ? normalizeComparablePath(rolloutPath) : '';
+      const isArchived = Number(row.archived) === 1;
+
+      if (isArchived) {
+        if (sessionId) {
+          archivedSessionIds.add(sessionId);
+        }
+
+        if (normalizedRolloutPath) {
+          archivedRolloutPaths.add(normalizedRolloutPath);
+        }
+
+        continue;
+      }
 
       if (sessionId && title) {
         titlesBySessionId.set(sessionId, title);
       }
 
-      if (rolloutPath && title) {
-        const normalizedRolloutPath = normalizeComparablePath(rolloutPath);
-        if (normalizedRolloutPath) {
-          titlesByRolloutPath.set(normalizedRolloutPath, title);
-        }
+      if (normalizedRolloutPath && title) {
+        titlesByRolloutPath.set(normalizedRolloutPath, title);
       }
     }
   } catch (error) {
@@ -1754,7 +1752,7 @@ async function loadCodexDesktopThreadTitles() {
     }
   }
 
-  return { titlesBySessionId, titlesByRolloutPath };
+  return { titlesBySessionId, titlesByRolloutPath, archivedSessionIds, archivedRolloutPaths };
 }
 
 async function buildCodexSessionsIndex() {
@@ -1771,13 +1769,24 @@ async function buildCodexSessionsIndex() {
   const {
     titlesBySessionId: desktopTitlesBySessionId,
     titlesByRolloutPath: desktopTitlesByRolloutPath,
-  } = await loadCodexDesktopThreadTitles();
+    archivedSessionIds,
+    archivedRolloutPaths,
+  } = await loadCodexDesktopThreadMetadata();
   const threadNames = await loadCodexThreadNames();
 
   for (const filePath of jsonlFiles) {
     try {
+      const normalizedFilePath = normalizeComparablePath(filePath);
+      if (normalizedFilePath && archivedRolloutPaths.has(normalizedFilePath)) {
+        continue;
+      }
+
       const sessionData = await parseCodexSessionFile(filePath);
       if (!sessionData || !sessionData.id) {
+        continue;
+      }
+
+      if (archivedSessionIds.has(sessionData.id)) {
         continue;
       }
 
@@ -1790,7 +1799,7 @@ async function buildCodexSessionsIndex() {
         id: sessionData.id,
         summary:
           desktopTitlesBySessionId.get(sessionData.id) ||
-          desktopTitlesByRolloutPath.get(normalizeComparablePath(filePath)) ||
+          desktopTitlesByRolloutPath.get(normalizedFilePath) ||
           threadNames.get(sessionData.id) ||
           sessionData.summary ||
           'Codex Session',

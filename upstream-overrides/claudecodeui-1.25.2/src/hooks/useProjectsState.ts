@@ -186,6 +186,10 @@ export function useProjectsState({
         setIsLoadingProjects(true);
       }
       const response = await api.projects();
+      if (response.status === 304) {
+        return;
+      }
+
       const projectData = (await response.json()) as Project[];
 
       setProjects((prevProjects) => {
@@ -277,6 +281,11 @@ export function useProjectsState({
     const hasActiveSession =
       (selectedSession && activeSessions.has(selectedSession.id)) ||
       (activeSessions.size > 0 && Array.from(activeSessions).some((id) => id.startsWith('new-session-')));
+    const pinnedSessionId = sessionId || selectedSession?.id || null;
+    const shouldPreserveCurrentSelection = Boolean(
+      pinnedSessionId &&
+      (activeSessions.has(pinnedSessionId) || sessionId === pinnedSessionId),
+    );
 
     const updatedProjects = projectsMessage.projects;
 
@@ -298,6 +307,10 @@ export function useProjectsState({
     );
 
     if (!updatedSelectedProject) {
+      if (shouldPreserveCurrentSelection) {
+        return;
+      }
+
       return;
     }
 
@@ -314,6 +327,10 @@ export function useProjectsState({
     );
 
     if (!updatedSelectedSession) {
+      if (shouldPreserveCurrentSelection) {
+        return;
+      }
+
       setSelectedSession(null);
       return;
     }
@@ -327,7 +344,7 @@ export function useProjectsState({
     if (serialize(normalizedUpdatedSelectedSession) !== serialize(selectedSession)) {
       setSelectedSession(normalizedUpdatedSelectedSession);
     }
-  }, [latestMessage, selectedProject, selectedSession, activeSessions, projects]);
+  }, [latestMessage, selectedProject, selectedSession, activeSessions, projects, sessionId]);
 
   useEffect(() => {
     return () => {
@@ -492,6 +509,10 @@ export function useProjectsState({
   const handleSidebarRefresh = useCallback(async () => {
     try {
       const response = await api.projects();
+      if (response.status === 304) {
+        return;
+      }
+
       const freshProjects = (await response.json()) as Project[];
 
       setProjects((prevProjects) =>

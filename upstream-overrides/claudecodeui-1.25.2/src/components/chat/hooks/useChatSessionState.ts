@@ -96,8 +96,13 @@ export function useChatSessionState({
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
+  const sessionMessagesRef = useRef<any[]>([]);
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
+
+  useEffect(() => {
+    sessionMessagesRef.current = sessionMessages;
+  }, [sessionMessages]);
 
   const loadSessionMessages = useCallback(
     async (projectName: string, sessionId: string, loadMore = false, provider: Provider | string = 'claude') => {
@@ -121,6 +126,10 @@ export function useChatSessionState({
           currentOffset,
           provider,
         );
+        if (response.status === 304) {
+          return isInitialLoad ? sessionMessagesRef.current : [];
+        }
+
         if (!response.ok) {
           throw new Error('Failed to load session messages');
         }
@@ -145,7 +154,7 @@ export function useChatSessionState({
         return messages;
       } catch (error) {
         console.error('Error loading session messages:', error);
-        return [];
+        return isInitialLoad ? sessionMessagesRef.current : [];
       } finally {
         if (isInitialLoad) {
           setIsLoadingSessionMessages(false);
@@ -672,6 +681,10 @@ export function useChatSessionState({
         const params = new URLSearchParams({ provider: sessionProvider });
         const url = `/api/projects/${selectedProject.name}/sessions/${selectedSession.id}/token-usage?${params.toString()}`;
         const response = await authenticatedFetch(url);
+        if (response.status === 304) {
+          return;
+        }
+
         if (response.ok) {
           const data = await response.json();
           setTokenBudget(data);
