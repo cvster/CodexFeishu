@@ -254,6 +254,12 @@ export function useProjectsState({
       return;
     }
 
+    if (latestMessage.type === 'websocket-reconnected') {
+      // Catch up on any missed sidebar/session updates while the socket was down.
+      void refreshProjectsSilently();
+      return;
+    }
+
     if (latestMessage.type !== 'projects_updated') {
       return;
     }
@@ -344,7 +350,7 @@ export function useProjectsState({
     if (serialize(normalizedUpdatedSelectedSession) !== serialize(selectedSession)) {
       setSelectedSession(normalizedUpdatedSelectedSession);
     }
-  }, [latestMessage, selectedProject, selectedSession, activeSessions, projects, sessionId]);
+  }, [latestMessage, selectedProject, selectedSession, activeSessions, projects, refreshProjectsSilently, sessionId]);
 
   useEffect(() => {
     return () => {
