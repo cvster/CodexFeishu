@@ -44,11 +44,12 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
+import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations, getCodexSessions } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
+import { createCodexDesktopSyncContextFromRequest, enqueueCodexDesktopMessageBridge } from './codex-desktop-sync.js';
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
@@ -105,6 +106,46 @@ let isGetProjectsRunning = false; // Flag to prevent reentrant calls
 
 function hasGlobPattern(targetPath) {
     return /[*?[\]{}()]/.test(targetPath);
+}
+
+async function resolveMobileCodexCommandOptions(options = {}, desktopSyncContext = null) {
+    const normalizedOptions = { ...options };
+    const executionMode =
+        typeof normalizedOptions.executionMode === 'string'
+            ? normalizedOptions.executionMode.trim().toLowerCase()
+            : '';
+    const treatAsMobile = Boolean(desktopSyncContext?.isMobile) || executionMode === 'desktop-ui';
+
+    if (normalizedOptions.sessionId || !treatAsMobile) {
+        return normalizedOptions;
+    }
+
+    const projectPath = normalizedOptions.projectPath || normalizedOptions.cwd;
+    if (!projectPath) {
+        return {
+            ...normalizedOptions,
+            disallowImplicitSessionCreation: true,
+        };
+    }
+
+    const existingSessions = await getCodexSessions(projectPath, { limit: 1 });
+    const latestSessionId =
+        typeof existingSessions[0]?.id === 'string' && existingSessions[0].id.trim()
+            ? existingSessions[0].id.trim()
+            : null;
+
+    if (!latestSessionId) {
+        return {
+            ...normalizedOptions,
+            disallowImplicitSessionCreation: true,
+        };
+    }
+
+    return {
+        ...normalizedOptions,
+        sessionId: latestSessionId,
+        resume: true,
+    };
 }
 
 function formatWatcherChangedFile(rootPath, filePath, ensureParentDir = false) {
@@ -1539,7 +1580,7 @@ wss.on('connection', (ws, request) => {
         }
         handleShellConnection(ws);
     } else if (pathname === '/ws') {
-        handleChatConnection(ws);
+        handleChatConnection(ws, request);
     } else {
         console.log('[WARN] Unknown WebSocket path:', pathname);
         ws.close();
@@ -1577,7 +1618,7 @@ class WebSocketWriter {
 }
 
 // Handle chat WebSocket connections
-function handleChatConnection(ws) {
+function handleChatConnection(ws, request = null) {
     console.log('[INFO] Chat WebSocket connected');
 
     // Add to connected clients for project updates
@@ -1585,6 +1626,7 @@ function handleChatConnection(ws) {
 
     // Wrap WebSocket with writer for consistent interface with SSEStreamWriter
     const writer = new WebSocketWriter(ws);
+    const desktopSyncContext = createCodexDesktopSyncContextFromRequest(request);
 
     ws.on('message', async (message) => {
         try {
@@ -1623,11 +1665,61 @@ function handleChatConnection(ws) {
                 console.log('🤖 Model:', data.options?.model || 'default');
                 await spawnCursor(data.command, data.options, writer);
             } else if (data.type === 'codex-command') {
+            const resolvedCodexOptions = await resolveMobileCodexCommandOptions(
+                    data.options,
+                    desktopSyncContext
+                );
+
+                if (resolvedCodexOptions.disallowImplicitSessionCreation) {
+                    writer.send({
+                        type: 'codex-error',
+                        error: 'No existing Codex session was found for this project. Open it once in the desktop Codex app first, then try again from mobile.',
+                        provider: 'codex'
+                    });
+                    return;
+                }
+
                 console.log('[DEBUG] Codex message:', data.command || '[Continue/Resume]');
-                console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
-                console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
-                console.log('🤖 Model:', data.options?.model || 'default');
-                await queryCodex(data.command, data.options, writer);
+                console.log('📁 Project:', resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd || 'Unknown');
+                console.log('🔄 Session:', resolvedCodexOptions.sessionId ? 'Resume' : 'New');
+                console.log('🤖 Model:', resolvedCodexOptions.model || 'default');
+
+                const shouldBridgeToDesktopUI =
+                    desktopSyncContext?.isMobile || resolvedCodexOptions.executionMode === 'desktop-ui';
+
+                if (shouldBridgeToDesktopUI) {
+                    const bridgedProjectPath = resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd;
+                    // Ensure we don't get skipped by the "mobile-only" sync mode even if user-agent checks fail.
+                    const bridgeSourceContext = { ...(desktopSyncContext || {}), isMobile: true };
+                    const bridgeResult = await enqueueCodexDesktopMessageBridge({
+                        sessionId: resolvedCodexOptions.sessionId || null,
+                        projectPath: bridgedProjectPath,
+                        message: data.command || '',
+                        sourceContext: bridgeSourceContext
+                    });
+
+                    if (bridgeResult?.error || bridgeResult?.skipped) {
+                        writer.send({
+                            type: 'codex-desktop-command-error',
+                            sessionId: resolvedCodexOptions.sessionId || null,
+                            error: bridgeResult?.error || 'Failed to submit the message to the desktop Codex app.',
+                            provider: 'codex'
+                        });
+                        return;
+                    }
+
+                    writer.send({
+                        type: 'codex-desktop-command-submitted',
+                        sessionId: resolvedCodexOptions.sessionId || null,
+                        provider: 'codex'
+                    });
+                    return;
+                }
+
+                await queryCodex(data.command, {
+                    ...resolvedCodexOptions,
+                    desktopSync: desktopSyncContext
+                }, writer);
             } else if (data.type === 'gemini-command') {
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');

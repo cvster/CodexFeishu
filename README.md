@@ -84,6 +84,7 @@
 - `MOBILE_CODEX_NODE`
 - `MOBILE_CODEX_NGINX`
 - `MOBILE_CODEX_TAILSCALE`
+ - `MOBILE_CODEX_PYTHON`
 
 这些值现在也同步写在仓库根目录的本地 `.env` 里。
 脚本和 `mobile_codex_control.py` 会优先读这份本地配置；它已被 `.gitignore` 忽略，不会进入仓库。
@@ -96,6 +97,8 @@
   指向实际使用的 `nginx.exe`
 - `MOBILE_CODEX_TAILSCALE`
   指向实际使用的 `tailscale.exe`
+- `MOBILE_CODEX_PYTHON`
+  可选。指向 `Python 3.11+`，桌面自动化脚本会优先使用它；未设置时默认回退到 Codex 自带 `Python 3.12`
 - `MOBILE_CODEX_UPSTREAM_DIR`
   可选。默认不需要；如果以后更换上游源码目录，可以用它覆盖默认 `vendor\claudecodeui-1.25.2`
 - `MOBILE_CODEX_ASCII_ALIAS`
@@ -138,6 +141,20 @@ C:\Users\ps5000\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\smoke-test-codex-reconnect.ps1
 ```
+
+### 查看 Codex 桌面窗口状态
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 dump-state --json
+```
+
+### 打开 Codex 桌面里的指定会话
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 open-session --project future_research --session 策略6 --json
+```
+
+第一次运行桌面自动化脚本时，会自动在 `tmp\desktop-automation-venv` 里安装 `pywinauto`。
 
 ### 打开桌面控制台 GUI
 

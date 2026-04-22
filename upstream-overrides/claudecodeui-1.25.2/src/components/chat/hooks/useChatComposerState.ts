@@ -83,6 +83,20 @@ const createFakeSubmitEvent = () => {
 const isTemporarySessionId = (sessionId: string | null | undefined) =>
   Boolean(sessionId && sessionId.startsWith('new-session-'));
 
+const MOBILE_USER_AGENT_PATTERN =
+  /(android|iphone|ipad|ipod|mobile|tablet|windows phone|kindle|silk|miuibrowser|harmonyos)/i;
+
+const isLikelyMobileBrowser = () =>
+  typeof navigator !== 'undefined' && MOBILE_USER_AGENT_PATTERN.test(navigator.userAgent || '');
+
+const getLatestProjectCodexSessionId = (project: Project | null) => {
+  const latestSession = project?.codexSessions?.find(
+    (session) => typeof session?.id === 'string' && session.id.trim().length > 0,
+  );
+
+  return latestSession?.id?.trim() || null;
+};
+
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -511,6 +525,17 @@ export function useChatComposerState({
         messageContent = `${selectedThinkingMode.prefix}: ${currentInput}`;
       }
 
+      const latestProjectCodexSessionId =
+        provider === 'codex' && !currentSessionId && !selectedSession?.id
+          ? getLatestProjectCodexSessionId(selectedProject)
+          : null;
+      const effectiveSessionId =
+        currentSessionId ||
+        selectedSession?.id ||
+        (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null) ||
+        latestProjectCodexSessionId;
+      const shouldBridgeMobileCodexSubmit = provider === 'codex' && isLikelyMobileBrowser();
+
       let uploadedImages: unknown[] = [];
       if (!IS_CODEX_ONLY_HARDENED && attachedImages.length > 0) {
         const formData = new FormData();
@@ -546,27 +571,30 @@ export function useChatComposerState({
         }
       }
 
-      const userMessage: ChatMessage = {
-        type: 'user',
-        content: currentInput,
-        images: uploadedImages as any,
-        timestamp: new Date(),
-      };
+      if (!shouldBridgeMobileCodexSubmit) {
+        const userMessage: ChatMessage = {
+          type: 'user',
+          content: currentInput,
+          images: uploadedImages as any,
+          timestamp: new Date(),
+        };
 
-      setChatMessages((previous) => [...previous, userMessage]);
-      setIsLoading(true); // Processing banner starts
-      setCanAbortSession(true);
-      setClaudeStatus({
-        text: 'Processing',
-        tokens: 0,
-        can_interrupt: true,
-      });
+        setChatMessages((previous) => [...previous, userMessage]);
+        setCanAbortSession(true);
+        setClaudeStatus({
+          text: 'Processing',
+          tokens: 0,
+          can_interrupt: true,
+        });
+      } else {
+        setCanAbortSession(false);
+        setClaudeStatus(null);
+      }
+
+      setIsLoading(true);
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-
-      const effectiveSessionId =
-        currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId');
       const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
 
       if (!effectiveSessionId && !selectedSession?.id) {
@@ -576,8 +604,12 @@ export function useChatComposerState({
         }
         pendingViewSessionRef.current = { sessionId: null, startedAt: Date.now() };
       }
-      onSessionActive?.(sessionToActivate);
-      if (effectiveSessionId && !isTemporarySessionId(effectiveSessionId)) {
+
+      if (!shouldBridgeMobileCodexSubmit) {
+        onSessionActive?.(sessionToActivate);
+      }
+
+      if (!shouldBridgeMobileCodexSubmit && effectiveSessionId && !isTemporarySessionId(effectiveSessionId)) {
         onSessionProcessing?.(effectiveSessionId);
       }
 
@@ -636,6 +668,7 @@ export function useChatComposerState({
             resume: Boolean(effectiveSessionId),
             model: codexModel,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
+            executionMode: shouldBridgeMobileCodexSubmit ? 'desktop-ui' : 'sdk',
           },
         });
       } else if (provider === 'gemini') {

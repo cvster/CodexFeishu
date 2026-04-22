@@ -18,6 +18,7 @@ import { Codex } from '@openai/codex-sdk';
 import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { enqueueCodexDesktopSync } from './codex-desktop-sync.js';
 
 // Track active sessions
 const activeCodexSessions = new Map();
@@ -237,10 +238,12 @@ export async function queryCodex(command, options = {}, ws) {
     cwd,
     projectPath,
     model,
-    permissionMode = 'default'
+    permissionMode = 'default',
+    desktopSync = null
   } = options;
 
   const requestedWorkingDirectory = cwd || projectPath || process.cwd();
+  const displayProjectPath = path.resolve(requestedWorkingDirectory);
   const workingDirectory = await ensureAsciiWorkingDirectory(requestedWorkingDirectory);
   if (workingDirectory !== requestedWorkingDirectory) {
     console.log('[Codex] Using ASCII working directory alias:', workingDirectory, 'for', requestedWorkingDirectory);
@@ -282,7 +285,9 @@ export async function queryCodex(command, options = {}, ws) {
       status: 'running',
       abortController,
       startedAt: new Date().toISOString(),
-      writer: ws
+      writer: ws,
+      projectPath: displayProjectPath,
+      desktopSync
     });
 
     if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -294,6 +299,15 @@ export async function queryCodex(command, options = {}, ws) {
       type: 'session-created',
       sessionId: currentSessionId,
       provider: 'codex'
+    });
+
+    void enqueueCodexDesktopSync({
+      sessionId: currentSessionId,
+      projectPath: displayProjectPath,
+      sessionTitleHint: command,
+      allowLatestFallback: !sessionId,
+      reason: 'turn-start',
+      sourceContext: desktopSync
     });
 
     // Execute with streaming
@@ -339,6 +353,15 @@ export async function queryCodex(command, options = {}, ws) {
       type: 'codex-complete',
       sessionId: currentSessionId,
       actualSessionId: thread.id
+    });
+
+    void enqueueCodexDesktopSync({
+      sessionId: currentSessionId,
+      projectPath: displayProjectPath,
+      sessionTitleHint: command,
+      allowLatestFallback: true,
+      reason: 'turn-complete',
+      sourceContext: desktopSync
     });
 
   } catch (error) {

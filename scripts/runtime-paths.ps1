@@ -1,4 +1,4 @@
-if (-not $script:MobileCodexWorkspace) {
+if (-not (Get-Variable MobileCodexWorkspace -Scope Script -ErrorAction SilentlyContinue) -or -not $script:MobileCodexWorkspace) {
   $script:MobileCodexWorkspace = Split-Path -Parent $PSScriptRoot
 }
 
@@ -126,6 +126,66 @@ function Resolve-MobileCodexNodePath {
   }
 
   throw 'Node.js 22 LTS not found. Set MOBILE_CODEX_NODE if needed.'
+}
+
+function Test-MobileCodexPythonPath {
+  param(
+    [string]$Path,
+    [int]$MinimumMinorVersion = 11
+  )
+
+  if (-not (Test-UsableExecutablePath $Path)) {
+    return $false
+  }
+
+  $version = & $Path -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    return $false
+  }
+
+  $parts = $version.Trim().Split('.')
+  if ($parts.Count -lt 2) {
+    return $false
+  }
+
+  $major = 0
+  $minor = 0
+
+  if (-not [int]::TryParse($parts[0], [ref]$major)) {
+    return $false
+  }
+
+  if (-not [int]::TryParse($parts[1], [ref]$minor)) {
+    return $false
+  }
+
+  if ($major -gt 3) {
+    return $true
+  }
+
+  return ($major -eq 3 -and $minor -ge $MinimumMinorVersion)
+}
+
+function Resolve-MobileCodexPythonPath {
+  if (Test-MobileCodexPythonPath $env:MOBILE_CODEX_PYTHON) {
+    return $env:MOBILE_CODEX_PYTHON
+  }
+
+  $bundledRuntime = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+  if (Test-MobileCodexPythonPath $bundledRuntime) {
+    return $bundledRuntime
+  }
+
+  foreach ($name in @('python', 'python3')) {
+    $commands = @(Get-Command $name -All -ErrorAction SilentlyContinue)
+    foreach ($command in $commands) {
+      if (Test-MobileCodexPythonPath $command.Path) {
+        return $command.Path
+      }
+    }
+  }
+
+  throw 'Python 3.11+ not found. Set MOBILE_CODEX_PYTHON if needed.'
 }
 
 function Resolve-MobileCodexNginxPath {
