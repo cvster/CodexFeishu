@@ -305,8 +305,17 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         sessionId: payload.sessionId,
         projectPath: payload.projectPath,
         sessionTitleHint: payload.sessionTitleHint || null,
-        allowLatestFallback: true,
+        allowLatestFallback: false,
       });
+
+      if (target.selectionMode === 'unresolved') {
+        return {
+          skipped: true,
+          reason: 'session-unresolved',
+          error: 'Could not resolve the target Codex desktop session.',
+          target,
+        };
+      }
 
       return withDesktopMessageFile(messageText, async (messagePath) => {
         const automationArgs = ['send-message', '--project', target.projectDisplayName, '--message-file', messagePath, '--json'];
