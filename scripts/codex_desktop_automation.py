@@ -77,8 +77,8 @@ class CodexDesktopAutomation:
     def __init__(
         self,
         sidebar_right_edge: int = SIDEBAR_RIGHT_EDGE,
-        click_delay: float = 0.6,
-        scroll_delay: float = 0.2,
+        click_delay: float = 0.25,
+        scroll_delay: float = 0.05,
     ) -> None:
         self.sidebar_right_edge = sidebar_right_edge
         self.click_delay = click_delay
@@ -142,6 +142,7 @@ class CodexDesktopAutomation:
         project_exact: bool,
         session_exact: bool,
         max_scrolls: int,
+        wait_for_main_change: bool = True,
     ) -> dict[str, Any]:
         project = self.expand_project(project_name, exact=project_exact, max_scrolls=max_scrolls)
         before = tuple(self._main_text_preview())
@@ -153,7 +154,8 @@ class CodexDesktopAutomation:
                 if _text_matches(session.title, session_name, exact=session_exact):
                     session.item.click_input()
                     time.sleep(self.click_delay)
-                    self._wait_for_main_text_change(before)
+                    if wait_for_main_change:
+                        self._wait_for_main_text_change(before)
                     return {
                         "selected_project": project.title,
                         "selected_session": session.title,
@@ -179,6 +181,7 @@ class CodexDesktopAutomation:
         *,
         project_exact: bool,
         max_scrolls: int,
+        wait_for_main_change: bool = True,
     ) -> dict[str, Any]:
         project = self.expand_project(project_name, exact=project_exact, max_scrolls=max_scrolls)
         if not project.sessions:
@@ -188,7 +191,8 @@ class CodexDesktopAutomation:
         session = project.sessions[0]
         session.item.click_input()
         time.sleep(self.click_delay)
-        self._wait_for_main_text_change(before)
+        if wait_for_main_change:
+            self._wait_for_main_text_change(before)
         return {
             "selected_project": project.title,
             "selected_session": session.title,
@@ -213,12 +217,14 @@ class CodexDesktopAutomation:
                 project_exact=project_exact,
                 session_exact=session_exact,
                 max_scrolls=max_scrolls,
+                wait_for_main_change=False,
             )
         else:
             selection = self.open_latest_session(
                 project_name,
                 project_exact=project_exact,
                 max_scrolls=max_scrolls,
+                wait_for_main_change=False,
             )
 
         before = tuple(self._main_text_preview())
@@ -352,6 +358,10 @@ class CodexDesktopAutomation:
         reset_to_top: bool = True,
     ) -> ProjectRef:
         self.activate()
+        project = self._find_project_in_current_view(project_name, exact=exact)
+        if project is not None:
+            return project
+
         if reset_to_top:
             self._reset_sidebar_to_top()
 

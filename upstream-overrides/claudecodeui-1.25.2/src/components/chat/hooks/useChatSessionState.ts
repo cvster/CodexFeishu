@@ -63,6 +63,33 @@ function isPersistedChatMessage(value: unknown): value is ChatMessage {
   return true;
 }
 
+function buildChatMessagesSignature(messages: ChatMessage[]): string {
+  return JSON.stringify(
+    messages.map((message) => ({
+      type: message.type,
+      content: message.content ?? '',
+      reasoning: message.reasoning ?? '',
+      timestamp:
+        message.timestamp instanceof Date
+          ? message.timestamp.toISOString()
+          : String(message.timestamp ?? ''),
+      isThinking: Boolean(message.isThinking),
+      isToolUse: Boolean(message.isToolUse),
+      toolName: message.toolName ?? '',
+      toolId: message.toolId ?? '',
+      toolCallId: message.toolCallId ?? '',
+      toolInput:
+        typeof message.toolInput === 'string'
+          ? message.toolInput
+          : JSON.stringify(message.toolInput ?? null),
+      toolResult:
+        message.toolResult && typeof message.toolResult === 'object'
+          ? JSON.stringify(message.toolResult)
+          : String(message.toolResult ?? ''),
+    })),
+  );
+}
+
 export function useChatSessionState({
   selectedProject,
   selectedSession,
@@ -225,6 +252,10 @@ export function useChatSessionState({
   const convertedMessages = useMemo(() => {
     return convertSessionMessages(sessionMessages);
   }, [sessionMessages]);
+  const convertedMessagesSignature = useMemo(
+    () => buildChatMessagesSignature(convertedMessages),
+    [convertedMessages],
+  );
 
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -341,8 +372,7 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
   }, [chatMessages.length]);
 
-  const prevSessionMessagesLengthRef = useRef(0);
-  const isInitialLoadRef = useRef(true);
+  const prevConvertedMessagesSignatureRef = useRef('');
 
   useEffect(() => {
     if (!searchScrollActiveRef.current) {
@@ -351,8 +381,7 @@ export function useChatSessionState({
     }
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
-    prevSessionMessagesLengthRef.current = 0;
-    isInitialLoadRef.current = true;
+    prevConvertedMessagesSignatureRef.current = '';
     setIsUserScrolledUp(false);
   }, [selectedProject?.name, selectedSession?.id]);
 
@@ -573,22 +602,19 @@ export function useChatSessionState({
   }, [pendingViewSessionRef, selectedSession?.id]);
 
   useEffect(() => {
-    // Only sync sessionMessages to chatMessages when:
-    // 1. Not currently loading (to avoid overwriting user's just-sent message)
-    // 2. SessionMessages actually changed (including from non-empty to empty)
-    // 3. Either it's initial load OR sessionMessages increased (new messages from server)
-    if (
-      sessionMessages.length !== prevSessionMessagesLengthRef.current &&
-      !isLoading
-    ) {
-      // Only update if this is initial load, sessionMessages grew, or was cleared to empty
-      if (isInitialLoadRef.current || sessionMessages.length === 0 || sessionMessages.length > prevSessionMessagesLengthRef.current) {
-        setChatMessages(convertedMessages);
-        isInitialLoadRef.current = false;
-      }
-      prevSessionMessagesLengthRef.current = sessionMessages.length;
+    // Keep the rendered chat in sync with sessionMessages whenever the actual content changes.
+    // This allows Codex replies that grow in-place to repaint even if the message count is unchanged.
+    if (isLoading) {
+      return;
     }
-  }, [convertedMessages, sessionMessages.length, isLoading, setChatMessages]);
+
+    if (convertedMessagesSignature === prevConvertedMessagesSignatureRef.current) {
+      return;
+    }
+
+    setChatMessages(convertedMessages);
+    prevConvertedMessagesSignatureRef.current = convertedMessagesSignature;
+  }, [convertedMessages, convertedMessagesSignature, isLoading, setChatMessages]);
 
   useEffect(() => {
     if (selectedProject && chatMessages.length > 0) {

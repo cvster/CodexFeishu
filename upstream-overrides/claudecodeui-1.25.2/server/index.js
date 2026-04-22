@@ -1691,27 +1691,26 @@ function handleChatConnection(ws, request = null) {
                     const bridgedProjectPath = resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd;
                     // Ensure we don't get skipped by the "mobile-only" sync mode even if user-agent checks fail.
                     const bridgeSourceContext = { ...(desktopSyncContext || {}), isMobile: true };
-                    const bridgeResult = await enqueueCodexDesktopMessageBridge({
-                        sessionId: resolvedCodexOptions.sessionId || null,
-                        projectPath: bridgedProjectPath,
-                        message: data.command || '',
-                        sourceContext: bridgeSourceContext
-                    });
-
-                    if (bridgeResult?.error || bridgeResult?.skipped) {
-                        writer.send({
-                            type: 'codex-desktop-command-error',
-                            sessionId: resolvedCodexOptions.sessionId || null,
-                            error: bridgeResult?.error || 'Failed to submit the message to the desktop Codex app.',
-                            provider: 'codex'
-                        });
-                        return;
-                    }
-
                     writer.send({
                         type: 'codex-desktop-command-submitted',
                         sessionId: resolvedCodexOptions.sessionId || null,
                         provider: 'codex'
+                    });
+
+                    void enqueueCodexDesktopMessageBridge({
+                        sessionId: resolvedCodexOptions.sessionId || null,
+                        projectPath: bridgedProjectPath,
+                        message: data.command || '',
+                        sourceContext: bridgeSourceContext
+                    }).then((bridgeResult) => {
+                        if (bridgeResult?.error || bridgeResult?.skipped) {
+                            writer.send({
+                                type: 'codex-desktop-command-error',
+                                sessionId: resolvedCodexOptions.sessionId || null,
+                                error: bridgeResult?.error || 'Failed to submit the message to the desktop Codex app.',
+                                provider: 'codex'
+                            });
+                        }
                     });
                     return;
                 }

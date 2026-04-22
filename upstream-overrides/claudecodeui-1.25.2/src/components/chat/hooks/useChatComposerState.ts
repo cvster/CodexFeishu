@@ -571,15 +571,16 @@ export function useChatComposerState({
         }
       }
 
-      if (!shouldBridgeMobileCodexSubmit) {
-        const userMessage: ChatMessage = {
-          type: 'user',
-          content: currentInput,
-          images: uploadedImages as any,
-          timestamp: new Date(),
-        };
+      const userMessage: ChatMessage = {
+        type: 'user',
+        content: currentInput,
+        images: uploadedImages as any,
+        timestamp: new Date(),
+      };
 
-        setChatMessages((previous) => [...previous, userMessage]);
+      setChatMessages((previous) => [...previous, userMessage]);
+
+      if (!shouldBridgeMobileCodexSubmit) {
         setCanAbortSession(true);
         setClaudeStatus({
           text: 'Processing',
@@ -588,7 +589,11 @@ export function useChatComposerState({
         });
       } else {
         setCanAbortSession(false);
-        setClaudeStatus(null);
+        setClaudeStatus({
+          text: 'Sending to desktop...',
+          tokens: 0,
+          can_interrupt: false,
+        });
       }
 
       setIsLoading(true);
