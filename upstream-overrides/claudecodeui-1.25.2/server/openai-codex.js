@@ -29,6 +29,23 @@ const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false
 const DESKTOP_CODEX_STATUS_CACHE_TTL_MS = 1500;
 const DESKTOP_CODEX_STATUS_TAIL_BYTES = 256 * 1024;
 const DESKTOP_CODEX_STATUS_TAIL_LINES = 300;
+const DESKTOP_CODEX_TERMINAL_EVENT_TYPES = new Set(['task_complete', 'turn_complete', 'session_aborted']);
+const DESKTOP_CODEX_ACTIVE_EVENT_TYPES = new Set([
+  'agent_message',
+  'exec_command_begin',
+  'exec_command_end',
+  'patch_apply_begin',
+  'patch_apply_end',
+  'error',
+]);
+const DESKTOP_CODEX_ACTIVE_RESPONSE_TYPES = new Set([
+  'message',
+  'reasoning',
+  'function_call',
+  'function_call_output',
+  'custom_tool_call',
+  'custom_tool_call_output',
+]);
 
 const NON_ASCII_PATH_PATTERN = /[^\u0000-\u007F]/;
 
@@ -78,6 +95,38 @@ function isVisibleCodexUserMessagePayload(payload) {
   }
 
   return typeof payload.message === 'string' && payload.message.trim().length > 0;
+}
+
+function classifyDesktopCodexSessionTimelineEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  if (entry.type === 'event_msg') {
+    if (isVisibleCodexUserMessagePayload(entry.payload)) {
+      return 'active';
+    }
+
+    const eventType = entry.payload?.type;
+    if (DESKTOP_CODEX_TERMINAL_EVENT_TYPES.has(eventType)) {
+      return 'terminal';
+    }
+
+    if (DESKTOP_CODEX_ACTIVE_EVENT_TYPES.has(eventType)) {
+      return 'active';
+    }
+
+    return null;
+  }
+
+  if (entry.type === 'response_item') {
+    const responseType = entry.payload?.type;
+    if (DESKTOP_CODEX_ACTIVE_RESPONSE_TYPES.has(responseType)) {
+      return 'active';
+    }
+  }
+
+  return null;
 }
 
 async function readJsonlTailLines(filePath, maxBytes = DESKTOP_CODEX_STATUS_TAIL_BYTES, maxLines = DESKTOP_CODEX_STATUS_TAIL_LINES) {
@@ -182,10 +231,10 @@ async function inferDesktopCodexSessionActive(sessionId) {
   }
 
   const lines = await readJsonlTailLines(filePath);
-  let latestUserMessageAt = 0;
-  let latestCompletionAt = 0;
+  let latestMeaningfulState = null;
 
-  for (const line of lines) {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
     let entry;
     try {
       entry = JSON.parse(line);
@@ -193,21 +242,14 @@ async function inferDesktopCodexSessionActive(sessionId) {
       continue;
     }
 
-    const timestampMs =
-      typeof entry?.timestamp === 'string' ? Date.parse(entry.timestamp) || 0 : 0;
-
-    if (entry?.type === 'event_msg' && isVisibleCodexUserMessagePayload(entry.payload)) {
-      latestUserMessageAt = Math.max(latestUserMessageAt, timestampMs);
-      continue;
-    }
-
-    const eventType = entry?.type === 'event_msg' ? entry?.payload?.type : null;
-    if (eventType === 'task_complete' || eventType === 'turn_complete' || eventType === 'session_aborted') {
-      latestCompletionAt = Math.max(latestCompletionAt, timestampMs);
+    const entryState = classifyDesktopCodexSessionTimelineEntry(entry);
+    if (entryState) {
+      latestMeaningfulState = entryState;
+      break;
     }
   }
 
-  const isActive = latestUserMessageAt > latestCompletionAt;
+  const isActive = latestMeaningfulState === 'active';
   desktopCodexSessionStatusCache.set(sessionId, {
     checkedAt: Date.now(),
     mtimeMs: stats.mtimeMs,

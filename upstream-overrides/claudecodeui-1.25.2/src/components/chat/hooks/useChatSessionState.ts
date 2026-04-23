@@ -15,6 +15,7 @@ import {
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
 const MIN_REFRESHING_LATEST_MS = 500;
+const SESSION_STATUS_POLL_MS = 3000;
 const BOTTOM_REFRESH_GAP_PX = 12;
 const BOTTOM_REFRESH_TRIGGER_DISTANCE_PX = 28;
 const BOTTOM_REFRESH_TIMEOUT_MS = 1400;
@@ -749,6 +750,32 @@ export function useChatSessionState({
     sendMessage,
     ws,
   ]);
+
+  useEffect(() => {
+    if (!ws || !selectedSession || !selectedProject) {
+      return;
+    }
+
+    const provider = (selectedSession.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude')) as Provider;
+    if (provider !== 'codex') {
+      return;
+    }
+
+    const requestSessionStatus = () => {
+      sendMessage({
+        type: 'check-session-status',
+        sessionId: selectedSession.id,
+        provider,
+      });
+    };
+
+    requestSessionStatus();
+    const intervalId = window.setInterval(requestSessionStatus, SESSION_STATUS_POLL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [selectedProject, selectedSession, sendMessage, ws]);
 
   useEffect(() => {
     if (!externalMessageUpdate || !selectedSession || !selectedProject) {
