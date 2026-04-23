@@ -260,6 +260,15 @@ function encodeProjectNameFromPath(projectPath) {
   return resolvedPath.replace(/[\\/:\s~_]/g, '-');
 }
 
+function doesProjectPathExist(projectPath) {
+  const resolvedPath = resolveProjectPath(projectPath);
+  if (!resolvedPath) {
+    return false;
+  }
+
+  return fsSync.existsSync(resolvedPath);
+}
+
 function mergeCodexProjectMetadata(existingMetadata, candidateMetadata) {
   if (!existingMetadata) {
     return candidateMetadata;
@@ -350,6 +359,10 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
     const projectName = matchedMetadata?.name || encodeProjectNameFromPath(actualProjectDir);
 
     if (!projectName || !actualProjectDir) {
+      continue;
+    }
+
+    if (!doesProjectPathExist(actualProjectDir)) {
       continue;
     }
 
@@ -1829,6 +1842,10 @@ async function buildCodexSessionsIndex() {
 
       const normalizedProjectPath = normalizeComparablePath(sessionData.cwd);
       if (!normalizedProjectPath) {
+        continue;
+      }
+
+      if (!doesProjectPathExist(sessionData.cwd)) {
         continue;
       }
 

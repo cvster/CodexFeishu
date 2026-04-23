@@ -58,7 +58,7 @@ export const getSessionName = (session: SessionWithProvider, t: TFunction): stri
   }
 
   if (session.__provider === 'codex') {
-    return session.summary || session.name || t('projects.codexSession');
+    return session.title || session.summary || session.name || t('projects.codexSession');
   }
 
   if (session.__provider === 'gemini') {

@@ -54,6 +54,20 @@ function getProjectDisplayName(projectPath) {
   return path.basename(resolved) || parsed.root || resolved;
 }
 
+function encodeDesktopAutomationText(value) {
+  return Buffer.from(String(value ?? ''), 'utf8').toString('base64');
+}
+
+function pushDesktopAutomationTextArg(args, flag, value) {
+  const normalized = toComparableText(value);
+  if (!normalized) {
+    return;
+  }
+
+  args.push(flag, normalized);
+  args.push(`${flag}-b64`, encodeDesktopAutomationText(normalized));
+}
+
 function getSessionCacheKey(sessionId, projectPath) {
   const normalizedProjectPath = path.resolve(projectPath);
   return `${normalizedProjectPath}::${sessionId}`;
@@ -551,8 +565,13 @@ async function executeDesktopSync({
 
   const automationArgs =
     target.selectionMode === 'latest'
-      ? ['open-latest-session', '--project', target.projectDisplayName, '--json']
-      : ['open-session', '--project', target.projectDisplayName, '--session', target.sessionTitle, '--json'];
+      ? ['open-latest-session', '--json']
+      : ['open-session', '--json'];
+
+  pushDesktopAutomationTextArg(automationArgs, '--project', target.projectDisplayName);
+  if (target.selectionMode !== 'latest' && target.sessionTitle) {
+    pushDesktopAutomationTextArg(automationArgs, '--session', target.sessionTitle);
+  }
 
   const result = await runDesktopAutomation(automationArgs);
   console.log(
@@ -655,9 +674,10 @@ export function enqueueCodexDesktopMessageBridge(payload) {
 
       return withDesktopMessageFile(messageText, async (messagePath) => {
         const runSendAutomation = async (resolvedTarget) => {
-          const automationArgs = ['send-message', '--project', resolvedTarget.projectDisplayName, '--message-file', messagePath, '--json'];
+          const automationArgs = ['send-message', '--message-file', messagePath, '--json'];
+          pushDesktopAutomationTextArg(automationArgs, '--project', resolvedTarget.projectDisplayName);
           if (resolvedTarget.selectionMode !== 'latest' && resolvedTarget.sessionTitle) {
-            automationArgs.push('--session', resolvedTarget.sessionTitle);
+            pushDesktopAutomationTextArg(automationArgs, '--session', resolvedTarget.sessionTitle);
           }
 
           return runDesktopAutomation(automationArgs);

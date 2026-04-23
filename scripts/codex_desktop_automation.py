@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 import time
@@ -36,6 +37,17 @@ def _rect_to_list(rect: Any) -> list[int]:
 
 def _normalize(value: str) -> str:
     return value.strip().casefold()
+
+
+def _decode_text_argument(value: str | None, encoded_value: str | None, label: str) -> str:
+    if encoded_value:
+        try:
+            decoded = base64.b64decode(encoded_value.encode("ascii"), validate=True)
+            return decoded.decode("utf-8")
+        except Exception as exc:
+            raise SystemExit(f"Invalid {label} base64 value: {exc}") from exc
+
+    return value or ""
 
 
 def _text_matches(candidate: str, target: str, exact: bool) -> bool:
@@ -468,6 +480,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     list_sessions = subparsers.add_parser("list-sessions")
     list_sessions.add_argument("--project", required=True)
+    list_sessions.add_argument("--project-b64")
     list_sessions.add_argument("--project-contains", action="store_true")
     list_sessions.add_argument("--expand", action="store_true")
     list_sessions.add_argument("--max-scrolls", type=int, default=25)
@@ -475,6 +488,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     expand_project = subparsers.add_parser("expand-project")
     expand_project.add_argument("--project", required=True)
+    expand_project.add_argument("--project-b64")
     expand_project.add_argument("--project-contains", action="store_true")
     expand_project.add_argument("--max-scrolls", type=int, default=25)
     expand_project.add_argument("--json", action="store_true")
@@ -482,6 +496,8 @@ def _build_parser() -> argparse.ArgumentParser:
     open_session = subparsers.add_parser("open-session")
     open_session.add_argument("--project", required=True)
     open_session.add_argument("--session", required=True)
+    open_session.add_argument("--project-b64")
+    open_session.add_argument("--session-b64")
     open_session.add_argument("--project-contains", action="store_true")
     open_session.add_argument("--session-exact", action="store_true")
     open_session.add_argument("--max-scrolls", type=int, default=25)
@@ -489,6 +505,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     open_latest = subparsers.add_parser("open-latest-session")
     open_latest.add_argument("--project", required=True)
+    open_latest.add_argument("--project-b64")
     open_latest.add_argument("--project-contains", action="store_true")
     open_latest.add_argument("--max-scrolls", type=int, default=25)
     open_latest.add_argument("--json", action="store_true")
@@ -496,6 +513,8 @@ def _build_parser() -> argparse.ArgumentParser:
     send_message = subparsers.add_parser("send-message")
     send_message.add_argument("--project", required=True)
     send_message.add_argument("--session")
+    send_message.add_argument("--project-b64")
+    send_message.add_argument("--session-b64")
     send_message.add_argument("--project-contains", action="store_true")
     send_message.add_argument("--session-exact", action="store_true")
     send_message.add_argument("--max-scrolls", type=int, default=25)
@@ -546,41 +565,48 @@ def _execute_command(automation: CodexDesktopAutomation, args: argparse.Namespac
         return automation.list_projects()
 
     if args.command == "list-sessions":
+        project_name = _decode_text_argument(args.project, args.project_b64, "project")
         return automation.list_sessions(
-            project_name=args.project,
+            project_name=project_name,
             project_exact=not args.project_contains,
             max_scrolls=args.max_scrolls,
             expand=args.expand,
         )
 
     if args.command == "expand-project":
+        project_name = _decode_text_argument(args.project, args.project_b64, "project")
         return automation.expand_project(
-            project_name=args.project,
+            project_name=project_name,
             exact=not args.project_contains,
             max_scrolls=args.max_scrolls,
         ).to_json()
 
     if args.command == "open-session":
+        project_name = _decode_text_argument(args.project, args.project_b64, "project")
+        session_name = _decode_text_argument(args.session, args.session_b64, "session")
         return automation.open_session(
-            project_name=args.project,
-            session_name=args.session,
+            project_name=project_name,
+            session_name=session_name,
             project_exact=not args.project_contains,
             session_exact=args.session_exact,
             max_scrolls=args.max_scrolls,
         )
 
     if args.command == "open-latest-session":
+        project_name = _decode_text_argument(args.project, args.project_b64, "project")
         return automation.open_latest_session(
-            project_name=args.project,
+            project_name=project_name,
             project_exact=not args.project_contains,
             max_scrolls=args.max_scrolls,
         )
 
     if args.command == "send-message":
+        project_name = _decode_text_argument(args.project, args.project_b64, "project")
+        session_name = _decode_text_argument(args.session, args.session_b64, "session") if args.session or args.session_b64 else None
         return automation.send_message(
-            project_name=args.project,
+            project_name=project_name,
             message=_load_message_text(args),
-            session_name=args.session,
+            session_name=session_name,
             project_exact=not args.project_contains,
             session_exact=args.session_exact,
             max_scrolls=args.max_scrolls,
