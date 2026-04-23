@@ -13,6 +13,7 @@ type SidebarProjectItemProps = {
   project: Project;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
+  processingSessions: Set<string>;
   isExpanded: boolean;
   isDeleting: boolean;
   isStarred: boolean;
@@ -63,6 +64,7 @@ export default function SidebarProjectItem({
   project,
   selectedProject,
   selectedSession,
+  processingSessions,
   isExpanded,
   isDeleting,
   isStarred,
@@ -409,6 +411,7 @@ export default function SidebarProjectItem({
         isExpanded={isExpanded}
         sessions={sessions}
         selectedSession={selectedSession}
+        processingSessions={processingSessions}
         initialSessionsLoaded={initialSessionsLoaded}
         isLoadingSessions={isLoadingSessions}
         currentTime={currentTime}

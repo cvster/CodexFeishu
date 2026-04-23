@@ -48,6 +48,7 @@ function ChatInterface({
   const streamTimerRef = useRef<number | null>(null);
   const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
   const [mobileComposerInset, setMobileComposerInset] = useState(0);
+  const isSessionProcessing = Boolean(selectedSession?.id && processingSessions?.has(selectedSession.id));
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -104,12 +105,14 @@ function ChatInterface({
     isLoadingAllMessages,
     loadAllJustFinished,
     showLoadAllOverlay,
+    isRefreshingLatest,
     setClaudeStatus,
     createDiff,
     scrollContainerRef,
     scrollToBottom,
     scrollToBottomAndReset,
     handleScroll,
+    refreshLatestMessages,
     loadSessionMessages,
   } = useChatSessionState({
     selectedProject,
@@ -328,6 +331,7 @@ function ChatInterface({
           isLoadingAllMessages={isLoadingAllMessages}
           loadAllJustFinished={loadAllJustFinished}
           showLoadAllOverlay={showLoadAllOverlay}
+          isRefreshingLatest={isRefreshingLatest}
           createDiff={createDiff}
           onFileOpen={onFileOpen}
           onShowSettings={onShowSettings}
@@ -338,6 +342,9 @@ function ChatInterface({
           selectedProject={selectedProject}
           isLoading={isLoading}
           mobileComposerInset={mobileComposerInset}
+          onSwipeUpRefresh={() => {
+            void refreshLatestMessages();
+          }}
         />
 
         <ChatComposer
@@ -348,6 +355,7 @@ function ChatInterface({
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
+          isSessionProcessing={isSessionProcessing}
           thinkingMode={thinkingMode}
           setThinkingMode={setThinkingMode}
           tokenBudget={tokenBudget}

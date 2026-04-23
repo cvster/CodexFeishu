@@ -14,6 +14,11 @@ import {
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
+const MIN_REFRESHING_LATEST_MS = 500;
+const BOTTOM_REFRESH_GAP_PX = 12;
+const BOTTOM_REFRESH_TRIGGER_DISTANCE_PX = 28;
+const BOTTOM_REFRESH_TIMEOUT_MS = 1400;
+const BOTTOM_REFRESH_RESET_GAP_PX = 96;
 
 type PendingViewSession = {
   sessionId: string | null;
@@ -35,7 +40,78 @@ interface UseChatSessionStateArgs {
 interface ScrollRestoreState {
   height: number;
   top: number;
+  mode: 'prepend' | 'preserve';
 }
+
+interface BottomRefreshGestureState {
+  primed: boolean;
+  startTop: number;
+  startedAt: number;
+}
+
+const getRawMessageMergeKey = (message: any): string => {
+  const timestamp = String(message?.timestamp || '');
+  const role = String(message?.message?.role || '');
+  const type = String(message?.type || 'message');
+  const toolCallId = String(message?.toolCallId || message?.toolName || '');
+  const contentDescriptor = Array.isArray(message?.message?.content)
+    ? message.message.content
+        .map((part: any) => String(part?.type || typeof part))
+        .join(',')
+    : typeof message?.message?.content === 'string'
+      ? 'text'
+      : '';
+
+  return `${timestamp}::${role}::${type}::${toolCallId}::${contentDescriptor}`;
+};
+
+const mergeLatestSessionMessages = (
+  existingMessages: any[],
+  latestMessages: any[],
+): { messages: any[]; addedCount: number } => {
+  if (existingMessages.length === 0) {
+    return {
+      messages: latestMessages,
+      addedCount: latestMessages.length,
+    };
+  }
+
+  if (latestMessages.length === 0) {
+    return {
+      messages: existingMessages,
+      addedCount: 0,
+    };
+  }
+
+  const latestFirstKey = getRawMessageMergeKey(latestMessages[0]);
+  let overlapIndex = -1;
+
+  for (let index = existingMessages.length - 1; index >= 0; index -= 1) {
+    if (getRawMessageMergeKey(existingMessages[index]) === latestFirstKey) {
+      overlapIndex = index;
+      break;
+    }
+  }
+
+  if (overlapIndex >= 0) {
+    const mergedMessages = [...existingMessages.slice(0, overlapIndex), ...latestMessages];
+    return {
+      messages: mergedMessages,
+      addedCount: Math.max(mergedMessages.length - existingMessages.length, 0),
+    };
+  }
+
+  const latestKeys = new Set(latestMessages.map((message) => getRawMessageMergeKey(message)));
+  const preservedPrefix = existingMessages.filter(
+    (message) => !latestKeys.has(getRawMessageMergeKey(message)),
+  );
+  const mergedMessages = [...preservedPrefix, ...latestMessages];
+
+  return {
+    messages: mergedMessages,
+    addedCount: Math.max(mergedMessages.length - existingMessages.length, 0),
+  };
+};
 
 function isPersistedChatMessage(value: unknown): value is ChatMessage {
   if (!value || typeof value !== 'object') {
@@ -140,6 +216,7 @@ export function useChatSessionState({
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
   const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
   const [showLoadAllOverlay, setShowLoadAllOverlay] = useState(false);
+  const [isRefreshingLatest, setIsRefreshingLatest] = useState(false);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
@@ -156,6 +233,12 @@ export function useChatSessionState({
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
   const sessionMessagesRef = useRef<any[]>([]);
+  const lastLatestRefreshAtRef = useRef(0);
+  const bottomRefreshGestureRef = useRef<BottomRefreshGestureState>({
+    primed: false,
+    startTop: 0,
+    startedAt: 0,
+  });
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
 
@@ -317,6 +400,7 @@ export function useChatSessionState({
         pendingScrollRestoreRef.current = {
           height: previousScrollHeight,
           top: previousScrollTop,
+          mode: 'prepend',
         };
         setSessionMessages((previous) => [...moreMessages, ...previous]);
         // Keep the rendered window in sync with top-pagination so newly loaded history becomes visible.
@@ -329,14 +413,124 @@ export function useChatSessionState({
     [hasMoreMessages, isLoadingMoreMessages, loadSessionMessages, selectedProject, selectedSession],
   );
 
+  const refreshLatestMessages = useCallback(
+    async ({ preserveScroll = false }: { preserveScroll?: boolean } = {}) => {
+      if (!selectedSession || !selectedProject) {
+        return false;
+      }
+
+      const sessionProvider = (selectedSession.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude')) as Provider;
+      const refreshStartedAt = Date.now();
+
+      setIsRefreshingLatest(true);
+      try {
+        if (sessionProvider === 'cursor') {
+          const projectPath = selectedProject.fullPath || selectedProject.path || '';
+          const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
+          setSessionMessages([]);
+          setChatMessages(converted);
+          sendMessage({
+            type: 'check-session-status',
+            sessionId: selectedSession.id,
+            provider: sessionProvider,
+          });
+          return true;
+        }
+
+        const container = scrollContainerRef.current;
+        const response = await (api.sessionMessages as any)(
+          selectedProject.name,
+          selectedSession.id,
+          MESSAGES_PER_PAGE,
+          0,
+          sessionProvider,
+        );
+
+        if (!response.ok) {
+          throw new Error('Failed to refresh latest session messages');
+        }
+
+        const data = await response.json();
+        const latestMessages = data.messages || [];
+        const { messages: mergedMessages, addedCount } = mergeLatestSessionMessages(
+          sessionMessagesRef.current,
+          latestMessages,
+        );
+        const total = Number(data.total || mergedMessages.length);
+
+        if (preserveScroll && container) {
+          pendingScrollRestoreRef.current = {
+            height: container.scrollHeight,
+            top: container.scrollTop,
+            mode: 'preserve',
+          };
+        }
+
+        setSessionMessages(mergedMessages);
+        setTotalMessages(total);
+        setHasMoreMessages(mergedMessages.length < total);
+        messagesOffsetRef.current += addedCount;
+
+        if (data.tokenUsage) {
+          setTokenBudget(data.tokenUsage);
+        }
+
+        sendMessage({
+          type: 'check-session-status',
+          sessionId: selectedSession.id,
+          provider: sessionProvider,
+        });
+
+        return addedCount > 0;
+      } catch (error) {
+        console.error('Error refreshing latest session messages:', error);
+        return false;
+      } finally {
+        const elapsed = Date.now() - refreshStartedAt;
+        if (elapsed < MIN_REFRESHING_LATEST_MS) {
+          await new Promise((resolve) => setTimeout(resolve, MIN_REFRESHING_LATEST_MS - elapsed));
+        }
+        setIsRefreshingLatest(false);
+      }
+    },
+    [loadCursorSessionMessages, selectedProject, selectedSession, sendMessage],
+  );
+
   const handleScroll = useCallback(async () => {
     const container = scrollContainerRef.current;
     if (!container) {
       return;
     }
 
+    const now = Date.now();
+    const bottomGap = Math.max(container.scrollHeight - container.scrollTop - container.clientHeight, 0);
     const nearBottom = isNearBottom();
     setIsUserScrolledUp(!nearBottom);
+
+    const bottomRefreshGesture = bottomRefreshGestureRef.current;
+    if (bottomGap <= BOTTOM_REFRESH_GAP_PX) {
+      if (!bottomRefreshGesture.primed || container.scrollTop > bottomRefreshGesture.startTop) {
+        bottomRefreshGesture.primed = true;
+        bottomRefreshGesture.startTop = container.scrollTop;
+        bottomRefreshGesture.startedAt = now;
+      }
+    } else if (
+      bottomRefreshGesture.primed &&
+      !isRefreshingLatest &&
+      bottomRefreshGesture.startTop - container.scrollTop >= BOTTOM_REFRESH_TRIGGER_DISTANCE_PX &&
+      now - bottomRefreshGesture.startedAt <= BOTTOM_REFRESH_TIMEOUT_MS &&
+      now - lastLatestRefreshAtRef.current > 1200
+    ) {
+      bottomRefreshGesture.primed = false;
+      lastLatestRefreshAtRef.current = now;
+      await refreshLatestMessages({ preserveScroll: true });
+      return;
+    } else if (
+      bottomRefreshGesture.primed &&
+      (bottomGap >= BOTTOM_REFRESH_RESET_GAP_PX || now - bottomRefreshGesture.startedAt > BOTTOM_REFRESH_TIMEOUT_MS)
+    ) {
+      bottomRefreshGesture.primed = false;
+    }
 
     if (!allMessagesLoadedRef.current) {
       const scrolledNearTop = container.scrollTop < 100;
@@ -352,23 +546,40 @@ export function useChatSessionState({
         return;
       }
 
+      const activeProjectName = selectedProject?.name;
+      const activeSessionId = selectedSession?.id;
+      const activeProvider = selectedSession?.__provider || 'claude';
+      const shouldRefreshLatestFirst =
+        Boolean(activeProjectName && activeSessionId) &&
+        activeProvider !== 'cursor' &&
+        now - lastLatestRefreshAtRef.current > 3000;
+
+      if (shouldRefreshLatestFirst) {
+        lastLatestRefreshAtRef.current = now;
+        const didSyncLatest = await refreshLatestMessages({ preserveScroll: true });
+        if (didSyncLatest) {
+          topLoadLockRef.current = true;
+          return;
+        }
+      }
+
       const didLoad = await loadOlderMessages(container);
       if (didLoad) {
         topLoadLockRef.current = true;
       }
     }
-  }, [isNearBottom, loadOlderMessages]);
+  }, [isNearBottom, loadOlderMessages, refreshLatestMessages, selectedProject?.name, selectedSession?.__provider, selectedSession?.id]);
 
   useLayoutEffect(() => {
     if (!pendingScrollRestoreRef.current || !scrollContainerRef.current) {
       return;
     }
 
-    const { height, top } = pendingScrollRestoreRef.current;
+    const { height, top, mode } = pendingScrollRestoreRef.current;
     const container = scrollContainerRef.current;
     const newScrollHeight = container.scrollHeight;
     const scrollDiff = newScrollHeight - height;
-    container.scrollTop = top + Math.max(scrollDiff, 0);
+    container.scrollTop = mode === 'prepend' ? top + Math.max(scrollDiff, 0) : top;
     pendingScrollRestoreRef.current = null;
   }, [chatMessages.length]);
 
@@ -383,6 +594,12 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
     prevConvertedMessagesSignatureRef.current = '';
     setIsUserScrolledUp(false);
+    lastLatestRefreshAtRef.current = 0;
+    bottomRefreshGestureRef.current = {
+      primed: false,
+      startTop: 0,
+      startedAt: 0,
+    };
   }, [selectedProject?.name, selectedSession?.id]);
 
   useEffect(() => {
@@ -550,13 +767,7 @@ export function useChatSessionState({
           return;
         }
 
-        const messages = await loadSessionMessages(
-          selectedProject.name,
-          selectedSession.id,
-          false,
-          selectedSession.__provider || 'claude',
-        );
-        setSessionMessages(messages);
+        await refreshLatestMessages({ preserveScroll: isUserScrolledUp });
 
         const shouldAutoScroll = Boolean(autoScrollToBottom) && isNearBottom();
         if (shouldAutoScroll) {
@@ -572,8 +783,9 @@ export function useChatSessionState({
     autoScrollToBottom,
     externalMessageUpdate,
     isNearBottom,
+    isUserScrolledUp,
     loadCursorSessionMessages,
-    loadSessionMessages,
+    refreshLatestMessages,
     scrollToBottom,
     selectedProject,
     selectedSession,
@@ -897,6 +1109,7 @@ export function useChatSessionState({
           pendingScrollRestoreRef.current = {
             height: previousScrollHeight,
             top: previousScrollTop,
+            mode: 'prepend',
           };
         }
 
@@ -961,6 +1174,7 @@ export function useChatSessionState({
     isLoadingAllMessages,
     loadAllJustFinished,
     showLoadAllOverlay,
+    isRefreshingLatest,
     claudeStatus,
     setClaudeStatus,
     createDiff,
@@ -969,6 +1183,7 @@ export function useChatSessionState({
     scrollToBottomAndReset,
     isNearBottom,
     handleScroll,
+    refreshLatestMessages,
     loadSessionMessages,
     loadCursorSessionMessages,
   };

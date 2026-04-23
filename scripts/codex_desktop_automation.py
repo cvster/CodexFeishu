@@ -107,6 +107,45 @@ class CodexDesktopAutomation:
         self.window.set_focus()
         time.sleep(self.click_delay)
 
+    def _activate_control(self, control: Any, *, label: str) -> None:
+        last_error: Exception | None = None
+
+        try:
+            control.click_input()
+            time.sleep(self.click_delay)
+            return
+        except Exception as exc:  # pragma: no cover - depends on desktop/session state
+            last_error = exc
+
+        try:
+            control.set_focus()
+            time.sleep(self.click_delay / 2)
+        except Exception:
+            pass
+
+        for method_name in ("invoke", "click"):
+            method = getattr(control, method_name, None)
+            if not callable(method):
+                continue
+
+            try:
+                method()
+                time.sleep(self.click_delay)
+                return
+            except Exception as exc:  # pragma: no cover - depends on control implementation
+                last_error = exc
+
+        try:
+            send_keys("{ENTER}")
+            time.sleep(self.click_delay)
+            return
+        except Exception as exc:  # pragma: no cover - depends on focus/desktop state
+            last_error = exc
+
+        if last_error is not None:
+            raise RuntimeError(f"Failed to activate {label}: {last_error}") from last_error
+        raise RuntimeError(f"Failed to activate {label}.")
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "window_handle": hex(self.window.handle),
@@ -135,8 +174,7 @@ class CodexDesktopAutomation:
             return project
 
         clickable = project.button or project.item
-        clickable.click_input()
-        time.sleep(self.click_delay)
+        self._activate_control(clickable, label=f"project '{project.title}'")
         refreshed = self._find_project(
             project_name,
             exact=exact,
@@ -165,8 +203,7 @@ class CodexDesktopAutomation:
             titles = tuple(session.title for session in project.sessions)
             for session in project.sessions:
                 if _text_matches(session.title, session_name, exact=session_exact):
-                    session.item.click_input()
-                    time.sleep(self.click_delay)
+                    self._activate_control(session.item, label=f"session '{session.title}'")
                     if wait_for_main_change:
                         self._wait_for_main_text_change(before)
                     return {
@@ -202,8 +239,7 @@ class CodexDesktopAutomation:
 
         before = tuple(self._main_text_preview())
         session = project.sessions[0]
-        session.item.click_input()
-        time.sleep(self.click_delay)
+        self._activate_control(session.item, label=f"session '{session.title}'")
         if wait_for_main_change:
             self._wait_for_main_text_change(before)
         return {
@@ -242,7 +278,7 @@ class CodexDesktopAutomation:
 
         before = tuple(self._main_text_preview())
         composer = self._composer()
-        composer.click_input()
+        self._activate_control(composer, label="composer")
         time.sleep(self.click_delay / 2)
 
         # Reset any existing draft before pasting the bridged mobile prompt.
@@ -252,7 +288,7 @@ class CodexDesktopAutomation:
         time.sleep(self.click_delay / 2)
 
         send_button = self._composer_send_button(composer.rectangle())
-        send_button.click_input()
+        self._activate_control(send_button, label="send button")
         self._wait_for_main_text_change(before, timeout=8.0)
 
         return {

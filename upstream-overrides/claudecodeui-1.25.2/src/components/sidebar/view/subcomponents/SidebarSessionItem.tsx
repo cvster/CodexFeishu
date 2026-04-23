@@ -13,6 +13,7 @@ type SidebarSessionItemProps = {
   project: Project;
   session: SessionWithProvider;
   selectedSession: ProjectSession | null;
+  processingSessions: Set<string>;
   currentTime: Date;
   editingSession: string | null;
   editingSessionName: string;
@@ -35,6 +36,7 @@ export default function SidebarSessionItem({
   project,
   session,
   selectedSession,
+  processingSessions,
   currentTime,
   editingSession,
   editingSessionName,
@@ -49,6 +51,8 @@ export default function SidebarSessionItem({
 }: SidebarSessionItemProps) {
   const sessionView = createSessionViewModel(session, currentTime, t);
   const isSelected = selectedSession?.id === session.id;
+  const isProcessing = processingSessions.has(session.id);
+  const showCompletedState = isSelected && !isProcessing;
 
   const selectMobileSession = () => {
     onProjectSelect(project);
@@ -65,7 +69,7 @@ export default function SidebarSessionItem({
 
   return (
     <div className="group relative">
-      {sessionView.isActive && (
+      {isProcessing && (
         <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
           <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
         </div>
@@ -76,7 +80,7 @@ export default function SidebarSessionItem({
           className={cn(
             'p-2 mx-3 my-0.5 rounded-md bg-card border active:scale-[0.98] transition-all duration-150 relative',
             isSelected ? 'bg-primary/5 border-primary/20' : '',
-            !isSelected && sessionView.isActive
+            !isSelected && isProcessing
               ? 'border-green-500/30 bg-green-50/5 dark:bg-green-900/5'
               : 'border-border/30',
           )}
@@ -99,6 +103,16 @@ export default function SidebarSessionItem({
                 <span className="text-xs text-muted-foreground">
                   {formatTimeAgo(sessionView.sessionTime, currentTime, t)}
                 </span>
+                {isProcessing ? (
+                  <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
+                    {t('status.thinking')}
+                  </Badge>
+                ) : null}
+                {showCompletedState ? (
+                  <Badge variant="secondary" className="px-1 py-0 text-[10px] text-muted-foreground">
+                    {t('common:status.completed')}
+                  </Badge>
+                ) : null}
                 {sessionView.messageCount > 0 && (
                   <Badge variant="secondary" className="ml-auto px-1 py-0 text-xs">
                     {sessionView.messageCount}
@@ -143,6 +157,16 @@ export default function SidebarSessionItem({
                 <span className="text-xs text-muted-foreground">
                   {formatTimeAgo(sessionView.sessionTime, currentTime, t)}
                 </span>
+                {isProcessing ? (
+                  <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
+                    {t('status.thinking')}
+                  </Badge>
+                ) : null}
+                {showCompletedState ? (
+                  <Badge variant="secondary" className="px-1 py-0 text-[10px] text-muted-foreground">
+                    {t('common:status.completed')}
+                  </Badge>
+                ) : null}
                 {sessionView.messageCount > 0 && (
                   <Badge
                     variant="secondary"

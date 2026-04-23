@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, RefObject, SetStateAction } from 'react';
 import type { ChatMessage } from '../../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
@@ -43,6 +43,7 @@ interface ChatMessagesPaneProps {
   isLoadingAllMessages: boolean;
   loadAllJustFinished: boolean;
   showLoadAllOverlay: boolean;
+  isRefreshingLatest: boolean;
   createDiff: any;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
@@ -53,6 +54,7 @@ interface ChatMessagesPaneProps {
   selectedProject: Project;
   isLoading: boolean;
   mobileComposerInset?: number;
+  onSwipeUpRefresh?: () => void;
 }
 
 export default function ChatMessagesPane({
@@ -90,6 +92,7 @@ export default function ChatMessagesPane({
   isLoadingAllMessages,
   loadAllJustFinished,
   showLoadAllOverlay,
+  isRefreshingLatest,
   createDiff,
   onFileOpen,
   onShowSettings,
@@ -100,11 +103,22 @@ export default function ChatMessagesPane({
   selectedProject,
   isLoading,
   mobileComposerInset = 0,
+  onSwipeUpRefresh,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
   const allocatedKeysRef = useRef<Set<string>>(new Set());
   const generatedMessageKeyCounterRef = useRef(0);
+  const [gestureRefreshFeedback, setGestureRefreshFeedback] = useState(false);
+  const gestureRefreshFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchGestureRef = useRef({
+    startY: 0,
+    currentY: 0,
+    startedAt: 0,
+    armed: false,
+    triggered: false,
+    startBottomGap: Number.POSITIVE_INFINITY,
+  });
   const containerStyle: CSSProperties | undefined =
     mobileComposerInset > 0
       ? {
@@ -136,11 +150,100 @@ export default function ChatMessagesPane({
     return candidateKey;
   }, []);
 
+  const tryTriggerSwipeRefresh = useCallback(() => {
+    const { startY, currentY, startedAt, armed, triggered } = touchGestureRef.current;
+
+    if (!armed || triggered || !onSwipeUpRefresh || isRefreshingLatest) {
+      return false;
+    }
+
+    const swipeDistance = startY - currentY;
+    const elapsed = Date.now() - startedAt;
+
+    if (swipeDistance < 36 || elapsed > 1400) {
+      return false;
+    }
+
+    touchGestureRef.current.triggered = true;
+    setGestureRefreshFeedback(true);
+    onSwipeUpRefresh();
+    return true;
+  }, [isRefreshingLatest, onSwipeUpRefresh]);
+
+  useEffect(() => {
+    if (isRefreshingLatest) {
+      setGestureRefreshFeedback(true);
+      return;
+    }
+
+    if (gestureRefreshFeedbackTimerRef.current) {
+      clearTimeout(gestureRefreshFeedbackTimerRef.current);
+    }
+
+    gestureRefreshFeedbackTimerRef.current = setTimeout(() => {
+      setGestureRefreshFeedback(false);
+      gestureRefreshFeedbackTimerRef.current = null;
+    }, 220);
+
+    return () => {
+      if (gestureRefreshFeedbackTimerRef.current) {
+        clearTimeout(gestureRefreshFeedbackTimerRef.current);
+        gestureRefreshFeedbackTimerRef.current = null;
+      }
+    };
+  }, [isRefreshingLatest]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const handleNativeTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      const bottomGap = Math.max(container.scrollHeight - container.scrollTop - container.clientHeight, 0);
+      const atBottom = bottomGap <= 12;
+
+      touchGestureRef.current = {
+        startY: touch.clientY,
+        currentY: touch.clientY,
+        startedAt: Date.now(),
+        armed: atBottom,
+        triggered: false,
+        startBottomGap: bottomGap,
+      };
+    };
+
+    const handleNativeTouchMove = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      touchGestureRef.current.currentY = touch.clientY;
+      onTouchMove();
+      tryTriggerSwipeRefresh();
+    };
+
+    const handleNativeTouchEnd = () => {
+      tryTriggerSwipeRefresh();
+      touchGestureRef.current.armed = false;
+      touchGestureRef.current.triggered = false;
+    };
+
+    container.addEventListener('touchstart', handleNativeTouchStart as EventListener, { passive: true });
+    container.addEventListener('touchmove', handleNativeTouchMove as EventListener, { passive: true });
+    container.addEventListener('touchend', handleNativeTouchEnd as EventListener, { passive: true });
+    container.addEventListener('touchcancel', handleNativeTouchEnd as EventListener, { passive: true });
+
+    return () => {
+      container.removeEventListener('touchstart', handleNativeTouchStart as EventListener);
+      container.removeEventListener('touchmove', handleNativeTouchMove as EventListener);
+      container.removeEventListener('touchend', handleNativeTouchEnd as EventListener);
+      container.removeEventListener('touchcancel', handleNativeTouchEnd as EventListener);
+    };
+  }, [onTouchMove, scrollContainerRef, tryTriggerSwipeRefresh]);
+
   return (
     <div
       ref={scrollContainerRef}
       onWheel={onWheel}
-      onTouchMove={onTouchMove}
       style={containerStyle}
       className="relative flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-0 py-3 sm:space-y-4 sm:p-4"
     >
@@ -222,6 +325,23 @@ export default function ChatMessagesPane({
                   </span>
                 </button>
               )}
+            </div>
+          )}
+
+          {gestureRefreshFeedback && (
+            <div
+              className="pointer-events-none fixed left-1/2 top-1/2 z-[70] flex -translate-x-1/2 -translate-y-1/2 justify-center"
+            >
+              <div
+                className="rounded-full bg-orange-500/95 px-3 py-2 text-white shadow-lg ring-1 ring-orange-300/60"
+                aria-label={t('common:buttons.refresh')}
+                title={t('common:buttons.refresh')}
+              >
+                <div className="flex items-center space-x-1.5">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" />
+                  <span className="text-xs font-medium leading-none">{t('common:buttons.refresh')}</span>
+                </div>
+              </div>
             </div>
           )}
 

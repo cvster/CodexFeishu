@@ -10,6 +10,7 @@ type SidebarProjectSessionsProps = {
   isExpanded: boolean;
   sessions: SessionWithProvider[];
   selectedSession: ProjectSession | null;
+  processingSessions: Set<string>;
   initialSessionsLoaded: boolean;
   isLoadingSessions: boolean;
   currentTime: Date;
@@ -55,6 +56,7 @@ export default function SidebarProjectSessions({
   isExpanded,
   sessions,
   selectedSession,
+  processingSessions,
   initialSessionsLoaded,
   isLoadingSessions,
   currentTime,
@@ -93,6 +95,7 @@ export default function SidebarProjectSessions({
             project={project}
             session={session}
             selectedSession={selectedSession}
+            processingSessions={processingSessions}
             currentTime={currentTime}
             editingSession={editingSession}
             editingSessionName={editingSessionName}

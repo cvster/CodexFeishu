@@ -46,6 +46,7 @@ interface ChatComposerProps {
   provider: Provider | string;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
+  isSessionProcessing: boolean;
   thinkingMode: string;
   setThinkingMode: Dispatch<SetStateAction<string>>;
   tokenBudget: { used?: number; total?: number } | null;
@@ -102,6 +103,7 @@ export default function ChatComposer({
   provider,
   permissionMode,
   onModeSwitch,
+  isSessionProcessing,
   thinkingMode,
   setThinkingMode,
   tokenBudget,
@@ -167,6 +169,10 @@ export default function ChatComposer({
   const mobileFloatingClass = isInputFocused
     ? 'max-sm:sticky max-sm:bottom-0 max-sm:z-30 max-sm:bg-background/95 max-sm:backdrop-blur max-sm:shadow-[0_-4px_20px_rgba(0,0,0,0.15)]'
     : '';
+  const inputLeftPaddingClass = IS_CODEX_ONLY_HARDENED ? 'pl-14' : 'pl-24';
+  const sessionStatusLabel = isSessionProcessing
+    ? t('thinking.title')
+    : t('common:status.completed');
 
   useEffect(() => {
     if (!onMobileInsetChange || typeof window === 'undefined') {
@@ -315,12 +321,32 @@ export default function ChatComposer({
         >
           <input {...getInputProps()} />
           <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-            <div className="chat-input-placeholder block w-full whitespace-pre-wrap break-words py-1.5 pl-12 pr-20 text-base leading-6 text-transparent sm:py-4 sm:pr-40">
+            <div className={`chat-input-placeholder block w-full whitespace-pre-wrap break-words py-1.5 pr-20 text-base leading-6 text-transparent sm:py-4 sm:pr-40 ${inputLeftPaddingClass}`}>
               {renderInputWithMentions(input)}
             </div>
           </div>
 
           <div className="relative z-10">
+            <div
+              className={`absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border transition-colors sm:h-8 sm:w-8 ${
+                isSessionProcessing
+                  ? 'border-orange-400/40 bg-orange-500/10 text-orange-500'
+                  : 'border-green-500/30 bg-green-500/10 text-green-600'
+              }`}
+              title={sessionStatusLabel}
+              aria-label={sessionStatusLabel}
+            >
+              {isSessionProcessing ? (
+                <svg className="h-4 w-4 animate-pulse sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <circle cx="12" cy="12" r="4" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4 sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M7 12.5l3.2 3.2L17 9" />
+                </svg>
+              )}
+            </div>
+
             <textarea
               ref={textareaRef}
               value={input}
@@ -333,7 +359,7 @@ export default function ChatComposer({
               onBlur={() => onInputFocusChange?.(false)}
               onInput={onTextareaInput}
               placeholder={placeholder}
-              className="chat-input-placeholder block max-h-[40vh] min-h-[50px] w-full resize-none overflow-y-auto rounded-2xl bg-transparent py-1.5 pl-12 pr-20 text-base leading-6 text-foreground placeholder-muted-foreground/50 transition-all duration-200 focus:outline-none sm:max-h-[300px] sm:min-h-[80px] sm:py-4 sm:pr-40"
+              className={`chat-input-placeholder block max-h-[40vh] min-h-[50px] w-full resize-none overflow-y-auto rounded-2xl bg-transparent py-1.5 pr-20 text-base leading-6 text-foreground placeholder-muted-foreground/50 transition-all duration-200 focus:outline-none sm:max-h-[300px] sm:min-h-[80px] sm:py-4 sm:pr-40 ${inputLeftPaddingClass}`}
               style={{ height: '50px' }}
             />
 
@@ -341,7 +367,7 @@ export default function ChatComposer({
               <button
                 type="button"
                 onClick={openImagePicker}
-                className="absolute left-2 top-1/2 -translate-y-1/2 transform rounded-xl p-2 transition-colors hover:bg-accent/60"
+                className="absolute left-12 top-1/2 -translate-y-1/2 transform rounded-xl p-2 transition-colors hover:bg-accent/60"
                 title={t('input.attachImages')}
               >
                 <svg className="h-5 w-5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -378,7 +404,7 @@ export default function ChatComposer({
             </button>
 
             <div
-              className={`pointer-events-none absolute bottom-1 left-12 right-14 hidden text-xs text-muted-foreground/50 transition-opacity duration-200 sm:right-40 sm:block ${
+              className={`pointer-events-none absolute bottom-1 right-14 hidden text-xs text-muted-foreground/50 transition-opacity duration-200 sm:right-40 sm:block ${IS_CODEX_ONLY_HARDENED ? 'left-14' : 'left-24'} ${
                 input.trim() ? 'opacity-0' : 'opacity-100'
               }`}
             >
