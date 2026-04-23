@@ -109,8 +109,6 @@ export default function ChatMessagesPane({
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
   const allocatedKeysRef = useRef<Set<string>>(new Set());
   const generatedMessageKeyCounterRef = useRef(0);
-  const [gestureRefreshFeedback, setGestureRefreshFeedback] = useState(false);
-  const gestureRefreshFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchGestureRef = useRef({
     startY: 0,
     currentY: 0,
@@ -165,33 +163,9 @@ export default function ChatMessagesPane({
     }
 
     touchGestureRef.current.triggered = true;
-    setGestureRefreshFeedback(true);
     onSwipeUpRefresh();
     return true;
   }, [isRefreshingLatest, onSwipeUpRefresh]);
-
-  useEffect(() => {
-    if (isRefreshingLatest) {
-      setGestureRefreshFeedback(true);
-      return;
-    }
-
-    if (gestureRefreshFeedbackTimerRef.current) {
-      clearTimeout(gestureRefreshFeedbackTimerRef.current);
-    }
-
-    gestureRefreshFeedbackTimerRef.current = setTimeout(() => {
-      setGestureRefreshFeedback(false);
-      gestureRefreshFeedbackTimerRef.current = null;
-    }, 220);
-
-    return () => {
-      if (gestureRefreshFeedbackTimerRef.current) {
-        clearTimeout(gestureRefreshFeedbackTimerRef.current);
-        gestureRefreshFeedbackTimerRef.current = null;
-      }
-    };
-  }, [isRefreshingLatest]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -325,23 +299,6 @@ export default function ChatMessagesPane({
                   </span>
                 </button>
               )}
-            </div>
-          )}
-
-          {gestureRefreshFeedback && (
-            <div
-              className="pointer-events-none fixed left-1/2 top-1/2 z-[70] flex -translate-x-1/2 -translate-y-1/2 justify-center"
-            >
-              <div
-                className="rounded-full bg-orange-500/95 px-3 py-2 text-white shadow-lg ring-1 ring-orange-300/60"
-                aria-label={t('common:buttons.refresh')}
-                title={t('common:buttons.refresh')}
-              >
-                <div className="flex items-center space-x-1.5">
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" />
-                  <span className="text-xs font-medium leading-none">{t('common:buttons.refresh')}</span>
-                </div>
-              </div>
             </div>
           )}
 

@@ -17,12 +17,18 @@
 import { Codex } from '@openai/codex-sdk';
 import crypto from 'crypto';
 import { promises as fs } from 'fs';
+import os from 'os';
 import path from 'path';
 import { enqueueCodexDesktopSync } from './codex-desktop-sync.js';
 
 // Track active sessions
 const activeCodexSessions = new Map();
+const desktopCodexSessionFileCache = new Map();
+const desktopCodexSessionStatusCache = new Map();
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
+const DESKTOP_CODEX_STATUS_CACHE_TTL_MS = 1500;
+const DESKTOP_CODEX_STATUS_TAIL_BYTES = 256 * 1024;
+const DESKTOP_CODEX_STATUS_TAIL_LINES = 300;
 
 const NON_ASCII_PATH_PATTERN = /[^\u0000-\u007F]/;
 
@@ -60,6 +66,155 @@ async function ensureAsciiWorkingDirectory(projectPath) {
 
   await fs.symlink(resolvedProjectPath, aliasPath, 'junction');
   return aliasPath;
+}
+
+function isVisibleCodexUserMessagePayload(payload) {
+  if (!payload || payload.type !== 'user_message') {
+    return false;
+  }
+
+  if (payload.kind && payload.kind !== 'plain') {
+    return false;
+  }
+
+  return typeof payload.message === 'string' && payload.message.trim().length > 0;
+}
+
+async function readJsonlTailLines(filePath, maxBytes = DESKTOP_CODEX_STATUS_TAIL_BYTES, maxLines = DESKTOP_CODEX_STATUS_TAIL_LINES) {
+  const fileHandle = await fs.open(filePath, 'r');
+
+  try {
+    const stats = await fileHandle.stat();
+    const bytesToRead = Math.min(stats.size, maxBytes);
+    const start = Math.max(0, stats.size - bytesToRead);
+    const buffer = Buffer.alloc(bytesToRead);
+
+    await fileHandle.read(buffer, 0, bytesToRead, start);
+
+    let text = buffer.toString('utf8');
+    if (start > 0) {
+      const firstNewlineIndex = text.indexOf('\n');
+      text = firstNewlineIndex >= 0 ? text.slice(firstNewlineIndex + 1) : '';
+    }
+
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    return lines.slice(-maxLines);
+  } finally {
+    await fileHandle.close();
+  }
+}
+
+async function findCodexSessionRolloutFileInDir(dirPath, sessionId) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+
+    if (entry.isDirectory()) {
+      const nestedMatch = await findCodexSessionRolloutFileInDir(fullPath, sessionId);
+      if (nestedMatch) {
+        return nestedMatch;
+      }
+      continue;
+    }
+
+    if (entry.isFile() && entry.name.endsWith(`-${sessionId}.jsonl`)) {
+      return fullPath;
+    }
+  }
+
+  return null;
+}
+
+async function resolveDesktopCodexSessionFile(sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  const cachedPath = desktopCodexSessionFileCache.get(sessionId);
+  if (cachedPath) {
+    try {
+      await fs.access(cachedPath);
+      return cachedPath;
+    } catch {
+      desktopCodexSessionFileCache.delete(sessionId);
+    }
+  }
+
+  const sessionsRoot = path.join(os.homedir(), '.codex', 'sessions');
+  const matchedPath = await findCodexSessionRolloutFileInDir(sessionsRoot, sessionId);
+  if (matchedPath) {
+    desktopCodexSessionFileCache.set(sessionId, matchedPath);
+  }
+
+  return matchedPath;
+}
+
+async function inferDesktopCodexSessionActive(sessionId) {
+  const filePath = await resolveDesktopCodexSessionFile(sessionId);
+  if (!filePath) {
+    return false;
+  }
+
+  let stats;
+  try {
+    stats = await fs.stat(filePath);
+  } catch {
+    return false;
+  }
+
+  const cachedStatus = desktopCodexSessionStatusCache.get(sessionId);
+  if (
+    cachedStatus &&
+    cachedStatus.mtimeMs === stats.mtimeMs &&
+    Date.now() - cachedStatus.checkedAt < DESKTOP_CODEX_STATUS_CACHE_TTL_MS
+  ) {
+    return cachedStatus.isActive;
+  }
+
+  const lines = await readJsonlTailLines(filePath);
+  let latestUserMessageAt = 0;
+  let latestCompletionAt = 0;
+
+  for (const line of lines) {
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const timestampMs =
+      typeof entry?.timestamp === 'string' ? Date.parse(entry.timestamp) || 0 : 0;
+
+    if (entry?.type === 'event_msg' && isVisibleCodexUserMessagePayload(entry.payload)) {
+      latestUserMessageAt = Math.max(latestUserMessageAt, timestampMs);
+      continue;
+    }
+
+    const eventType = entry?.type === 'event_msg' ? entry?.payload?.type : null;
+    if (eventType === 'task_complete' || eventType === 'turn_complete' || eventType === 'session_aborted') {
+      latestCompletionAt = Math.max(latestCompletionAt, timestampMs);
+    }
+  }
+
+  const isActive = latestUserMessageAt > latestCompletionAt;
+  desktopCodexSessionStatusCache.set(sessionId, {
+    checkedAt: Date.now(),
+    mtimeMs: stats.mtimeMs,
+    isActive,
+  });
+
+  return isActive;
 }
 
 /**
@@ -418,9 +573,13 @@ export function abortCodexSession(sessionId) {
  * @param {string} sessionId - Session ID to check
  * @returns {boolean} - Whether session is active
  */
-export function isCodexSessionActive(sessionId) {
+export async function isCodexSessionActive(sessionId) {
   const session = activeCodexSessions.get(sessionId);
-  return session?.status === 'running';
+  if (session?.status === 'running') {
+    return true;
+  }
+
+  return inferDesktopCodexSessionActive(sessionId);
 }
 
 /**

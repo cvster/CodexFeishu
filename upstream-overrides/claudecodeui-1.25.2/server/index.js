@@ -1784,7 +1784,7 @@ function handleChatConnection(ws, request = null) {
                 if (provider === 'cursor') {
                     isActive = isCursorSessionActive(sessionId);
                 } else if (provider === 'codex') {
-                    isActive = isCodexSessionActive(sessionId);
+                    isActive = await isCodexSessionActive(sessionId);
                     if (isActive) {
                         reconnectCodexSessionWriter(sessionId, ws);
                     }

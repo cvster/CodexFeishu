@@ -614,7 +614,7 @@ export function useChatComposerState({
         onSessionActive?.(sessionToActivate);
       }
 
-      if (!shouldBridgeMobileCodexSubmit && effectiveSessionId && !isTemporarySessionId(effectiveSessionId)) {
+      if (effectiveSessionId && !isTemporarySessionId(effectiveSessionId)) {
         onSessionProcessing?.(effectiveSessionId);
       }
 

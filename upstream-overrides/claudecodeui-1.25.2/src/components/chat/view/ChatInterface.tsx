@@ -352,6 +352,7 @@ function ChatInterface({
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
           isLoading={isLoading}
+          isRefreshingLatest={isRefreshingLatest}
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}

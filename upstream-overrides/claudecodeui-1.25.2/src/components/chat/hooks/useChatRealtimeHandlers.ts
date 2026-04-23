@@ -292,7 +292,11 @@ export function useChatRealtimeHandlers({
 
     switch (latestMessage.type) {
       case 'codex-desktop-command-submitted':
-        clearLoadingIndicators();
+        if (latestMessage.sessionId) {
+          onSessionProcessing?.(latestMessage.sessionId);
+        }
+        setIsLoading(true);
+        setCanAbortSession(false);
         if (latestMessage.sessionId) {
           setCurrentSessionId(latestMessage.sessionId);
           if (selectedSession?.id !== latestMessage.sessionId) {
@@ -306,6 +310,10 @@ export function useChatRealtimeHandlers({
         break;
 
       case 'codex-desktop-command-error':
+        if (latestMessage.sessionId) {
+          onSessionInactive?.(latestMessage.sessionId);
+          onSessionNotProcessing?.(latestMessage.sessionId);
+        }
         clearLoadingIndicators();
         setChatMessages((previous) => [
           ...previous,

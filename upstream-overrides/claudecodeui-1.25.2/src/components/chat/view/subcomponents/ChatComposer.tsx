@@ -43,6 +43,7 @@ interface ChatComposerProps {
   ) => void;
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   isLoading: boolean;
+  isRefreshingLatest: boolean;
   provider: Provider | string;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
@@ -100,6 +101,7 @@ export default function ChatComposer({
   handlePermissionDecision,
   handleGrantToolPermission,
   isLoading,
+  isRefreshingLatest,
   provider,
   permissionMode,
   onModeSwitch,
@@ -170,9 +172,13 @@ export default function ChatComposer({
     ? 'max-sm:sticky max-sm:bottom-0 max-sm:z-30 max-sm:bg-background/95 max-sm:backdrop-blur max-sm:shadow-[0_-4px_20px_rgba(0,0,0,0.15)]'
     : '';
   const inputLeftPaddingClass = IS_CODEX_ONLY_HARDENED ? 'pl-14' : 'pl-24';
-  const sessionStatusLabel = isSessionProcessing
-    ? t('thinking.title')
-    : t('common:status.completed');
+  const isSessionBusy = isSessionProcessing || isLoading;
+  const isStatusBusy = isRefreshingLatest || isSessionBusy;
+  const sessionStatusLabel = isRefreshingLatest
+    ? t('common:buttons.refresh')
+    : isSessionBusy
+      ? t('thinking.title')
+      : t('common:status.completed');
 
   useEffect(() => {
     if (!onMobileInsetChange || typeof window === 'undefined') {
@@ -329,14 +335,29 @@ export default function ChatComposer({
           <div className="relative z-10">
             <div
               className={`absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border transition-colors sm:h-8 sm:w-8 ${
-                isSessionProcessing
+                isStatusBusy
                   ? 'border-orange-400/40 bg-orange-500/10 text-orange-500'
                   : 'border-green-500/30 bg-green-500/10 text-green-600'
               }`}
               title={sessionStatusLabel}
               aria-label={sessionStatusLabel}
             >
-              {isSessionProcessing ? (
+              {isRefreshingLatest ? (
+                <svg className="h-4 w-4 animate-spin sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2.2}
+                    d="M20 12a8 8 0 10-2.34 5.66"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2.2}
+                    d="M20 7v5h-5"
+                  />
+                </svg>
+              ) : isSessionBusy ? (
                 <svg className="h-4 w-4 animate-pulse sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <circle cx="12" cy="12" r="4" />
                 </svg>
