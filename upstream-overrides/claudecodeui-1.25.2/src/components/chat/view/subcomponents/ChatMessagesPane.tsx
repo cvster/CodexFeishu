@@ -31,6 +31,7 @@ interface ChatMessagesPaneProps {
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
   setInput: Dispatch<SetStateAction<string>>;
+  onResendMessage?: (content: string) => void;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -80,6 +81,7 @@ export default function ChatMessagesPane({
   isTaskMasterInstalled,
   onShowAllTasks,
   setInput,
+  onResendMessage,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -123,6 +125,10 @@ export default function ChatMessagesPane({
           paddingBottom: `calc(${mobileComposerInset}px + env(safe-area-inset-bottom) + 0.75rem)`,
         }
       : undefined;
+  const latestUserMessageIndex = visibleMessages.reduce(
+    (latestIndex, message, index) => (message.type === 'user' ? index : latestIndex),
+    -1,
+  );
 
   // Keep keys stable across prepends so existing MessageComponent instances retain local state.
   const getMessageKey = useCallback((message: ChatMessage) => {
@@ -328,11 +334,14 @@ export default function ChatMessagesPane({
 
           {visibleMessages.map((message, index) => {
             const prevMessage = index > 0 ? visibleMessages[index - 1] : null;
+            const isLatestUserMessage = message.type === 'user' && index === latestUserMessageIndex;
             return (
               <MessageComponent
                 key={getMessageKey(message)}
                 message={message}
                 prevMessage={prevMessage}
+                isLatestUserMessage={isLatestUserMessage}
+                onResendMessage={onResendMessage}
                 createDiff={createDiff}
                 onFileOpen={onFileOpen}
                 onShowSettings={onShowSettings}

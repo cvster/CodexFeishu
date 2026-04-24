@@ -14,7 +14,7 @@ import { authenticatedFetch } from '../../../utils/api';
 import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import { thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
-import { safeLocalStorage } from '../utils/chatStorage';
+import { safeLocalStorage, savePendingUserMessage } from '../utils/chatStorage';
 import type {
   ChatMessage,
   PendingPermissionRequest,
@@ -405,6 +405,27 @@ export function useChatComposerState({
     textareaRef,
   });
 
+  const handleResendMessage = useCallback((content: string) => {
+    const nextInput = String(content || '');
+    if (!nextInput.trim()) {
+      return;
+    }
+
+    setInput(nextInput);
+    inputValueRef.current = nextInput;
+    setAttachedImages([]);
+    setUploadingImages(new Map());
+    setImageErrors(new Map());
+    resetCommandMenuState();
+    setThinkingMode('none');
+
+    setTimeout(() => {
+      if (handleSubmitRef.current) {
+        handleSubmitRef.current(createFakeSubmitEvent());
+      }
+    }, 0);
+  }, [resetCommandMenuState]);
+
   const syncInputOverlayScroll = useCallback((target: HTMLTextAreaElement) => {
     if (!inputHighlightRef.current || !target) {
       return;
@@ -601,6 +622,7 @@ export function useChatComposerState({
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
       const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
+      const pendingMessageSessionId = selectedSessionId || effectiveSessionId;
 
       if (!effectiveSessionId && !selectedSessionId) {
         if (typeof window !== 'undefined') {
@@ -645,6 +667,14 @@ export function useChatComposerState({
 
       const toolsSettings = getToolsSettings();
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      if (pendingMessageSessionId) {
+        savePendingUserMessage(selectedProject.name, pendingMessageSessionId, provider, {
+          displayContent: currentInput,
+          sentContent: messageContent,
+          timestamp: userMessage.timestamp.toISOString(),
+        });
+      }
+
       if (provider === 'codex') {
         console.log('[mobile-codex][send]', {
           selectedProjectName: selectedProject.name,
@@ -1038,6 +1068,7 @@ export function useChatComposerState({
     resetCommandMenuState,
     handleCommandSelect,
     handleToggleCommandMenu,
+    handleResendMessage,
     showFileDropdown,
     filteredFiles: filteredFiles as MentionableFile[],
     selectedFileIndex,

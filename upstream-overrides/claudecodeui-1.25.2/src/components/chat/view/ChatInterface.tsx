@@ -144,6 +144,7 @@ function ChatInterface({
     resetCommandMenuState,
     handleCommandSelect,
     handleToggleCommandMenu,
+    handleResendMessage,
     showFileDropdown,
     filteredFiles,
     selectedFileIndex,
@@ -345,6 +346,7 @@ function ChatInterface({
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
           setInput={setInput}
+          onResendMessage={handleResendMessage}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}

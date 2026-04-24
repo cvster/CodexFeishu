@@ -4,7 +4,12 @@ import { api, authenticatedFetch } from '../../../utils/api';
 import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import type { ChatMessage, Provider } from '../types/types';
 import type { Project, ProjectSession } from '../../../types/app';
-import { safeLocalStorage } from '../utils/chatStorage';
+import {
+  clearPendingUserMessage,
+  loadPendingUserMessage,
+  safeLocalStorage,
+  type PendingUserMessageRecord,
+} from '../utils/chatStorage';
 import {
   convertCursorSessionMessages,
   convertSessionMessages,
@@ -167,6 +172,52 @@ function buildChatMessagesSignature(messages: ChatMessage[]): string {
   );
 }
 
+const normalizeUserMessageContent = (value: unknown) =>
+  typeof value === 'string' ? value.replace(/\r\n/g, '\n').trim() : '';
+
+const hasSyncedPendingUserMessage = (
+  messages: ChatMessage[],
+  pendingMessage: PendingUserMessageRecord | null,
+) => {
+  if (!pendingMessage) {
+    return false;
+  }
+
+  const displayContent = normalizeUserMessageContent(pendingMessage.displayContent);
+  const sentContent = normalizeUserMessageContent(pendingMessage.sentContent);
+  if (!displayContent && !sentContent) {
+    return false;
+  }
+
+  return messages.some((message) => {
+    if (message.type !== 'user') {
+      return false;
+    }
+
+    const content = normalizeUserMessageContent(message.content);
+    return Boolean(content) && (content === displayContent || content === sentContent);
+  });
+};
+
+const appendPendingUserMessage = (
+  messages: ChatMessage[],
+  pendingMessage: PendingUserMessageRecord | null,
+) => {
+  if (!pendingMessage || hasSyncedPendingUserMessage(messages, pendingMessage)) {
+    return messages;
+  }
+
+  return [
+    ...messages,
+    {
+      type: 'user',
+      content: pendingMessage.displayContent,
+      timestamp: pendingMessage.timestamp,
+      __pendingSync: true,
+    } satisfies ChatMessage,
+  ];
+};
+
 export function useChatSessionState({
   selectedProject,
   selectedSession,
@@ -218,6 +269,7 @@ export function useChatSessionState({
   const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
   const [showLoadAllOverlay, setShowLoadAllOverlay] = useState(false);
   const [isRefreshingLatest, setIsRefreshingLatest] = useState(false);
+  const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessageRecord | null>(null);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
@@ -333,9 +385,30 @@ export function useChatSessionState({
     }
   }, []);
 
-  const convertedMessages = useMemo(() => {
+  const resolvedSessionProvider = useMemo(
+    () =>
+      (selectedSession?.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude')) as Provider,
+    [selectedSession?.__provider],
+  );
+
+  useEffect(() => {
+    if (!selectedProject || !selectedSession?.id) {
+      setPendingUserMessage(null);
+      return;
+    }
+
+    setPendingUserMessage(
+      loadPendingUserMessage(selectedProject.name, selectedSession.id, resolvedSessionProvider),
+    );
+  }, [resolvedSessionProvider, selectedProject?.name, selectedSession?.id]);
+
+  const baseConvertedMessages = useMemo(() => {
     return convertSessionMessages(sessionMessages);
   }, [sessionMessages]);
+
+  const convertedMessages = useMemo(() => {
+    return appendPendingUserMessage(baseConvertedMessages, pendingUserMessage);
+  }, [baseConvertedMessages, pendingUserMessage]);
   const convertedMessagesSignature = useMemo(
     () => buildChatMessagesSignature(convertedMessages),
     [convertedMessages],
@@ -689,8 +762,16 @@ export function useChatSessionState({
           if (!isSystemSessionChange) {
             const projectPath = selectedProject.fullPath || selectedProject.path || '';
             const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
+            if (pendingUserMessage && hasSyncedPendingUserMessage(converted, pendingUserMessage)) {
+              clearPendingUserMessage(
+                selectedProject.name,
+                selectedSession.id,
+                resolvedSessionProvider,
+              );
+              setPendingUserMessage(null);
+            }
             setSessionMessages([]);
-            setChatMessages(converted);
+            setChatMessages(appendPendingUserMessage(converted, pendingUserMessage));
           } else {
             setIsSystemSessionChange(false);
           }
@@ -743,8 +824,10 @@ export function useChatSessionState({
     isSystemSessionChange,
     loadCursorSessionMessages,
     loadSessionMessages,
+    pendingUserMessage,
     pendingViewSessionRef,
     resetStreamingState,
+    resolvedSessionProvider,
     selectedProject,
     selectedSession?.id, // Only depend on session ID, not the entire object
     sendMessage,
@@ -789,8 +872,12 @@ export function useChatSessionState({
         if (provider === 'cursor') {
           const projectPath = selectedProject.fullPath || selectedProject.path || '';
           const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
+          if (pendingUserMessage && hasSyncedPendingUserMessage(converted, pendingUserMessage)) {
+            clearPendingUserMessage(selectedProject.name, selectedSession.id, resolvedSessionProvider);
+            setPendingUserMessage(null);
+          }
           setSessionMessages([]);
-          setChatMessages(converted);
+          setChatMessages(appendPendingUserMessage(converted, pendingUserMessage));
           return;
         }
 
@@ -812,7 +899,9 @@ export function useChatSessionState({
     isNearBottom,
     isUserScrolledUp,
     loadCursorSessionMessages,
+    pendingUserMessage,
     refreshLatestMessages,
+    resolvedSessionProvider,
     scrollToBottom,
     selectedProject,
     selectedSession,
@@ -839,6 +928,25 @@ export function useChatSessionState({
       pendingViewSessionRef.current = null;
     }
   }, [pendingViewSessionRef, selectedSession?.id]);
+
+  useEffect(() => {
+    if (!selectedProject || !selectedSession?.id || !pendingUserMessage) {
+      return;
+    }
+
+    if (!hasSyncedPendingUserMessage(baseConvertedMessages, pendingUserMessage)) {
+      return;
+    }
+
+    clearPendingUserMessage(selectedProject.name, selectedSession.id, resolvedSessionProvider);
+    setPendingUserMessage(null);
+  }, [
+    baseConvertedMessages,
+    pendingUserMessage,
+    resolvedSessionProvider,
+    selectedProject,
+    selectedSession?.id,
+  ]);
 
   useEffect(() => {
     // Keep the rendered chat in sync with sessionMessages whenever the actual content changes.
