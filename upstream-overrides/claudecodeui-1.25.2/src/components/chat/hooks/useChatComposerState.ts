@@ -14,7 +14,11 @@ import { authenticatedFetch } from '../../../utils/api';
 import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import { thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
-import { safeLocalStorage, savePendingUserMessage } from '../utils/chatStorage';
+import {
+  safeLocalStorage,
+  savePendingUserMessage,
+  type PendingUserMessageRecord,
+} from '../utils/chatStorage';
 import type {
   ChatMessage,
   PendingPermissionRequest,
@@ -55,6 +59,7 @@ interface UseChatComposerStateArgs {
   scrollToBottom: () => void;
   setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setSessionMessages?: Dispatch<SetStateAction<any[]>>;
+  setPendingUserMessage?: Dispatch<SetStateAction<PendingUserMessageRecord | null>>;
   setIsLoading: (loading: boolean) => void;
   setCanAbortSession: (canAbort: boolean) => void;
   setClaudeStatus: (status: { text: string; tokens: number; can_interrupt: boolean } | null) => void;
@@ -122,6 +127,7 @@ export function useChatComposerState({
   scrollToBottom,
   setChatMessages,
   setSessionMessages,
+  setPendingUserMessage,
   setIsLoading,
   setCanAbortSession,
   setClaudeStatus,
@@ -597,6 +603,8 @@ export function useChatComposerState({
         content: currentInput,
         images: uploadedImages as any,
         timestamp: new Date(),
+        __pendingSync: true,
+        __deliveryStatus: 'sending',
       };
 
       setChatMessages((previous) => [...previous, userMessage]);
@@ -668,11 +676,27 @@ export function useChatComposerState({
       const toolsSettings = getToolsSettings();
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       if (pendingMessageSessionId) {
-        savePendingUserMessage(selectedProject.name, pendingMessageSessionId, provider, {
+        const nextPendingUserMessage: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'> = {
           displayContent: currentInput,
           sentContent: messageContent,
           timestamp: userMessage.timestamp.toISOString(),
-        });
+          status: 'sending',
+        };
+
+        savePendingUserMessage(
+          selectedProject.name,
+          pendingMessageSessionId,
+          provider,
+          nextPendingUserMessage,
+        );
+
+        if (selectedSession?.id === pendingMessageSessionId) {
+          setPendingUserMessage?.({
+            sessionId: pendingMessageSessionId,
+            provider,
+            ...nextPendingUserMessage,
+          });
+        }
       }
 
       if (provider === 'codex') {
@@ -787,6 +811,7 @@ export function useChatComposerState({
       setClaudeStatus,
       setIsLoading,
       setIsUserScrolledUp,
+      setPendingUserMessage,
       slashCommands,
       thinkingMode,
     ],

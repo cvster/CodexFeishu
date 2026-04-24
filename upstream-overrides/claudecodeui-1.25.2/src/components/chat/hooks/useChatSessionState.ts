@@ -5,8 +5,8 @@ import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import type { ChatMessage, Provider } from '../types/types';
 import type { Project, ProjectSession } from '../../../types/app';
 import {
-  clearPendingUserMessage,
   loadPendingUserMessage,
+  markPendingUserMessageSent,
   safeLocalStorage,
   type PendingUserMessageRecord,
 } from '../utils/chatStorage';
@@ -175,6 +175,49 @@ function buildChatMessagesSignature(messages: ChatMessage[]): string {
 const normalizeUserMessageContent = (value: unknown) =>
   typeof value === 'string' ? value.replace(/\r\n/g, '\n').trim() : '';
 
+const getTimestampMs = (value: unknown) => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
+const matchesPendingUserMessage = (
+  message: ChatMessage,
+  pendingMessage: PendingUserMessageRecord | null,
+) => {
+  if (!pendingMessage || message.type !== 'user') {
+    return false;
+  }
+
+  const displayContent = normalizeUserMessageContent(pendingMessage.displayContent);
+  const sentContent = normalizeUserMessageContent(pendingMessage.sentContent);
+  if (!displayContent && !sentContent) {
+    return false;
+  }
+
+  const content = normalizeUserMessageContent(message.content);
+  if (!content || (content !== displayContent && content !== sentContent)) {
+    return false;
+  }
+
+  const pendingTimestamp = getTimestampMs(pendingMessage.timestamp);
+  const messageTimestamp = getTimestampMs(message.timestamp);
+  if (pendingTimestamp === null || messageTimestamp === null) {
+    return true;
+  }
+
+  const delta = messageTimestamp - pendingTimestamp;
+  return delta >= -15_000 && delta <= 10 * 60 * 1000;
+};
+
 const hasSyncedPendingUserMessage = (
   messages: ChatMessage[],
   pendingMessage: PendingUserMessageRecord | null,
@@ -189,21 +232,55 @@ const hasSyncedPendingUserMessage = (
     return false;
   }
 
-  return messages.some((message) => {
-    if (message.type !== 'user') {
-      return false;
-    }
-
-    const content = normalizeUserMessageContent(message.content);
-    return Boolean(content) && (content === displayContent || content === sentContent);
-  });
+  return messages.some((message) => matchesPendingUserMessage(message, pendingMessage));
 };
 
-const appendPendingUserMessage = (
+const findLatestMatchingPendingUserMessageIndex = (
   messages: ChatMessage[],
   pendingMessage: PendingUserMessageRecord | null,
 ) => {
-  if (!pendingMessage || hasSyncedPendingUserMessage(messages, pendingMessage)) {
+  if (!pendingMessage) {
+    return -1;
+  }
+
+  const displayContent = normalizeUserMessageContent(pendingMessage.displayContent);
+  const sentContent = normalizeUserMessageContent(pendingMessage.sentContent);
+  if (!displayContent && !sentContent) {
+    return -1;
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (matchesPendingUserMessage(message, pendingMessage)) {
+      return index;
+    }
+  }
+
+  return -1;
+};
+
+const applyPendingUserMessage = (
+  messages: ChatMessage[],
+  pendingMessage: PendingUserMessageRecord | null,
+) => {
+  if (!pendingMessage) {
+    return messages;
+  }
+
+  const matchingIndex = findLatestMatchingPendingUserMessageIndex(messages, pendingMessage);
+  if (matchingIndex >= 0) {
+    return messages.map((message, index) =>
+      index === matchingIndex
+        ? {
+            ...message,
+            __pendingSync: pendingMessage.status === 'sending',
+            __deliveryStatus: pendingMessage.status === 'sending' ? 'sending' : 'sent',
+          }
+        : message,
+    );
+  }
+
+  if (pendingMessage.status !== 'sending') {
     return messages;
   }
 
@@ -214,6 +291,7 @@ const appendPendingUserMessage = (
       content: pendingMessage.displayContent,
       timestamp: pendingMessage.timestamp,
       __pendingSync: true,
+      __deliveryStatus: 'sending',
     } satisfies ChatMessage,
   ];
 };
@@ -407,7 +485,7 @@ export function useChatSessionState({
   }, [sessionMessages]);
 
   const convertedMessages = useMemo(() => {
-    return appendPendingUserMessage(baseConvertedMessages, pendingUserMessage);
+    return applyPendingUserMessage(baseConvertedMessages, pendingUserMessage);
   }, [baseConvertedMessages, pendingUserMessage]);
   const convertedMessagesSignature = useMemo(
     () => buildChatMessagesSignature(convertedMessages),
@@ -763,15 +841,16 @@ export function useChatSessionState({
             const projectPath = selectedProject.fullPath || selectedProject.path || '';
             const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
             if (pendingUserMessage && hasSyncedPendingUserMessage(converted, pendingUserMessage)) {
-              clearPendingUserMessage(
-                selectedProject.name,
-                selectedSession.id,
-                resolvedSessionProvider,
+              setPendingUserMessage(
+                markPendingUserMessageSent(
+                  selectedProject.name,
+                  selectedSession.id,
+                  resolvedSessionProvider,
+                ),
               );
-              setPendingUserMessage(null);
             }
             setSessionMessages([]);
-            setChatMessages(appendPendingUserMessage(converted, pendingUserMessage));
+            setChatMessages(applyPendingUserMessage(converted, pendingUserMessage));
           } else {
             setIsSystemSessionChange(false);
           }
@@ -873,11 +952,16 @@ export function useChatSessionState({
           const projectPath = selectedProject.fullPath || selectedProject.path || '';
           const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
           if (pendingUserMessage && hasSyncedPendingUserMessage(converted, pendingUserMessage)) {
-            clearPendingUserMessage(selectedProject.name, selectedSession.id, resolvedSessionProvider);
-            setPendingUserMessage(null);
+            setPendingUserMessage(
+              markPendingUserMessageSent(
+                selectedProject.name,
+                selectedSession.id,
+                resolvedSessionProvider,
+              ),
+            );
           }
           setSessionMessages([]);
-          setChatMessages(appendPendingUserMessage(converted, pendingUserMessage));
+          setChatMessages(applyPendingUserMessage(converted, pendingUserMessage));
           return;
         }
 
@@ -930,7 +1014,12 @@ export function useChatSessionState({
   }, [pendingViewSessionRef, selectedSession?.id]);
 
   useEffect(() => {
-    if (!selectedProject || !selectedSession?.id || !pendingUserMessage) {
+    if (
+      !selectedProject ||
+      !selectedSession?.id ||
+      !pendingUserMessage ||
+      pendingUserMessage.status === 'sent'
+    ) {
       return;
     }
 
@@ -938,8 +1027,9 @@ export function useChatSessionState({
       return;
     }
 
-    clearPendingUserMessage(selectedProject.name, selectedSession.id, resolvedSessionProvider);
-    setPendingUserMessage(null);
+    setPendingUserMessage(
+      markPendingUserMessageSent(selectedProject.name, selectedSession.id, resolvedSessionProvider),
+    );
   }, [
     baseConvertedMessages,
     pendingUserMessage,
@@ -1314,6 +1404,8 @@ export function useChatSessionState({
     loadAllJustFinished,
     showLoadAllOverlay,
     isRefreshingLatest,
+    pendingUserMessage,
+    setPendingUserMessage,
     claudeStatus,
     setClaudeStatus,
     createDiff,

@@ -8,6 +8,7 @@ export interface PendingUserMessageRecord {
   displayContent: string;
   sentContent: string;
   timestamp: string;
+  status: 'sending' | 'sent';
 }
 
 const PENDING_USER_MESSAGE_PREFIX = 'pending_user_message_';
@@ -32,7 +33,8 @@ const isPendingUserMessageRecord = (value: unknown): value is PendingUserMessage
     typeof candidate.provider === 'string' &&
     typeof candidate.displayContent === 'string' &&
     typeof candidate.sentContent === 'string' &&
-    typeof candidate.timestamp === 'string'
+    typeof candidate.timestamp === 'string' &&
+    (candidate.status === 'sending' || candidate.status === 'sent')
   );
 };
 
@@ -122,6 +124,7 @@ export const savePendingUserMessage = (
       displayContent: message.displayContent,
       sentContent: message.sentContent,
       timestamp: message.timestamp,
+      status: 'sending',
     } satisfies PendingUserMessageRecord),
   );
 };
@@ -157,6 +160,29 @@ export const clearPendingUserMessage = (
   provider: string,
 ) => {
   safeLocalStorage.removeItem(getPendingUserMessageStorageKey(projectName, sessionId, provider));
+};
+
+export const markPendingUserMessageSent = (
+  projectName: string,
+  sessionId: string,
+  provider: string,
+) => {
+  const existing = loadPendingUserMessage(projectName, sessionId, provider);
+  if (!existing) {
+    return null;
+  }
+
+  const nextRecord: PendingUserMessageRecord = {
+    ...existing,
+    status: 'sent',
+  };
+
+  safeLocalStorage.setItem(
+    getPendingUserMessageStorageKey(projectName, sessionId, provider),
+    JSON.stringify(nextRecord),
+  );
+
+  return nextRecord;
 };
 
 export function getClaudeSettings(): ClaudeSettings {

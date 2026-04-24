@@ -57,6 +57,11 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
   const permissionSuggestion = getClaudePermissionSuggestion(message, provider);
   const [permissionGrantState, setPermissionGrantState] = useState<PermissionGrantState>('idle');
   const userCopyContent = String(message.content || '');
+  const deliveryStatus = isLatestUserMessage
+    ? (message.__deliveryStatus === 'sending' || message.__deliveryStatus === 'sent'
+        ? message.__deliveryStatus
+        : null)
+    : null;
   const formattedMessageContent = useMemo(
     () => formatUsageLimitText(String(message.content || '')),
     [message.content]
@@ -138,6 +143,24 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
               </div>
             )}
             <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
+              {deliveryStatus && (
+                <span
+                  className={`inline-flex items-center gap-1 rounded px-1 py-0.5 ${
+                    deliveryStatus === 'sending' ? 'text-amber-200' : 'text-emerald-200'
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      deliveryStatus === 'sending' ? 'bg-amber-300' : 'bg-emerald-300'
+                    }`}
+                  />
+                  <span className="text-[10px] font-medium">
+                    {deliveryStatus === 'sending'
+                      ? t('deliveryStatus.sending', { defaultValue: '发送中' })
+                      : t('deliveryStatus.sent', { defaultValue: '已发送' })}
+                  </span>
+                </span>
+              )}
               {shouldShowUserResendControl && (
                 <button
                   type="button"
