@@ -525,13 +525,13 @@ export function useChatComposerState({
         messageContent = `${selectedThinkingMode.prefix}: ${currentInput}`;
       }
 
+      const selectedSessionId = selectedSession?.id || null;
       const latestProjectCodexSessionId =
-        provider === 'codex' && !currentSessionId && !selectedSession?.id
+        provider === 'codex' && !selectedSessionId
           ? getLatestProjectCodexSessionId(selectedProject)
           : null;
       const effectiveSessionId =
-        currentSessionId ||
-        selectedSession?.id ||
+        selectedSessionId ||
         (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null) ||
         latestProjectCodexSessionId;
       const shouldBridgeMobileCodexSubmit = provider === 'codex' && isLikelyMobileBrowser();
@@ -602,7 +602,7 @@ export function useChatComposerState({
       setTimeout(() => scrollToBottom(), 100);
       const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
 
-      if (!effectiveSessionId && !selectedSession?.id) {
+      if (!effectiveSessionId && !selectedSessionId) {
         if (typeof window !== 'undefined') {
           // Reset stale pending IDs from previous interrupted runs before creating a new one.
           sessionStorage.removeItem('pendingSessionId');
@@ -645,6 +645,16 @@ export function useChatComposerState({
 
       const toolsSettings = getToolsSettings();
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      if (provider === 'codex') {
+        console.log('[mobile-codex][send]', {
+          selectedProjectName: selectedProject.name,
+          selectedProjectPath: resolvedProjectPath,
+          selectedSessionId,
+          latestProjectCodexSessionId,
+          effectiveSessionId,
+          shouldBridgeMobileCodexSubmit,
+        });
+      }
 
       if (provider === 'cursor') {
         sendMessage({

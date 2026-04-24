@@ -1691,6 +1691,12 @@ function handleChatConnection(ws, request = null) {
                     const bridgedProjectPath = resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd;
                     // Ensure we don't get skipped by the "mobile-only" sync mode even if user-agent checks fail.
                     const bridgeSourceContext = { ...(desktopSyncContext || {}), isMobile: true };
+                    console.log('[mobile-codex][bridge-request]', JSON.stringify({
+                        projectPath: bridgedProjectPath,
+                        sessionId: resolvedCodexOptions.sessionId || null,
+                        sessionTitleHint: resolvedCodexOptions.sessionTitleHint || null,
+                        executionMode: resolvedCodexOptions.executionMode || null,
+                    }));
                     writer.send({
                         type: 'codex-desktop-command-submitted',
                         sessionId: resolvedCodexOptions.sessionId || null,

@@ -47,6 +47,7 @@ function ChatInterface({
   const streamBufferRef = useRef('');
   const streamTimerRef = useRef<number | null>(null);
   const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
+  const lastComposerBlurAtRef = useRef(0);
   const [mobileComposerInset, setMobileComposerInset] = useState(0);
   const isSessionProcessing = Boolean(selectedSession?.id && processingSessions?.has(selectedSession.id));
 
@@ -202,6 +203,31 @@ function ChatInterface({
     setPendingPermissionRequests,
   });
 
+  const handleComposerFocusChange = useCallback((focused: boolean) => {
+    if (!focused) {
+      lastComposerBlurAtRef.current = Date.now();
+    }
+    handleInputFocusChange(focused);
+  }, [handleInputFocusChange]);
+
+  const handleChatFileOpen = useCallback((filePath: string, diffInfo?: unknown) => {
+    if (!onFileOpen) {
+      return;
+    }
+
+    const isCompactViewport =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(max-width: 640px)').matches;
+    const composerRecentlyBlurred = Date.now() - lastComposerBlurAtRef.current < 350;
+
+    if (isCompactViewport && (isInputFocused || composerRecentlyBlurred)) {
+      textareaRef.current?.blur();
+      return;
+    }
+
+    onFileOpen(filePath, diffInfo);
+  }, [isInputFocused, onFileOpen, textareaRef]);
+
   // On WebSocket reconnect, re-fetch the current session's messages from JSONL so missed
   // streaming events (e.g. from long tool calls while iOS had the tab backgrounded) are shown.
   // Also reset isLoading — if the server restarted or the session died mid-stream, the client
@@ -333,7 +359,7 @@ function ChatInterface({
           showLoadAllOverlay={showLoadAllOverlay}
           isRefreshingLatest={isRefreshingLatest}
           createDiff={createDiff}
-          onFileOpen={onFileOpen}
+          onFileOpen={handleChatFileOpen}
           onShowSettings={onShowSettings}
           onGrantToolPermission={handleGrantToolPermission}
           autoExpandTools={autoExpandTools}
@@ -400,7 +426,7 @@ function ChatInterface({
           onTextareaPaste={handlePaste}
           onTextareaScrollSync={syncInputOverlayScroll}
           onTextareaInput={handleTextareaInput}
-          onInputFocusChange={handleInputFocusChange}
+          onInputFocusChange={handleComposerFocusChange}
           isInputFocused={isInputFocused}
           placeholder={t('input.placeholder', {
             provider:

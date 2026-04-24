@@ -465,18 +465,44 @@ export function useProjectsState({
 
   const handleSessionSelect = useCallback(
     (session: ProjectSession) => {
-      setSelectedSession(session);
+      const projectsMatchingSession = projects.filter((project) =>
+        getProjectSessions(project).some(
+          (candidate) =>
+            candidate.id === session.id &&
+            (candidate.__provider || session.__provider) ===
+              (session.__provider || candidate.__provider),
+        ),
+      );
+      const uniquelyNamedProject =
+        session.__projectName
+          ? projects.filter((project) => project.name === session.__projectName)
+          : [];
+      const resolvedProject =
+        projectsMatchingSession[0] ||
+        (uniquelyNamedProject.length === 1 ? uniquelyNamedProject[0] : null) ||
+        null;
+
+      if (resolvedProject) {
+        setSelectedProject(resolvedProject);
+      }
+
+      const normalizedSession = normalizeSelectedSession(
+        session,
+        session.__provider,
+        resolvedProject?.name || session.__projectName,
+      );
+      setSelectedSession(normalizedSession);
 
       if (activeTab === 'tasks' || activeTab === 'preview') {
         setActiveTab('chat');
       }
 
-      if (!IS_CODEX_ONLY_HARDENED && session.__provider === 'cursor') {
-        sessionStorage.setItem('cursorSessionId', session.id);
+      if (!IS_CODEX_ONLY_HARDENED && normalizedSession.__provider === 'cursor') {
+        sessionStorage.setItem('cursorSessionId', normalizedSession.id);
       }
 
       if (isMobile) {
-        const sessionProjectName = session.__projectName;
+        const sessionProjectName = resolvedProject?.name || normalizedSession.__projectName;
         const currentProjectName = selectedProject?.name;
 
         if (sessionProjectName !== currentProjectName) {
@@ -484,9 +510,9 @@ export function useProjectsState({
         }
       }
 
-      navigate(`/session/${session.id}`);
+      navigate(`/session/${normalizedSession.id}`);
     },
-    [activeTab, isMobile, navigate, selectedProject?.name],
+    [activeTab, isMobile, navigate, projects, selectedProject?.name],
   );
 
   const handleNewSession = useCallback(

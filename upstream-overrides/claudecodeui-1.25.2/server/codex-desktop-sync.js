@@ -24,7 +24,6 @@ const AUTOMATION_WORKER_READY_TIMEOUT_MS = 45000;
 const DESKTOP_AUTOMATION_WORKER_ENABLED =
   process.env.MOBILE_CODEX_DESKTOP_AUTOMATION_WORKER !== 'false';
 const automationQueues = new Map();
-const sessionNavigationTargetCache = new Map();
 let desktopAutomationWorker = null;
 
 function sleep(ms) {
@@ -66,50 +65,6 @@ function pushDesktopAutomationTextArg(args, flag, value) {
 
   args.push(flag, normalized);
   args.push(`${flag}-b64`, encodeDesktopAutomationText(normalized));
-}
-
-function getSessionCacheKey(sessionId, projectPath) {
-  const normalizedProjectPath = path.resolve(projectPath);
-  return `${normalizedProjectPath}::${sessionId}`;
-}
-
-function getCachedNavigationTarget(sessionId, projectPath) {
-  if (!sessionId || !projectPath) {
-    return null;
-  }
-
-  const cached = sessionNavigationTargetCache.get(getSessionCacheKey(sessionId, projectPath));
-  if (!cached) {
-    return null;
-  }
-
-  return {
-    projectDisplayName: cached.projectDisplayName,
-    sessionTitle: cached.sessionTitle,
-    selectionMode: cached.selectionMode,
-    resolutionSource: 'cache',
-  };
-}
-
-function clearNavigationTargetCache(sessionId, projectPath) {
-  if (!sessionId || !projectPath) {
-    return;
-  }
-
-  sessionNavigationTargetCache.delete(getSessionCacheKey(sessionId, projectPath));
-}
-
-function cacheNavigationTarget(sessionId, projectPath, target) {
-  if (!sessionId || !projectPath || !target?.sessionTitle) {
-    return;
-  }
-
-  sessionNavigationTargetCache.set(getSessionCacheKey(sessionId, projectPath), {
-    projectDisplayName: target.projectDisplayName,
-    sessionTitle: target.sessionTitle,
-    selectionMode: target.selectionMode === 'latest' ? 'latest' : 'session-title',
-    cachedAt: Date.now(),
-  });
 }
 
 function isLikelyMobileUserAgent(userAgent = '') {
@@ -458,15 +413,9 @@ async function resolveNavigationTarget({
   allowLatestFallback,
   preferImmediateHint = false,
   allowSessionTitleHintFallback = false,
-  skipCache = false,
 }) {
   const projectDisplayName = getProjectDisplayName(projectPath);
   const fallbackTitle = truncateSessionHint(sessionTitleHint);
-  const cachedTarget = skipCache ? null : getCachedNavigationTarget(sessionId, projectPath);
-
-  if (cachedTarget) {
-    return cachedTarget;
-  }
 
   if (preferImmediateHint && fallbackTitle) {
     return {
@@ -488,7 +437,6 @@ async function resolveNavigationTarget({
         selectionMode: title ? 'session-title' : 'latest',
         resolutionSource: 'metadata',
       };
-      cacheNavigationTarget(sessionId, projectPath, resolvedTarget);
       return resolvedTarget;
     }
 
@@ -507,14 +455,12 @@ async function resolveNavigationTarget({
   }
 
   if (allowSessionTitleHintFallback && fallbackTitle) {
-    const hintedTarget = {
+    return {
       projectDisplayName,
       sessionTitle: fallbackTitle,
       selectionMode: 'session-hint',
       resolutionSource: 'hint-fallback',
     };
-    cacheNavigationTarget(sessionId, projectPath, hintedTarget);
-    return hintedTarget;
   }
 
   return {
@@ -661,6 +607,17 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         preferImmediateHint: false,
         allowSessionTitleHintFallback: false,
       });
+      console.log(
+        '[mobile-codex][bridge-target]',
+        JSON.stringify({
+          projectPath: payload.projectPath,
+          sessionId: payload.sessionId,
+          resolvedProjectDisplayName: target.projectDisplayName,
+          resolvedSessionTitle: target.sessionTitle,
+          selectionMode: target.selectionMode,
+          resolutionSource: target.resolutionSource,
+        }),
+      );
       const initialResolveMs = elapsedMs(resolveStartedAt);
 
       if (target.selectionMode === 'unresolved') {
@@ -697,7 +654,6 @@ export function enqueueCodexDesktopMessageBridge(payload) {
             throw error;
           }
 
-          clearNavigationTargetCache(payload.sessionId, payload.projectPath);
           const retryResolveStartedAt = Date.now();
           target = await resolveNavigationTarget({
             sessionId: payload.sessionId,
@@ -706,7 +662,6 @@ export function enqueueCodexDesktopMessageBridge(payload) {
             allowLatestFallback: false,
             preferImmediateHint: false,
             allowSessionTitleHintFallback: false,
-            skipCache: true,
           });
           const retryResolveMs = elapsedMs(retryResolveStartedAt);
 
@@ -722,7 +677,6 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         }
 
         const automationMs = elapsedMs(automationStartedAt);
-        cacheNavigationTarget(payload.sessionId, payload.projectPath, target);
         console.log(
           `[Codex Desktop Bridge] submit -> ${target.projectDisplayName} / ${
             target.sessionTitle || '<latest>'

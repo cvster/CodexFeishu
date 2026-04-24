@@ -1852,14 +1852,14 @@ async function buildCodexSessionsIndex() {
       const session = {
         id: sessionData.id,
         title:
+          threadNames.get(sessionData.id) ||
           desktopTitlesBySessionId.get(sessionData.id) ||
           desktopTitlesByRolloutPath.get(normalizedFilePath) ||
-          threadNames.get(sessionData.id) ||
           null,
         summary:
+          threadNames.get(sessionData.id) ||
           desktopTitlesBySessionId.get(sessionData.id) ||
           desktopTitlesByRolloutPath.get(normalizedFilePath) ||
-          threadNames.get(sessionData.id) ||
           sessionData.summary ||
           'Codex Session',
         messageCount: sessionData.messageCount || 0,

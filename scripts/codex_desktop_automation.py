@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
 import time
 import traceback
@@ -11,9 +12,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from pywinauto import Desktop, clipboard, mouse
+    import win32api
+    import win32clipboard
+    import win32con
+    import win32gui
+    from pywinauto import Desktop
     from pywinauto.controls.uiawrapper import UIAWrapper
-    from pywinauto.keyboard import send_keys
 except ImportError as exc:  # pragma: no cover - exercised through the wrapper
     raise SystemExit(
         "pywinauto is required. Run scripts\\run-codex-desktop-automation.ps1 "
@@ -22,6 +26,10 @@ except ImportError as exc:  # pragma: no cover - exercised through the wrapper
 
 
 SIDEBAR_RIGHT_EDGE = 650
+RELATIVE_TIME_SUFFIX_RE = re.compile(
+    r"(?:\s*[·•\-–—|])?\s*\d+\s*(?:秒|分钟|小时|天|周|个月|月|年|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)\s*(?:前|ago)?$",
+    re.IGNORECASE,
+)
 
 
 def _configure_stdio() -> None:
@@ -35,8 +43,31 @@ def _rect_to_list(rect: Any) -> list[int]:
     return [int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)]
 
 
+def _rect_intersects(container: Any, rect: Any) -> bool:
+    return (
+        int(rect.right) > int(container.left)
+        and int(rect.left) < int(container.right)
+        and int(rect.bottom) > int(container.top)
+        and int(rect.top) < int(container.bottom)
+    )
+
+
 def _normalize(value: str) -> str:
     return value.strip().casefold()
+
+
+def _strip_relative_time_suffix(value: str) -> str:
+    stripped = RELATIVE_TIME_SUFFIX_RE.sub("", value or "").strip()
+    return stripped or (value or "").strip()
+
+
+def _matching_variants(value: str) -> tuple[str, ...]:
+    variants = []
+    for candidate in (value or "", _strip_relative_time_suffix(value or "")):
+        normalized = _normalize(candidate)
+        if normalized and normalized not in variants:
+            variants.append(normalized)
+    return tuple(variants)
 
 
 def _decode_text_argument(value: str | None, encoded_value: str | None, label: str) -> str:
@@ -51,11 +82,37 @@ def _decode_text_argument(value: str | None, encoded_value: str | None, label: s
 
 
 def _text_matches(candidate: str, target: str, exact: bool) -> bool:
-    normalized_candidate = _normalize(candidate)
-    normalized_target = _normalize(target)
+    candidate_variants = _matching_variants(candidate)
+    target_variants = _matching_variants(target)
+    if not candidate_variants or not target_variants:
+        return False
+
     if exact:
-        return normalized_candidate == normalized_target
-    return normalized_target in normalized_candidate
+        return any(candidate_variant == target_variant for candidate_variant in candidate_variants for target_variant in target_variants)
+
+    return any(target_variant in candidate_variant for candidate_variant in candidate_variants for target_variant in target_variants)
+
+
+def _control_name(control: Any) -> str:
+    try:
+        return (control.window_text() or "").strip()
+    except Exception:
+        return ""
+
+
+def _control_class_name(control: Any) -> str:
+    try:
+        return (getattr(control.element_info, "class_name", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _looks_like_send_button(control: Any) -> bool:
+    haystack = f"{_control_name(control)} {_control_class_name(control)}".casefold()
+    if any(token in haystack for token in ("发送", "submit", "send")):
+        return True
+
+    return "bg-token-foreground" in haystack
 
 
 @dataclass
@@ -63,6 +120,7 @@ class SessionRef:
     title: str
     rect: list[int]
     item: Any
+    button: Any | None
 
     def to_json(self) -> dict[str, Any]:
         return {"title": self.title, "rect": self.rect}
@@ -104,47 +162,46 @@ class CodexDesktopAutomation:
         self.window = self.window_spec.wrapper_object()
 
     def activate(self) -> None:
-        self.window.set_focus()
+        try:
+            win32gui.ShowWindow(self.window.handle, win32con.SW_RESTORE)
+        except Exception:
+            pass
         time.sleep(self.click_delay)
 
     def _activate_control(self, control: Any, *, label: str) -> None:
         last_error: Exception | None = None
 
         try:
-            control.click_input()
-            time.sleep(self.click_delay)
-            return
-        except Exception as exc:  # pragma: no cover - depends on desktop/session state
-            last_error = exc
-
-        try:
-            control.set_focus()
-            time.sleep(self.click_delay / 2)
+            self.activate()
         except Exception:
             pass
 
-        for method_name in ("invoke", "click"):
-            method = getattr(control, method_name, None)
-            if not callable(method):
-                continue
-
+        for activator in (
+            lambda item: getattr(item, "invoke")(),
+            lambda item: getattr(item, "select")(),
+        ):
             try:
-                method()
+                activator(control)
                 time.sleep(self.click_delay)
                 return
             except Exception as exc:  # pragma: no cover - depends on control implementation
                 last_error = exc
 
         try:
-            send_keys("{ENTER}")
-            time.sleep(self.click_delay)
+            self._click_control_by_message(control)
             return
-        except Exception as exc:  # pragma: no cover - depends on focus/desktop state
+        except Exception as exc:
             last_error = exc
 
         if last_error is not None:
             raise RuntimeError(f"Failed to activate {label}: {last_error}") from last_error
         raise RuntimeError(f"Failed to activate {label}.")
+
+    def _activate_session_item(self, session: SessionRef) -> None:
+        self._activate_control(
+            session.button or session.item,
+            label=f"session '{session.title}'",
+        )
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -175,13 +232,20 @@ class CodexDesktopAutomation:
 
         clickable = project.button or project.item
         self._activate_control(clickable, label=f"project '{project.title}'")
+        refreshed = self._wait_for_project_expanded(project_name, exact=exact)
+        if refreshed is not None:
+            return refreshed
+
+        # Retry once more because the sidebar occasionally ignores the first toggle.
         refreshed = self._find_project(
             project_name,
             exact=exact,
             max_scrolls=3,
             reset_to_top=False,
         )
-        if not refreshed.expanded:
+        self._activate_control(refreshed.button or refreshed.item, label=f"project '{refreshed.title}'")
+        refreshed = self._wait_for_project_expanded(project_name, exact=exact)
+        if refreshed is None:
             raise RuntimeError(f"Project '{project_name}' did not expand.")
         return refreshed
 
@@ -201,11 +265,23 @@ class CodexDesktopAutomation:
 
         for _ in range(max_scrolls):
             titles = tuple(session.title for session in project.sessions)
-            for session in project.sessions:
-                if _text_matches(session.title, session_name, exact=session_exact):
-                    self._activate_control(session.item, label=f"session '{session.title}'")
-                    if wait_for_main_change:
-                        self._wait_for_main_text_change(before)
+            session = self._best_session_match(project.sessions, session_name, exact=session_exact)
+            if session is not None:
+                self._activate_session_item(session)
+                self._wait_for_main_text_change(before, timeout=4.0 if wait_for_main_change else 1.5)
+                return {
+                    "selected_project": project.title,
+                    "selected_session": session.title,
+                    "state": self.snapshot(),
+                }
+
+            session_anywhere = self._find_session_anywhere(project, session_name, exact=session_exact)
+            if session_anywhere is not None and self._scroll_item_into_view(session_anywhere.item):
+                project = self._find_project(project_name, exact=project_exact, max_scrolls=max_scrolls, reset_to_top=False)
+                session = self._best_session_match(project.sessions, session_name, exact=session_exact)
+                if session is not None:
+                    self._activate_session_item(session)
+                    self._wait_for_main_text_change(before, timeout=4.0 if wait_for_main_change else 1.5)
                     return {
                         "selected_project": project.title,
                         "selected_session": session.title,
@@ -239,9 +315,8 @@ class CodexDesktopAutomation:
 
         before = tuple(self._main_text_preview())
         session = project.sessions[0]
-        self._activate_control(session.item, label=f"session '{session.title}'")
-        if wait_for_main_change:
-            self._wait_for_main_text_change(before)
+        self._activate_session_item(session)
+        self._wait_for_main_text_change(before, timeout=4.0 if wait_for_main_change else 1.5)
         return {
             "selected_project": project.title,
             "selected_session": session.title,
@@ -266,30 +341,20 @@ class CodexDesktopAutomation:
                 project_exact=project_exact,
                 session_exact=session_exact,
                 max_scrolls=max_scrolls,
-                wait_for_main_change=False,
+                wait_for_main_change=True,
             )
         else:
             selection = self.open_latest_session(
                 project_name,
                 project_exact=project_exact,
                 max_scrolls=max_scrolls,
-                wait_for_main_change=False,
+                wait_for_main_change=True,
             )
 
         before = tuple(self._main_text_preview())
         composer = self._composer()
-        self._activate_control(composer, label="composer")
-        time.sleep(self.click_delay / 2)
-
-        # Reset any existing draft before pasting the bridged mobile prompt.
-        send_keys("^a{BACKSPACE}", pause=0.02)
-        self._set_clipboard_text(message)
-        send_keys("^v", pause=0.02)
-        time.sleep(self.click_delay / 2)
-
-        send_button = self._composer_send_button(composer.rectangle())
-        self._activate_control(send_button, label="send button")
-        self._wait_for_main_text_change(before, timeout=8.0)
+        self._set_composer_text_via_messages(composer, message)
+        self._submit_composer_message(composer, before)
 
         return {
             "selected_project": selection["selected_project"],
@@ -298,14 +363,41 @@ class CodexDesktopAutomation:
             "state": self.snapshot(),
         }
 
-    def _wait_for_main_text_change(self, before: Iterable[str], timeout: float = 4.0) -> None:
+    def _wait_for_main_text_change(self, before: Iterable[str], timeout: float = 4.0) -> bool:
         expected = tuple(before)
         deadline = time.time() + timeout
         while time.time() < deadline:
             current = tuple(self._main_text_preview())
             if current and current != expected:
-                return
+                return True
             time.sleep(0.2)
+        return False
+
+    def _submit_composer_message(self, composer: Any, before: Iterable[str]) -> None:
+        try:
+            composer.set_focus()
+            time.sleep(self.click_delay / 2)
+            composer.type_keys("{ENTER}", pause=0.02, set_foreground=False)
+            if self._wait_for_main_text_change(before, timeout=2.0):
+                return
+        except Exception:
+            pass
+
+        send_button = self._wait_for_send_button(composer.rectangle())
+        try:
+            invoke = getattr(send_button, "invoke", None)
+            if callable(invoke):
+                invoke()
+                if self._wait_for_main_text_change(before, timeout=2.0):
+                    return
+            self._click_control_by_message(send_button)
+            if self._wait_for_main_text_change(before, timeout=2.0):
+                return
+        except Exception:
+            pass
+
+        self._activate_control(send_button, label="send button")
+        self._wait_for_main_text_change(before, timeout=8.0)
 
     def _main_text_preview(self, limit: int = 20) -> list[str]:
         lines: list[str] = []
@@ -333,14 +425,26 @@ class CodexDesktopAutomation:
 
     def _projects_in_view(self) -> list[ProjectRef]:
         project_list = self._project_listbox()
+        viewport = self._sidebar_viewport_rect(project_list)
         projects: list[ProjectRef] = []
         for item in project_list.children():
             if item.element_info.control_type != "ListItem":
                 continue
-            projects.append(self._parse_project(item))
+            if not _rect_intersects(viewport, item.rectangle()):
+                continue
+            projects.append(self._parse_project(item, viewport))
         return projects
 
-    def _parse_project(self, item: Any) -> ProjectRef:
+    def _sidebar_viewport_rect(self, project_list: Any) -> Any:
+        try:
+            parent = project_list.parent()
+            if parent is not None:
+                return parent.rectangle()
+        except Exception:
+            pass
+        return project_list.rectangle()
+
+    def _parse_project(self, item: Any, viewport: Any | None) -> ProjectRef:
         button = None
         sessions: list[SessionRef] = []
         expanded = False
@@ -355,11 +459,19 @@ class CodexDesktopAutomation:
                 for session_item in child.children():
                     if session_item.element_info.control_type != "ListItem":
                         continue
+                    if viewport is not None and not _rect_intersects(viewport, session_item.rectangle()):
+                        continue
+                    session_button = None
+                    for session_child in session_item.children():
+                        if session_child.element_info.control_type == "Button" and session_child.is_visible():
+                            session_button = session_child
+                            break
                     sessions.append(
                         SessionRef(
                             title=session_item.window_text().strip(),
                             rect=_rect_to_list(session_item.rectangle()),
                             item=session_item,
+                            button=session_button,
                         )
                     )
 
@@ -372,6 +484,29 @@ class CodexDesktopAutomation:
             sessions=sessions,
         )
 
+    def _best_session_match(
+        self,
+        sessions: list[SessionRef],
+        target_title: str,
+        *,
+        exact: bool,
+    ) -> SessionRef | None:
+        if exact:
+            for session in sessions:
+                if _text_matches(session.title, target_title, exact=True):
+                    return session
+            return None
+
+        exact_matches = [session for session in sessions if _text_matches(session.title, target_title, exact=True)]
+        if exact_matches:
+            return exact_matches[0]
+
+        partial_matches = [session for session in sessions if _text_matches(session.title, target_title, exact=False)]
+        if partial_matches:
+            return partial_matches[0]
+
+        return None
+
     def _project_listbox(self) -> Any:
         lists = [
             element
@@ -379,19 +514,58 @@ class CodexDesktopAutomation:
             if element.is_visible() and element.rectangle().left < self.sidebar_right_edge
         ]
         root_lists = [element for element in lists if not element.window_text().strip()]
-        if not root_lists:
+        candidates = root_lists or lists
+        if not candidates:
             raise RuntimeError("Could not find the Codex sidebar project list.")
-        root_lists.sort(key=lambda element: (element.rectangle().top, element.rectangle().left))
-        return root_lists[0]
+        candidates.sort(
+            key=lambda element: (
+                -sum(1 for child in element.children() if child.element_info.control_type == "ListItem"),
+                element.rectangle().top,
+                element.rectangle().left,
+            )
+        )
+        return candidates[0]
+
+    def _wait_for_project_expanded(self, project_name: str, *, exact: bool, timeout: float = 2.5) -> ProjectRef | None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            refreshed = self._find_project(
+                project_name,
+                exact=exact,
+                max_scrolls=3,
+                reset_to_top=False,
+            )
+            if refreshed.expanded:
+                return refreshed
+            time.sleep(0.2)
+        return None
+
+    def _scroll_item_into_view(self, control: Any) -> bool:
+        try:
+            control.iface_scroll_item.ScrollIntoView()
+            time.sleep(self.scroll_delay)
+            return True
+        except Exception:
+            return False
 
     def _scroll_sidebar(self, wheel_dist: int) -> None:
         project_list = self._project_listbox()
+        try:
+            project_list.set_focus()
+            key = "{PGUP}" if wheel_dist > 0 else "{PGDN}"
+            count = max(1, abs(wheel_dist))
+            project_list.type_keys(key * count, pause=0.02, set_foreground=False)
+            time.sleep(self.scroll_delay)
+            return
+        except Exception:
+            pass
+
         rect = project_list.rectangle()
         center = (
             int((rect.left + rect.right) / 2),
             int((rect.top + rect.bottom) / 2),
         )
-        mouse.scroll(coords=center, wheel_dist=wheel_dist)
+        self._post_mouse_wheel(center[0], center[1], wheel_dist)
         time.sleep(self.scroll_delay)
 
     def _reset_sidebar_to_top(self) -> None:
@@ -410,6 +584,12 @@ class CodexDesktopAutomation:
         project = self._find_project_in_current_view(project_name, exact=exact)
         if project is not None:
             return project
+
+        project_anywhere = self._find_project_anywhere(project_name, exact=exact)
+        if project_anywhere is not None and self._scroll_item_into_view(project_anywhere.item):
+            project = self._find_project_in_current_view(project_name, exact=exact)
+            if project is not None:
+                return project
 
         if reset_to_top:
             self._reset_sidebar_to_top()
@@ -432,6 +612,46 @@ class CodexDesktopAutomation:
         for project in self._projects_in_view():
             if _text_matches(project.title, project_name, exact=exact):
                 return project
+        return None
+
+    def _find_project_anywhere(self, project_name: str, *, exact: bool) -> ProjectRef | None:
+        project_list = self._project_listbox()
+        for item in project_list.children():
+            if item.element_info.control_type != "ListItem":
+                continue
+            project = self._parse_project(item, viewport=None)
+            if _text_matches(project.title, project_name, exact=exact):
+                return project
+        return None
+
+    def _find_session_anywhere(
+        self,
+        project: ProjectRef,
+        session_name: str,
+        *,
+        exact: bool,
+    ) -> SessionRef | None:
+        for child in project.item.children():
+            if child.element_info.control_type != "List":
+                continue
+            sessions: list[SessionRef] = []
+            for session_item in child.children():
+                if session_item.element_info.control_type != "ListItem":
+                    continue
+                session_button = None
+                for session_child in session_item.children():
+                    if session_child.element_info.control_type == "Button" and session_child.is_visible():
+                        session_button = session_child
+                        break
+                sessions.append(
+                    SessionRef(
+                        title=session_item.window_text().strip(),
+                        rect=_rect_to_list(session_item.rectangle()),
+                        item=session_item,
+                        button=session_button,
+                    )
+                )
+            return self._best_session_match(sessions, session_name, exact=exact)
         return None
 
     def _composer(self) -> Any:
@@ -480,6 +700,7 @@ class CodexDesktopAutomation:
 
         candidates.sort(
             key=lambda element: (
+                1 if _looks_like_send_button(element) else 0,
                 element.rectangle().right,
                 element.rectangle().bottom,
             ),
@@ -487,14 +708,98 @@ class CodexDesktopAutomation:
         )
         return candidates[0]
 
+    def _wait_for_send_button(self, composer_rect: Any, timeout: float = 1.5) -> Any:
+        deadline = time.time() + timeout
+        fallback = None
+        while time.time() < deadline:
+            button = self._composer_send_button(composer_rect)
+            if _looks_like_send_button(button):
+                return button
+            fallback = button
+            time.sleep(0.1)
+
+        if fallback is not None:
+            return fallback
+        return self._composer_send_button(composer_rect)
+
+    def _window_client_point(self, screen_x: int, screen_y: int) -> tuple[int, int]:
+        left, top, _, _ = win32gui.GetWindowRect(self.window.handle)
+        return int(screen_x - left), int(screen_y - top)
+
+    def _make_lparam(self, x: int, y: int) -> int:
+        return win32api.MAKELONG(int(x), int(y))
+
+    def _click_control_by_message(self, control: Any) -> None:
+        rect = control.rectangle()
+        center_x = int((rect.left + rect.right) / 2)
+        center_y = int((rect.top + rect.bottom) / 2)
+        client_x, client_y = self._window_client_point(center_x, center_y)
+        lparam = self._make_lparam(client_x, client_y)
+        win32gui.SendMessage(self.window.handle, win32con.WM_MOUSEMOVE, 0, lparam)
+        win32gui.SendMessage(self.window.handle, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+        win32gui.SendMessage(self.window.handle, win32con.WM_LBUTTONUP, 0, lparam)
+        time.sleep(self.click_delay)
+
+    def _post_mouse_wheel(self, screen_x: int, screen_y: int, wheel_dist: int) -> None:
+        if wheel_dist == 0:
+            return
+
+        wparam = ((wheel_dist * win32con.WHEEL_DELTA) & 0xFFFF) << 16
+        lparam = self._make_lparam(screen_x, screen_y)
+        win32gui.SendMessage(self.window.handle, win32con.WM_MOUSEWHEEL, wparam, lparam)
+
+    def _post_key(self, vk: int) -> None:
+        win32gui.PostMessage(self.window.handle, win32con.WM_KEYDOWN, vk, 0)
+        win32gui.PostMessage(self.window.handle, win32con.WM_KEYUP, vk, 0)
+
+    def _post_text(self, value: str) -> None:
+        utf16 = value.encode("utf-16-le")
+        for index in range(0, len(utf16), 2):
+            code_unit = int.from_bytes(utf16[index : index + 2], "little")
+            win32gui.PostMessage(self.window.handle, win32con.WM_CHAR, code_unit, 0)
+
+    def _get_clipboard_text(self) -> str | None:
+        win32clipboard.OpenClipboard()
+        try:
+            if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+            return None
+        finally:
+            win32clipboard.CloseClipboard()
+
     def _set_clipboard_text(self, value: str) -> None:
-        win32clipboard = clipboard.win32clipboard
         win32clipboard.OpenClipboard()
         try:
             win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardText(value)
+            win32clipboard.SetClipboardText(value, win32clipboard.CF_UNICODETEXT)
         finally:
             win32clipboard.CloseClipboard()
+
+    def _set_composer_text_via_messages(self, composer: Any, value: str) -> None:
+        original_clipboard = None
+        restore_clipboard = False
+        try:
+            original_clipboard = self._get_clipboard_text()
+            restore_clipboard = original_clipboard is not None
+        except Exception:
+            original_clipboard = None
+
+        composer.set_focus()
+        time.sleep(self.click_delay / 2)
+        composer.type_keys("^a{BACKSPACE}", pause=0.02, set_foreground=False)
+        time.sleep(self.click_delay / 2)
+
+        if value:
+            self._set_clipboard_text(value)
+            composer.type_keys("^v", pause=0.02, set_foreground=False)
+
+        time.sleep(self.click_delay / 2)
+
+        if restore_clipboard:
+            try:
+                self._set_clipboard_text(original_clipboard)
+            except Exception:
+                pass
 
     def _iter_descendants(self, control_type: str | None = None) -> Iterable[Any]:
         for element_info in self.window.element_info.descendants(control_type=control_type):

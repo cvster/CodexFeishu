@@ -843,7 +843,11 @@ export function useChatSessionState({
   useEffect(() => {
     // Keep the rendered chat in sync with sessionMessages whenever the actual content changes.
     // This allows Codex replies that grow in-place to repaint even if the message count is unchanged.
-    if (isLoading) {
+    if (
+      isLoading &&
+      chatMessages.length > 0 &&
+      convertedMessages.length <= chatMessages.length
+    ) {
       return;
     }
 
@@ -853,7 +857,7 @@ export function useChatSessionState({
 
     setChatMessages(convertedMessages);
     prevConvertedMessagesSignatureRef.current = convertedMessagesSignature;
-  }, [convertedMessages, convertedMessagesSignature, isLoading, setChatMessages]);
+  }, [chatMessages.length, convertedMessages, convertedMessagesSignature, isLoading, setChatMessages]);
 
   useEffect(() => {
     if (selectedProject && chatMessages.length > 0) {
