@@ -1,13 +1,15 @@
-import { Check, ChevronDown, ChevronRight, Edit3, Folder, FolderOpen, Star, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Clock, Edit3, Folder, FolderOpen, Star, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
-import { Button } from '../../../../shared/view/ui';
+import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import { IS_CODEX_ONLY_HARDENED } from '../../../../constants/config';
+import { formatTimeAgo } from '../../../../utils/dateUtils';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
 import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
-import { getTaskIndicatorStatus } from '../../utils/utils';
+import { createSessionViewModel, getTaskIndicatorStatus } from '../../utils/utils';
 import TaskIndicator from './TaskIndicator';
 import SidebarProjectSessions from './SidebarProjectSessions';
+import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 
 type SidebarProjectItemProps = {
   project: Project;
@@ -102,6 +104,11 @@ export default function SidebarProjectItem({
   const sessionCountDisplay = getSessionCountDisplay(sessions, hasMoreSessions);
   const sessionCountLabel = `${sessionCountDisplay} session${sessions.length === 1 ? '' : 's'}`;
   const taskStatus = getTaskIndicatorStatus(project, mcpServerStatus);
+  const hasSingleDirectSession = sessions.length === 1 && !hasMoreSessions;
+  const singleSession = hasSingleDirectSession ? sessions[0] : null;
+  const singleSessionView = singleSession ? createSessionViewModel(singleSession, currentTime, t) : null;
+  const isSingleSessionSelected = Boolean(singleSession && selectedSession?.id === singleSession.id);
+  const isSingleSessionProcessing = Boolean(singleSession && processingSessions.has(singleSession.id));
 
   const toggleProject = () => onToggleProject(project.name);
   const toggleStarProject = () => onToggleStarProject(project.name);
@@ -110,7 +117,12 @@ export default function SidebarProjectItem({
     onSaveProjectName(project.name);
   };
 
-  const selectAndToggleProject = () => {
+  const handleProjectClick = () => {
+    if (hasSingleDirectSession) {
+      onSessionSelect(sessions[0], project.name);
+      return;
+    }
+
     if (selectedProject?.name !== project.name) {
       onProjectSelect(project);
     }
@@ -130,7 +142,7 @@ export default function SidebarProjectItem({
                 !isSelected &&
                 'bg-yellow-50/50 dark:bg-yellow-900/5 border-yellow-200/30 dark:border-yellow-800/30',
             )}
-            onClick={toggleProject}
+            onClick={handleProjectClick}
           >
             <div className="flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -185,7 +197,25 @@ export default function SidebarProjectItem({
                           />
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground">{sessionCountLabel}</p>
+                      {singleSession && singleSessionView ? (
+                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <SessionProviderLogo provider={singleSession.__provider} className="h-3 w-3 flex-shrink-0" />
+                          <span className="min-w-0 flex-1 truncate">{singleSessionView.sessionName}</span>
+                          {isSingleSessionProcessing ? (
+                            <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
+                              {t('status.thinking')}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">{sessionCountLabel}</p>
+                      )}
+                      {singleSession && singleSessionView ? (
+                        <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                          <Clock className="h-2.5 w-2.5" />
+                          <span>{formatTimeAgo(singleSessionView.sessionTime, currentTime, t)}</span>
+                        </div>
+                      ) : null}
                     </>
                   )}
                 </div>
@@ -262,13 +292,15 @@ export default function SidebarProjectItem({
                       </>
                     )}
 
-                    <div className="flex h-6 w-6 items-center justify-center rounded-md bg-muted/30">
-                      {isExpanded ? (
-                        <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                      ) : (
-                        <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                      )}
-                    </div>
+                    {!hasSingleDirectSession ? (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-md bg-muted/30">
+                        {isExpanded ? (
+                          <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                        )}
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>
@@ -285,10 +317,12 @@ export default function SidebarProjectItem({
               !isSelected &&
               'bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-100/50 dark:hover:bg-yellow-900/20',
           )}
-          onClick={selectAndToggleProject}
+          onClick={handleProjectClick}
         >
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            {isExpanded ? (
+            {hasSingleDirectSession ? (
+              <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+            ) : isExpanded ? (
               <FolderOpen className="h-4 w-4 flex-shrink-0 text-primary" />
             ) : (
               <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
@@ -321,7 +355,34 @@ export default function SidebarProjectItem({
                   <div className="truncate text-sm font-semibold text-foreground" title={project.displayName}>
                     {project.displayName}
                   </div>
-                  <div className="text-xs text-muted-foreground">{sessionCountDisplay}</div>
+                  {singleSession && singleSessionView ? (
+                    <>
+                      <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                        <SessionProviderLogo provider={singleSession.__provider} className="h-3 w-3 flex-shrink-0" />
+                        <span className="truncate">{singleSessionView.sessionName}</span>
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                        <Clock className="h-2.5 w-2.5" />
+                        <span>{formatTimeAgo(singleSessionView.sessionTime, currentTime, t)}</span>
+                        {isSingleSessionProcessing ? (
+                          <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
+                            {t('status.thinking')}
+                          </Badge>
+                        ) : isSingleSessionSelected ? (
+                          <Badge variant="secondary" className="px-1 py-0 text-[10px] text-muted-foreground">
+                            {t('common:status.completed')}
+                          </Badge>
+                        ) : null}
+                        {singleSessionView.messageCount > 0 ? (
+                          <Badge variant="secondary" className="ml-auto px-1 py-0 text-xs">
+                            {singleSessionView.messageCount}
+                          </Badge>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">{sessionCountDisplay}</div>
+                  )}
                 </div>
               )}
             </div>
@@ -395,11 +456,13 @@ export default function SidebarProjectItem({
                     </div>
                   </>
                 )}
-                {isExpanded ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-                )}
+                {!hasSingleDirectSession ? (
+                  isExpanded ? (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+                  )
+                ) : null}
               </>
             )}
           </div>

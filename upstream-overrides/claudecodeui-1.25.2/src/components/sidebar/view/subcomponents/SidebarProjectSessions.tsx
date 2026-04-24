@@ -79,6 +79,11 @@ export default function SidebarProjectSessions({
 
   const hasSessions = sessions.length > 0;
   const hasMoreSessions = project.sessionMeta?.hasMore === true;
+  const hasSingleDirectSession = sessions.length === 1 && !hasMoreSessions;
+
+  if (hasSingleDirectSession) {
+    return null;
+  }
 
   return (
     <div className="ml-3 space-y-1 border-l border-border pl-3">
