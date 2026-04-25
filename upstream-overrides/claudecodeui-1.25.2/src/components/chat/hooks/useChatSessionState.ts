@@ -175,6 +175,22 @@ function buildChatMessagesSignature(messages: ChatMessage[]): string {
 const normalizeUserMessageContent = (value: unknown) =>
   typeof value === 'string' ? value.replace(/\r\n/g, '\n').trim() : '';
 
+const getUserMessageMatchCandidates = (value: unknown): string[] => {
+  const normalized = normalizeUserMessageContent(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const candidates = new Set([normalized]);
+  const requestMatch = normalized.match(/##\s*My request for Codex:\s*([\s\S]*)$/i);
+  const extractedRequest = normalizeUserMessageContent(requestMatch?.[1]);
+  if (extractedRequest) {
+    candidates.add(extractedRequest);
+  }
+
+  return [...candidates];
+};
+
 const getTimestampMs = (value: unknown) => {
   if (value instanceof Date) {
     return value.getTime();
@@ -197,14 +213,16 @@ const matchesPendingUserMessage = (
     return false;
   }
 
-  const displayContent = normalizeUserMessageContent(pendingMessage.displayContent);
-  const sentContent = normalizeUserMessageContent(pendingMessage.sentContent);
-  if (!displayContent && !sentContent) {
+  const pendingCandidates = [
+    ...getUserMessageMatchCandidates(pendingMessage.displayContent),
+    ...getUserMessageMatchCandidates(pendingMessage.sentContent),
+  ];
+  if (pendingCandidates.length === 0) {
     return false;
   }
 
-  const content = normalizeUserMessageContent(message.content);
-  if (!content || (content !== displayContent && content !== sentContent)) {
+  const messageCandidates = getUserMessageMatchCandidates(message.content);
+  if (!messageCandidates.some((candidate) => pendingCandidates.includes(candidate))) {
     return false;
   }
 
@@ -226,9 +244,11 @@ const hasSyncedPendingUserMessage = (
     return false;
   }
 
-  const displayContent = normalizeUserMessageContent(pendingMessage.displayContent);
-  const sentContent = normalizeUserMessageContent(pendingMessage.sentContent);
-  if (!displayContent && !sentContent) {
+  const pendingCandidates = [
+    ...getUserMessageMatchCandidates(pendingMessage.displayContent),
+    ...getUserMessageMatchCandidates(pendingMessage.sentContent),
+  ];
+  if (pendingCandidates.length === 0) {
     return false;
   }
 
@@ -243,9 +263,11 @@ const findLatestMatchingPendingUserMessageIndex = (
     return -1;
   }
 
-  const displayContent = normalizeUserMessageContent(pendingMessage.displayContent);
-  const sentContent = normalizeUserMessageContent(pendingMessage.sentContent);
-  if (!displayContent && !sentContent) {
+  const pendingCandidates = [
+    ...getUserMessageMatchCandidates(pendingMessage.displayContent),
+    ...getUserMessageMatchCandidates(pendingMessage.sentContent),
+  ];
+  if (pendingCandidates.length === 0) {
     return -1;
   }
 
