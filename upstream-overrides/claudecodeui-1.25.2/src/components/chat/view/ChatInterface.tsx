@@ -8,6 +8,7 @@ import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
+import { clearPendingUserMessage } from '../utils/chatStorage';
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 
@@ -107,6 +108,7 @@ function ChatInterface({
     loadAllJustFinished,
     showLoadAllOverlay,
     isRefreshingLatest,
+    pendingUserMessage,
     setPendingUserMessage,
     setClaudeStatus,
     createDiff,
@@ -231,6 +233,40 @@ function ChatInterface({
     onFileOpen(filePath, diffInfo);
   }, [isInputFocused, onFileOpen, textareaRef]);
 
+  const handleDeletePendingMessage = useCallback(() => {
+    if (!selectedProject || !pendingUserMessage) {
+      return;
+    }
+
+    clearPendingUserMessage(
+      selectedProject.name,
+      pendingUserMessage.sessionId,
+      pendingUserMessage.provider,
+    );
+    setPendingUserMessage(null);
+
+    setChatMessages((previousMessages) => {
+      let indexToRemove = -1;
+      for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+        const message = previousMessages[index];
+        if (
+          message.type === 'user' &&
+          message.__deliveryStatus === 'sending' &&
+          String(message.content || '') === pendingUserMessage.displayContent
+        ) {
+          indexToRemove = index;
+          break;
+        }
+      }
+
+      if (indexToRemove < 0) {
+        return previousMessages;
+      }
+
+      return previousMessages.filter((_, index) => index !== indexToRemove);
+    });
+  }, [pendingUserMessage, selectedProject, setChatMessages, setPendingUserMessage]);
+
   // On WebSocket reconnect, re-fetch the current session's messages from JSONL so missed
   // streaming events (e.g. from long tool calls while iOS had the tab backgrounded) are shown.
   // Also reset isLoading — if the server restarted or the session died mid-stream, the client
@@ -349,6 +385,7 @@ function ChatInterface({
           onShowAllTasks={onShowAllTasks}
           setInput={setInput}
           onResendMessage={handleResendMessage}
+          onDeletePendingMessage={handleDeletePendingMessage}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
@@ -383,6 +420,7 @@ function ChatInterface({
           handleGrantToolPermission={handleGrantToolPermission}
           isLoading={isLoading}
           isRefreshingLatest={isRefreshingLatest}
+          isPendingUserMessageSending={pendingUserMessage?.status === 'sending'}
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}

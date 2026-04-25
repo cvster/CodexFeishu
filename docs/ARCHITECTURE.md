@@ -89,6 +89,17 @@ This layer provides:
 This is where the real work happens.  
 The phone is not running Codex directly. It is controlling the Codex sessions and projects that already exist on the PC.
 
+## Pending messages on mobile
+
+When the phone sends a message to desktop Codex, the UI first shows a local pending user message. After the desktop Codex session syncs the same user message back, the UI marks it as sent.
+
+The current implementation intentionally keeps this boundary lightweight:
+
+- each session persistently tracks only the latest pending message
+- the composer still allows another message while the latest one is pending
+- the `删除` button on the latest pending message only removes the local pending bubble and local pending record
+- that button does not cancel a message that has already entered the desktop automation queue
+
 ## Why first-time device approval matters
 
 This is one of the most valuable security boundaries in the whole project.

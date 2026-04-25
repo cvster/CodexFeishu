@@ -25,6 +25,7 @@ type MessageComponentProps = {
   prevMessage: ChatMessage | null;
   isLatestUserMessage?: boolean;
   onResendMessage?: (content: string) => void;
+  onDeletePendingMessage?: () => void;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
@@ -45,7 +46,7 @@ type InteractiveOption = {
 type PermissionGrantState = 'idle' | 'granted' | 'error';
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = false, onResendMessage, createDiff, onFileOpen, onShowSettings, onGrantToolPermission, autoExpandTools, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = false, onResendMessage, onDeletePendingMessage, createDiff, onFileOpen, onShowSettings, onGrantToolPermission, autoExpandTools, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -74,6 +75,11 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
   );
   const shouldShowUserCopyControl = message.type === 'user' && userCopyContent.trim().length > 0;
   const shouldShowUserResendControl = shouldShowUserCopyControl && isLatestUserMessage && typeof onResendMessage === 'function';
+  const shouldShowPendingDeleteControl =
+    shouldShowUserCopyControl &&
+    isLatestUserMessage &&
+    deliveryStatus === 'sending' &&
+    typeof onDeletePendingMessage === 'function';
   const shouldShowAssistantCopyControl = message.type === 'assistant' &&
     assistantCopyContent.trim().length > 0 &&
     !isCommandOrFileEditToolResponse;
@@ -190,6 +196,34 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
               )}
               {shouldShowUserCopyControl && (
                 <MessageCopyControl content={userCopyContent} messageType="user" />
+              )}
+              {shouldShowPendingDeleteControl && (
+                <button
+                  type="button"
+                  onClick={() => onDeletePendingMessage?.()}
+                  title="删除"
+                  aria-label="删除"
+                  className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-blue-100 transition-colors hover:text-white"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4h8v2" />
+                    <path d="M19 6l-1 14H6L5 6" />
+                    <path d="M10 11v5" />
+                    <path d="M14 11v5" />
+                  </svg>
+                  <span className="text-[10px] font-semibold uppercase tracking-wide">
+                    删除
+                  </span>
+                </button>
               )}
               <span>{formattedTime}</span>
             </div>

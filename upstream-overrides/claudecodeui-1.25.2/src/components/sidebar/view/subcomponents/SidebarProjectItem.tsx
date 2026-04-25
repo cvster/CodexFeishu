@@ -123,10 +123,6 @@ export default function SidebarProjectItem({
       return;
     }
 
-    if (selectedProject?.name !== project.name) {
-      onProjectSelect(project);
-    }
-
     toggleProject();
   };
 

@@ -520,7 +520,7 @@ export function useChatComposerState({
     ) => {
       event.preventDefault();
       const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || isLoading || !selectedProject) {
+      if (!currentInput.trim() || !selectedProject) {
         return;
       }
 
@@ -562,6 +562,10 @@ export function useChatComposerState({
         (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null) ||
         latestProjectCodexSessionId;
       const shouldBridgeMobileCodexSubmit = provider === 'codex' && isLikelyMobileBrowser();
+
+      if (isLoading && !shouldBridgeMobileCodexSubmit) {
+        return;
+      }
 
       let uploadedImages: unknown[] = [];
       if (!IS_CODEX_ONLY_HARDENED && attachedImages.length > 0) {
@@ -625,7 +629,9 @@ export function useChatComposerState({
         });
       }
 
-      setIsLoading(true);
+      if (!shouldBridgeMobileCodexSubmit) {
+        setIsLoading(true);
+      }
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);

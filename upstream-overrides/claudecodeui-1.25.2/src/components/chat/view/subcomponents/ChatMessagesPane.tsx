@@ -32,6 +32,7 @@ interface ChatMessagesPaneProps {
   onShowAllTasks?: (() => void) | null;
   setInput: Dispatch<SetStateAction<string>>;
   onResendMessage?: (content: string) => void;
+  onDeletePendingMessage?: () => void;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -82,6 +83,7 @@ export default function ChatMessagesPane({
   onShowAllTasks,
   setInput,
   onResendMessage,
+  onDeletePendingMessage,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -342,6 +344,7 @@ export default function ChatMessagesPane({
                 prevMessage={prevMessage}
                 isLatestUserMessage={isLatestUserMessage}
                 onResendMessage={onResendMessage}
+                onDeletePendingMessage={onDeletePendingMessage}
                 createDiff={createDiff}
                 onFileOpen={onFileOpen}
                 onShowSettings={onShowSettings}

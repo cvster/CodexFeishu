@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import json
 import re
 import sys
@@ -10,6 +11,7 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from ctypes import wintypes
 
 try:
     import win32api
@@ -26,10 +28,95 @@ except ImportError as exc:  # pragma: no cover - exercised through the wrapper
 
 
 SIDEBAR_RIGHT_EDGE = 650
+DESKTOP_READOBJECTS = 0x0001
+DESKTOP_SWITCHDESKTOP = 0x0100
+ES_DISPLAY_REQUIRED = 0x00000002
+ES_SYSTEM_REQUIRED = 0x00000001
+INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_ABSOLUTE = 0x8000
+SPI_GETSCREENSAVERRUNNING = 114
+SM_CXSCREEN = 0
+SM_CYSCREEN = 1
+WM_CLOSE = 0x0010
+WM_SYSCOMMAND = 0x0112
+SC_MONITORPOWER = 0xF170
+MONITOR_ON = -1
 RELATIVE_TIME_SUFFIX_RE = re.compile(
     r"(?:\s*[·•\-–—|])?\s*\d+\s*(?:秒|分钟|小时|天|周|个月|月|年|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)\s*(?:前|ago)?$",
     re.IGNORECASE,
 )
+
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+user32.OpenInputDesktop.restype = wintypes.HANDLE
+user32.SwitchDesktop.argtypes = [wintypes.HANDLE]
+user32.SwitchDesktop.restype = wintypes.BOOL
+user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+user32.CloseDesktop.restype = wintypes.BOOL
+user32.SystemParametersInfoW.argtypes = [
+    wintypes.UINT,
+    wintypes.UINT,
+    wintypes.LPVOID,
+    wintypes.UINT,
+]
+user32.SystemParametersInfoW.restype = wintypes.BOOL
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.SetThreadExecutionState.argtypes = [wintypes.DWORD]
+kernel32.SetThreadExecutionState.restype = wintypes.DWORD
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
+class INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("union", INPUT_UNION),
+    ]
+
+
+user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+user32.SendInput.restype = wintypes.UINT
 
 
 def _configure_stdio() -> None:
@@ -79,6 +166,192 @@ def _decode_text_argument(value: str | None, encoded_value: str | None, label: s
             raise SystemExit(f"Invalid {label} base64 value: {exc}") from exc
 
     return value or ""
+
+
+def _is_screensaver_running() -> bool:
+    running = wintypes.BOOL()
+    success = user32.SystemParametersInfoW(
+        SPI_GETSCREENSAVERRUNNING,
+        0,
+        ctypes.byref(running),
+        0,
+    )
+    return bool(success and running.value)
+
+
+def _request_display_awake() -> None:
+    kernel32.SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)
+
+
+def _request_monitor_on() -> None:
+    try:
+        win32gui.PostMessage(
+            win32con.HWND_BROADCAST,
+            WM_SYSCOMMAND,
+            SC_MONITORPOWER,
+            MONITOR_ON,
+        )
+    except Exception:
+        pass
+
+
+def _send_input_events(events: list[INPUT]) -> bool:
+    if not events:
+        return True
+
+    array_type = INPUT * len(events)
+    sent = user32.SendInput(len(events), array_type(*events), ctypes.sizeof(INPUT))
+    return sent == len(events)
+
+
+def _mouse_event_input(dx: int, dy: int, flags: int) -> INPUT:
+    event = INPUT()
+    event.type = INPUT_MOUSE
+    event.union.mi = MOUSEINPUT(dx, dy, 0, flags, 0, None)
+    return event
+
+
+def _keyboard_event_input(vk: int, flags: int = 0) -> INPUT:
+    event = INPUT()
+    event.type = INPUT_KEYBOARD
+    event.union.ki = KEYBDINPUT(vk, 0, flags, 0, None)
+    return event
+
+
+def _screen_point_to_absolute(x: int, y: int) -> tuple[int, int]:
+    width = max(1, win32api.GetSystemMetrics(SM_CXSCREEN) - 1)
+    height = max(1, win32api.GetSystemMetrics(SM_CYSCREEN) - 1)
+    return int(x * 65535 / width), int(y * 65535 / height)
+
+
+def _input_desktop_is_switchable() -> bool:
+    desktop = user32.OpenInputDesktop(
+        0,
+        False,
+        DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP,
+    )
+    if not desktop:
+        return False
+
+    try:
+        return bool(user32.SwitchDesktop(desktop))
+    finally:
+        user32.CloseDesktop(desktop)
+
+
+def _send_wake_input() -> None:
+    _send_input_events(
+        [
+            _mouse_event_input(1, 0, MOUSEEVENTF_MOVE),
+            _mouse_event_input(-1, 0, MOUSEEVENTF_MOVE),
+            _keyboard_event_input(win32con.VK_SHIFT),
+            _keyboard_event_input(win32con.VK_SHIFT, KEYEVENTF_KEYUP),
+        ]
+    )
+
+    try:
+        win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 1, 0, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, -1, 0, 0, 0)
+    except Exception:
+        pass
+
+    try:
+        win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
+        win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
+    except Exception:
+        pass
+
+
+def _tap_key(vk: int) -> None:
+    _send_input_events(
+        [
+            _keyboard_event_input(vk),
+            _keyboard_event_input(vk, KEYEVENTF_KEYUP),
+        ]
+    )
+
+    try:
+        win32api.keybd_event(vk, 0, 0, 0)
+        win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+    except Exception:
+        pass
+
+
+def _close_screensaver_windows() -> None:
+    def visit(hwnd: int, _: Any) -> bool:
+        try:
+            class_name = win32gui.GetClassName(hwnd).casefold()
+            title = win32gui.GetWindowText(hwnd).casefold()
+        except Exception:
+            return True
+
+        haystack = f"{class_name} {title}"
+        if "screensaver" in haystack or "screen saver" in haystack:
+            try:
+                win32gui.PostMessage(hwnd, WM_CLOSE, 0, 0)
+            except Exception:
+                pass
+        return True
+
+    try:
+        win32gui.EnumWindows(visit, None)
+    except Exception:
+        pass
+
+
+def _send_wake_click() -> None:
+    try:
+        screen_width = win32api.GetSystemMetrics(0)
+        screen_height = win32api.GetSystemMetrics(1)
+        if screen_width > 0 and screen_height > 0:
+            center_x = int(screen_width / 2)
+            center_y = int(screen_height / 2)
+            absolute_x, absolute_y = _screen_point_to_absolute(center_x, center_y)
+            _send_input_events(
+                [
+                    _mouse_event_input(
+                        absolute_x,
+                        absolute_y,
+                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                    ),
+                    _mouse_event_input(0, 0, MOUSEEVENTF_LEFTDOWN),
+                    _mouse_event_input(0, 0, MOUSEEVENTF_LEFTUP),
+                ]
+            )
+            win32api.SetCursorPos((center_x, center_y))
+            time.sleep(0.05)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.05)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    except Exception:
+        pass
+
+
+def _dismiss_screensaver_or_wake(timeout: float = 12.0) -> None:
+    _request_monitor_on()
+    _request_display_awake()
+    _close_screensaver_windows()
+
+    if not _is_screensaver_running() and _input_desktop_is_switchable():
+        return
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        screensaver_running = _is_screensaver_running()
+        _request_monitor_on()
+        _close_screensaver_windows()
+        _send_wake_input()
+        if screensaver_running:
+            time.sleep(0.1)
+            _send_wake_click()
+            time.sleep(0.1)
+            _tap_key(win32con.VK_ESCAPE)
+            time.sleep(0.1)
+            _tap_key(win32con.VK_RETURN)
+        time.sleep(0.35)
+        _request_display_awake()
+        if not _is_screensaver_running() and _input_desktop_is_switchable():
+            return
 
 
 def _text_matches(candidate: str, target: str, exact: bool) -> bool:
@@ -161,7 +434,20 @@ class CodexDesktopAutomation:
         self.window_spec.wait("exists enabled visible ready", timeout=10)
         self.window = self.window_spec.wrapper_object()
 
+    def _ensure_interactive_desktop(self) -> None:
+        if not _input_desktop_is_switchable():
+            raise RuntimeError(
+                "Windows desktop is not currently interactive. Please dismiss the lock screen or screensaver and try again."
+            )
+
+        if _is_screensaver_running():
+            raise RuntimeError(
+                "Windows screensaver is active. Please return to the normal desktop before sending a message."
+            )
+
     def activate(self) -> None:
+        _dismiss_screensaver_or_wake()
+        self._ensure_interactive_desktop()
         try:
             win32gui.ShowWindow(self.window.handle, win32con.SW_RESTORE)
         except Exception:
@@ -171,10 +457,7 @@ class CodexDesktopAutomation:
     def _activate_control(self, control: Any, *, label: str) -> None:
         last_error: Exception | None = None
 
-        try:
-            self.activate()
-        except Exception:
-            pass
+        self.activate()
 
         for activator in (
             lambda item: getattr(item, "invoke")(),
@@ -334,6 +617,9 @@ class CodexDesktopAutomation:
         session_exact: bool,
         max_scrolls: int,
     ) -> dict[str, Any]:
+        _dismiss_screensaver_or_wake()
+        self._ensure_interactive_desktop()
+
         if session_name:
             selection = self.open_session(
                 project_name,
@@ -397,7 +683,10 @@ class CodexDesktopAutomation:
             pass
 
         self._activate_control(send_button, label="send button")
-        self._wait_for_main_text_change(before, timeout=8.0)
+        if self._wait_for_main_text_change(before, timeout=8.0):
+            return
+
+        raise RuntimeError("Codex did not show the submitted message after sending.")
 
     def _main_text_preview(self, limit: int = 20) -> list[str]:
         lines: list[str] = []

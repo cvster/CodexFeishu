@@ -44,6 +44,7 @@ interface ChatComposerProps {
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   isLoading: boolean;
   isRefreshingLatest: boolean;
+  isPendingUserMessageSending: boolean;
   provider: Provider | string;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
@@ -102,6 +103,7 @@ export default function ChatComposer({
   handleGrantToolPermission,
   isLoading,
   isRefreshingLatest,
+  isPendingUserMessageSending,
   provider,
   permissionMode,
   onModeSwitch,
@@ -173,9 +175,11 @@ export default function ChatComposer({
     : '';
   const inputLeftPaddingClass = IS_CODEX_ONLY_HARDENED ? 'pl-14' : 'pl-24';
   const isSessionBusy = isSessionProcessing || isLoading;
-  const isStatusBusy = isRefreshingLatest || isSessionBusy;
+  const isStatusBusy = isRefreshingLatest || isPendingUserMessageSending || isSessionBusy;
   const sessionStatusLabel = isRefreshingLatest
     ? t('common:buttons.refresh')
+    : isPendingUserMessageSending
+      ? t('deliveryStatus.sending', { defaultValue: '发送中' })
     : isSessionBusy
       ? t('thinking.title')
       : t('common:status.completed');
@@ -357,6 +361,21 @@ export default function ChatComposer({
                     d="M20 7v5h-5"
                   />
                 </svg>
+              ) : isPendingUserMessageSending ? (
+                <svg className="h-4 w-4 sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2.2}
+                    d="M5 12h11"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2.2}
+                    d="M13 8l4 4-4 4"
+                  />
+                </svg>
               ) : isSessionBusy ? (
                 <svg className="h-4 w-4 animate-pulse sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <circle cx="12" cy="12" r="4" />
@@ -408,7 +427,7 @@ export default function ChatComposer({
 
             <button
               type="submit"
-              disabled={!input.trim() || isLoading}
+              disabled={!input.trim() || (isLoading && !isPendingUserMessageSending)}
               onMouseDown={(event) => {
                 event.preventDefault();
                 onSubmit(event);
