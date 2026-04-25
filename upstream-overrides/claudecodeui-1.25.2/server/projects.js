@@ -1706,6 +1706,51 @@ async function findCodexStateDatabasePath() {
   return candidates[0]?.fullPath || null;
 }
 
+async function loadCodexDesktopWorkspaceState() {
+  const visibleWorkspaceRoots = new Set();
+  const projectlessSessionIds = new Set();
+  const globalStatePath = path.join(os.homedir(), '.codex', '.codex-global-state.json');
+
+  const addWorkspaceRoot = (workspaceRoot) => {
+    const normalizedWorkspaceRoot = normalizeComparablePath(workspaceRoot);
+    if (normalizedWorkspaceRoot) {
+      visibleWorkspaceRoots.add(normalizedWorkspaceRoot);
+    }
+  };
+
+  try {
+    const rawState = await fs.readFile(globalStatePath, 'utf8');
+    const state = JSON.parse(rawState);
+
+    for (const key of ['electron-saved-workspace-roots', 'project-order', 'active-workspace-roots']) {
+      const roots = state?.[key];
+      if (!Array.isArray(roots)) {
+        continue;
+      }
+
+      roots.forEach(addWorkspaceRoot);
+    }
+
+    const projectlessThreads = state?.['projectless-thread-ids'];
+    if (Array.isArray(projectlessThreads)) {
+      projectlessThreads.forEach((sessionId) => {
+        if (typeof sessionId === 'string' && sessionId.trim()) {
+          projectlessSessionIds.add(sessionId.trim());
+        }
+      });
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('Could not load Codex desktop workspace state:', error.message);
+    }
+  }
+
+  return {
+    visibleWorkspaceRoots,
+    projectlessSessionIds,
+  };
+}
+
 async function loadCodexDesktopThreadMetadata() {
   const titlesBySessionId = new Map();
   const titlesByRolloutPath = new Map();
@@ -1713,6 +1758,10 @@ async function loadCodexDesktopThreadMetadata() {
   const archivedRolloutPaths = new Set();
   const activeSessionIds = new Set();
   const activeRolloutPaths = new Set();
+  const {
+    visibleWorkspaceRoots,
+    projectlessSessionIds,
+  } = await loadCodexDesktopWorkspaceState();
   const stateDbPath = await findCodexStateDatabasePath();
 
   if (!stateDbPath) {
@@ -1724,6 +1773,8 @@ async function loadCodexDesktopThreadMetadata() {
       archivedRolloutPaths,
       activeSessionIds,
       activeRolloutPaths,
+      visibleWorkspaceRoots,
+      projectlessSessionIds,
     };
   }
 
@@ -1791,6 +1842,8 @@ async function loadCodexDesktopThreadMetadata() {
     archivedRolloutPaths,
     activeSessionIds,
     activeRolloutPaths,
+    visibleWorkspaceRoots,
+    projectlessSessionIds,
   };
 }
 
@@ -1813,8 +1866,11 @@ async function buildCodexSessionsIndex() {
     archivedRolloutPaths,
     activeSessionIds,
     activeRolloutPaths,
+    visibleWorkspaceRoots,
+    projectlessSessionIds,
   } = await loadCodexDesktopThreadMetadata();
   const threadNames = await loadCodexThreadNames();
+  const shouldFilterWorkspaceRoots = hasDesktopState && visibleWorkspaceRoots.size > 0;
 
   for (const filePath of jsonlFiles) {
     try {
@@ -1842,6 +1898,14 @@ async function buildCodexSessionsIndex() {
 
       const normalizedProjectPath = normalizeComparablePath(sessionData.cwd);
       if (!normalizedProjectPath) {
+        continue;
+      }
+
+      if (
+        shouldFilterWorkspaceRoots &&
+        !visibleWorkspaceRoots.has(normalizedProjectPath) &&
+        !projectlessSessionIds.has(sessionData.id)
+      ) {
         continue;
       }
 
@@ -2224,9 +2288,26 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
 
     // Apply pagination if limit is specified
     if (limit !== null) {
-      const startIndex = Math.max(0, total - offset - limit);
+      let startIndex = Math.max(0, total - offset - limit);
       const endIndex = total - offset;
-      const paginatedMessages = messages.slice(startIndex, endIndex);
+      let paginatedMessages = messages.slice(startIndex, endIndex);
+
+      // The mobile UI uses the latest synced user message to mark a pending
+      // desktop-send as delivered. Codex can append many assistant/tool events
+      // after that user message, so make the latest page include at least one
+      // user-visible input even when it means returning slightly more than limit.
+      if (offset === 0 && !paginatedMessages.some((message) => message.type === 'user')) {
+        let userMessageIndex = startIndex - 1;
+        while (userMessageIndex >= 0) {
+          if (messages[userMessageIndex]?.type === 'user') {
+            startIndex = userMessageIndex;
+            paginatedMessages = messages.slice(startIndex, endIndex);
+            break;
+          }
+          userMessageIndex -= 1;
+        }
+      }
+
       const hasMore = startIndex > 0;
 
       return {

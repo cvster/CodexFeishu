@@ -215,7 +215,7 @@ const matchesPendingUserMessage = (
   }
 
   const delta = messageTimestamp - pendingTimestamp;
-  return delta >= -15_000 && delta <= 10 * 60 * 1000;
+  return delta >= -15_000;
 };
 
 const hasSyncedPendingUserMessage = (
@@ -609,6 +609,16 @@ export function useChatSessionState({
           latestMessages,
         );
         const total = Number(data.total || mergedMessages.length);
+        const convertedMergedMessages = convertSessionMessages(mergedMessages);
+        const nextPendingUserMessage =
+          pendingUserMessage && hasSyncedPendingUserMessage(convertedMergedMessages, pendingUserMessage)
+            ? markPendingUserMessageSent(
+                selectedProject.name,
+                selectedSession.id,
+                sessionProvider,
+              )
+            : pendingUserMessage;
+        const renderedMessages = applyPendingUserMessage(convertedMergedMessages, nextPendingUserMessage);
 
         if (preserveScroll && container) {
           pendingScrollRestoreRef.current = {
@@ -619,6 +629,11 @@ export function useChatSessionState({
         }
 
         setSessionMessages(mergedMessages);
+        if (nextPendingUserMessage !== pendingUserMessage) {
+          setPendingUserMessage(nextPendingUserMessage);
+        }
+        setChatMessages(renderedMessages);
+        prevConvertedMessagesSignatureRef.current = buildChatMessagesSignature(renderedMessages);
         setTotalMessages(total);
         setHasMoreMessages(mergedMessages.length < total);
         messagesOffsetRef.current += addedCount;
@@ -645,7 +660,7 @@ export function useChatSessionState({
         setIsRefreshingLatest(false);
       }
     },
-    [loadCursorSessionMessages, selectedProject, selectedSession, sendMessage],
+    [loadCursorSessionMessages, pendingUserMessage, selectedProject, selectedSession, sendMessage, setChatMessages],
   );
 
   const handleScroll = useCallback(async () => {

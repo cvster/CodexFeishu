@@ -1,16 +1,11 @@
-import { FolderPlus, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
+import { FolderPlus, Plus, RefreshCw, PanelLeftClose } from 'lucide-react';
 import type { TFunction } from 'i18next';
-import { Button, Input } from '../../../../shared/view/ui';
+import { Button } from '../../../../shared/view/ui';
 import { IS_CODEX_ONLY_HARDENED, IS_PLATFORM } from '../../../../constants/config';
 
 type SidebarHeaderProps = {
   isPWA: boolean;
   isMobile: boolean;
-  isLoading: boolean;
-  projectsCount: number;
-  searchFilter: string;
-  onSearchFilterChange: (value: string) => void;
-  onClearSearchFilter: () => void;
   onRefresh: () => void;
   isRefreshing: boolean;
   onCreateProject: () => void;
@@ -21,11 +16,6 @@ type SidebarHeaderProps = {
 export default function SidebarHeader({
   isPWA,
   isMobile,
-  isLoading,
-  projectsCount,
-  searchFilter,
-  onSearchFilterChange,
-  onClearSearchFilter,
   onRefresh,
   isRefreshing,
   onCreateProject,
@@ -98,31 +88,6 @@ export default function SidebarHeader({
             </Button>
           </div>
         </div>
-
-        {/* Conversation search */}
-        {projectsCount > 0 && !isLoading && (
-          <div className="mt-2.5">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
-              <Input
-                type="text"
-                placeholder={t('search.conversationsPlaceholder')}
-                value={searchFilter}
-                onChange={(event) => onSearchFilterChange(event.target.value)}
-                className="nav-search-input h-9 rounded-xl border-0 pl-9 pr-8 text-sm transition-all duration-200 placeholder:text-muted-foreground/40 focus-visible:ring-0 focus-visible:ring-offset-0"
-              />
-              {searchFilter && (
-                <button
-                  onClick={onClearSearchFilter}
-                  aria-label={t('tooltips.clearSearch')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-0.5 hover:bg-accent"
-                >
-                  <X className="h-3 w-3 text-muted-foreground" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Desktop divider */}
@@ -164,31 +129,6 @@ export default function SidebarHeader({
             )}
           </div>
         </div>
-
-        {/* Mobile conversation search */}
-        {projectsCount > 0 && !isLoading && (
-          <div className="mt-2.5">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />
-              <Input
-                type="text"
-                placeholder={t('search.conversationsPlaceholder')}
-                value={searchFilter}
-                onChange={(event) => onSearchFilterChange(event.target.value)}
-                className="nav-search-input h-10 rounded-xl border-0 pl-10 pr-9 text-sm transition-all duration-200 placeholder:text-muted-foreground/40 focus-visible:ring-0 focus-visible:ring-offset-0"
-              />
-              {searchFilter && (
-                <button
-                  onClick={onClearSearchFilter}
-                  aria-label={t('tooltips.clearSearch')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 hover:bg-accent"
-                >
-                  <X className="h-3.5 w-3.5 text-muted-foreground" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Mobile divider */}

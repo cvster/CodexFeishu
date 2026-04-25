@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
 import { useVersionCheck } from '../../../hooks/useVersionCheck';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
@@ -61,13 +60,6 @@ function Sidebar({
     isRefreshing,
     editingSession,
     editingSessionName,
-    searchFilter,
-    searchMode,
-    setSearchMode,
-    conversationResults,
-    isSearching,
-    searchProgress,
-    clearConversationResults,
     deletingProjects,
     deleteConfirmation,
     sessionDeleteConfirmation,
@@ -95,7 +87,6 @@ function Sidebar({
     setEditingName,
     setEditingSession,
     setEditingSessionName,
-    setSearchFilter,
     setDeleteConfirmation,
     setSessionDeleteConfirmation,
     setShowVersionModal,
@@ -224,43 +215,6 @@ function Sidebar({
           <SidebarContent
             isPWA={isPWA}
             isMobile={isMobile}
-            isLoading={isLoading}
-            projects={projects}
-            searchFilter={searchFilter}
-            onSearchFilterChange={setSearchFilter}
-            onClearSearchFilter={() => setSearchFilter('')}
-            searchMode={searchMode}
-            onSearchModeChange={(mode: 'projects' | 'conversations') => {
-              setSearchMode(mode);
-              if (mode === 'projects') clearConversationResults();
-            }}
-            conversationResults={conversationResults}
-            isSearching={isSearching}
-            searchProgress={searchProgress}
-            onConversationResultClick={(projectName: string, sessionId: string, provider: string, messageTimestamp?: string | null, messageSnippet?: string | null) => {
-              const resolvedProvider = (provider || 'claude') as SessionProvider;
-              const safeProvider = (IS_CODEX_ONLY_HARDENED ? 'codex' : resolvedProvider) as SessionProvider;
-              const project = projects.find(p => p.name === projectName);
-              const searchTarget = { __searchTargetTimestamp: messageTimestamp || null, __searchTargetSnippet: messageSnippet || null };
-              const sessionObj = {
-                id: sessionId,
-                __provider: safeProvider,
-                __projectName: projectName,
-                ...searchTarget,
-              };
-              if (project) {
-                handleProjectSelect(project);
-                const sessions = getProjectSessions(project);
-                const existing = sessions.find(s => s.id === sessionId);
-                if (existing) {
-                  handleSessionClick({ ...existing, ...searchTarget }, projectName);
-                } else {
-                  handleSessionClick(sessionObj, projectName);
-                }
-              } else {
-                handleSessionClick(sessionObj, projectName);
-              }
-            }}
             onRefresh={() => {
               void refreshProjects();
             }}
