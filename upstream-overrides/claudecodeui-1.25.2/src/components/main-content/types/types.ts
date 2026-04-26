@@ -43,6 +43,8 @@ export type MainContentProps = {
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;
+  isInputFocused?: boolean;
+  mobileViewportTop?: number;
   onInputFocusChange: (focused: boolean) => void;
   onSessionActive: SessionLifecycleHandler;
   onSessionInactive: SessionLifecycleHandler;
@@ -62,6 +64,8 @@ export type MainContentHeaderProps = {
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
   isMobile: boolean;
+  isInputFocused?: boolean;
+  mobileViewportTop?: number;
   onMenuClick: () => void;
 };
 

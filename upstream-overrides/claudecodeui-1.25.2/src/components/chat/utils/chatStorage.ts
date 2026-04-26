@@ -116,6 +116,9 @@ export const savePendingUserMessage = (
   provider: string,
   message: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'>,
 ) => {
+  // Intentional lightweight tracking: one pending record per project/provider/session.
+  // The desktop Codex queue still owns actual delivery; this local record only decorates
+  // the latest unsynced bubble, so a newer send may replace the previous local marker.
   safeLocalStorage.setItem(
     getPendingUserMessageStorageKey(projectName, sessionId, provider),
     JSON.stringify({

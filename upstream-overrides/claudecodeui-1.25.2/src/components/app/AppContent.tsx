@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
@@ -17,6 +17,7 @@ export default function AppContent() {
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, latestMessage, isConnected } = useWebSocket();
   const wasConnectedRef = useRef(false);
+  const [mobileViewportTop, setMobileViewportTop] = useState(0);
 
   const {
     activeSessions,
@@ -72,6 +73,42 @@ export default function AppContent() {
       }
     };
   }, [openSettings]);
+
+  useEffect(() => {
+    if (!isMobile || !isInputFocused || typeof window === 'undefined') {
+      setMobileViewportTop(0);
+      return;
+    }
+
+    const updateViewportTop = () => {
+      setMobileViewportTop(window.visualViewport?.offsetTop ?? 0);
+    };
+
+    updateViewportTop();
+
+    const visualViewport = window.visualViewport;
+    window.addEventListener('resize', updateViewportTop);
+    visualViewport?.addEventListener('resize', updateViewportTop);
+    visualViewport?.addEventListener('scroll', updateViewportTop);
+
+    return () => {
+      window.removeEventListener('resize', updateViewportTop);
+      visualViewport?.removeEventListener('resize', updateViewportTop);
+      visualViewport?.removeEventListener('scroll', updateViewportTop);
+    };
+  }, [isInputFocused, isMobile]);
+
+  const openSidebar = useCallback(() => {
+    if (typeof document !== 'undefined') {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement) {
+        activeElement.blur();
+      }
+    }
+
+    setIsInputFocused(false);
+    setSidebarOpen(true);
+  }, [setIsInputFocused, setSidebarOpen]);
 
   // Permission recovery: query pending permissions on WebSocket reconnect or session change
   useEffect(() => {
@@ -136,7 +173,7 @@ export default function AppContent() {
           sendMessage={sendMessage}
           latestMessage={latestMessage}
           isMobile={isMobile}
-          onMenuClick={() => setSidebarOpen(true)}
+          onMenuClick={openSidebar}
           isLoading={isLoadingProjects}
           onInputFocusChange={setIsInputFocused}
           onSessionActive={markSessionAsActive}
@@ -148,6 +185,8 @@ export default function AppContent() {
           onNavigateToSession={(targetSessionId: string) => navigate(`/session/${targetSessionId}`)}
           onShowSettings={() => setShowSettings(true)}
           externalMessageUpdate={externalMessageUpdate}
+          isInputFocused={isInputFocused}
+          mobileViewportTop={mobileViewportTop}
         />
       </div>
 

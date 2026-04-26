@@ -1993,6 +1993,18 @@ function isVisibleCodexUserMessage(payload) {
   return true;
 }
 
+function normalizeCodexUserMessageForDisplay(message) {
+  if (typeof message !== 'string') {
+    return '';
+  }
+
+  const normalized = message.replace(/\r\n/g, '\n').trim();
+  const requestMatch = normalized.match(/##\s*My request for Codex:\s*([\s\S]*)$/i);
+  const extractedRequest = requestMatch?.[1]?.trim();
+
+  return extractedRequest || normalized;
+}
+
 // Parse a Codex session JSONL file to extract metadata
 async function parseCodexSessionFile(filePath) {
   try {
@@ -2032,7 +2044,7 @@ async function parseCodexSessionFile(filePath) {
           if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
             messageCount++;
             if (entry.payload.message) {
-              lastUserMessage = entry.payload.message;
+              lastUserMessage = normalizeCodexUserMessageForDisplay(entry.payload.message);
             }
           }
 
@@ -2144,7 +2156,7 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
               timestamp: entry.timestamp,
               message: {
                 role: 'user',
-                content: entry.payload.message
+                content: normalizeCodexUserMessageForDisplay(entry.payload.message)
               }
             });
           }

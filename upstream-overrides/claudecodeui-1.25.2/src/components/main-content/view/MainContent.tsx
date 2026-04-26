@@ -39,6 +39,8 @@ function MainContent({
   isMobile,
   onMenuClick,
   isLoading,
+  isInputFocused = false,
+  mobileViewportTop = 0,
   onInputFocusChange,
   onSessionActive,
   onSessionInactive,
@@ -117,6 +119,8 @@ function MainContent({
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
         isMobile={isMobile}
+        isInputFocused={isInputFocused}
+        mobileViewportTop={mobileViewportTop}
         onMenuClick={onMenuClick}
       />
       <div className="flex min-h-0 flex-1 overflow-hidden">

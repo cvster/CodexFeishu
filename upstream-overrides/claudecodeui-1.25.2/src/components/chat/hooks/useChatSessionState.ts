@@ -21,6 +21,7 @@ const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
 const MIN_REFRESHING_LATEST_MS = 500;
 const SESSION_STATUS_POLL_MS = 3000;
+const BACKGROUND_REFRESH_INDICATOR_INTERVAL_MS = 3_000;
 const BOTTOM_REFRESH_GAP_PX = 12;
 const BOTTOM_REFRESH_TRIGGER_DISTANCE_PX = 28;
 const BOTTOM_REFRESH_TIMEOUT_MS = 1400;
@@ -387,6 +388,7 @@ export function useChatSessionState({
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
   const sessionMessagesRef = useRef<any[]>([]);
   const lastLatestRefreshAtRef = useRef(0);
+  const lastBackgroundRefreshIndicatorAtRef = useRef(0);
   const bottomRefreshGestureRef = useRef<BottomRefreshGestureState>({
     primed: false,
     startTop: 0,
@@ -588,7 +590,10 @@ export function useChatSessionState({
   );
 
   const refreshLatestMessages = useCallback(
-    async ({ preserveScroll = false }: { preserveScroll?: boolean } = {}) => {
+    async ({
+      preserveScroll = false,
+      showIndicator = true,
+    }: { preserveScroll?: boolean; showIndicator?: boolean } = {}) => {
       if (!selectedSession || !selectedProject) {
         return false;
       }
@@ -596,7 +601,9 @@ export function useChatSessionState({
       const sessionProvider = (selectedSession.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude')) as Provider;
       const refreshStartedAt = Date.now();
 
-      setIsRefreshingLatest(true);
+      if (showIndicator) {
+        setIsRefreshingLatest(true);
+      }
       try {
         if (sessionProvider === 'cursor') {
           const projectPath = selectedProject.fullPath || selectedProject.path || '';
@@ -675,11 +682,13 @@ export function useChatSessionState({
         console.error('Error refreshing latest session messages:', error);
         return false;
       } finally {
-        const elapsed = Date.now() - refreshStartedAt;
-        if (elapsed < MIN_REFRESHING_LATEST_MS) {
-          await new Promise((resolve) => setTimeout(resolve, MIN_REFRESHING_LATEST_MS - elapsed));
+        if (showIndicator) {
+          const elapsed = Date.now() - refreshStartedAt;
+          if (elapsed < MIN_REFRESHING_LATEST_MS) {
+            await new Promise((resolve) => setTimeout(resolve, MIN_REFRESHING_LATEST_MS - elapsed));
+          }
+          setIsRefreshingLatest(false);
         }
-        setIsRefreshingLatest(false);
       }
     },
     [loadCursorSessionMessages, pendingUserMessage, selectedProject, selectedSession, sendMessage, setChatMessages],
@@ -1002,7 +1011,17 @@ export function useChatSessionState({
           return;
         }
 
-        await refreshLatestMessages({ preserveScroll: isUserScrolledUp });
+        const now = Date.now();
+        const shouldShowBackgroundIndicator =
+          now - lastBackgroundRefreshIndicatorAtRef.current >= BACKGROUND_REFRESH_INDICATOR_INTERVAL_MS;
+        if (shouldShowBackgroundIndicator) {
+          lastBackgroundRefreshIndicatorAtRef.current = now;
+        }
+
+        await refreshLatestMessages({
+          preserveScroll: isUserScrolledUp,
+          showIndicator: shouldShowBackgroundIndicator,
+        });
 
         const shouldAutoScroll = Boolean(autoScrollToBottom) && isNearBottom();
         if (shouldAutoScroll) {
