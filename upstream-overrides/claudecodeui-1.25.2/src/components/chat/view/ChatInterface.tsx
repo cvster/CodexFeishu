@@ -274,13 +274,29 @@ function ChatInterface({
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
     const provider = selectedSession.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude');
-    const messages = await loadSessionMessages(selectedProject.name, selectedSession.id, false, provider);
-    setSessionMessages(Array.isArray(messages) ? messages : []);
+    if (provider === 'codex') {
+      await refreshLatestMessages({ preserveScroll: true, showIndicator: false });
+    } else {
+      const messages = await loadSessionMessages(selectedProject.name, selectedSession.id, false, provider);
+      setSessionMessages(Array.isArray(messages) ? messages : []);
+    }
     // Reset loading state — if the session is still active, new WebSocket messages will
     // set it back to true. If it died, this clears the permanent frozen state.
     setIsLoading(false);
     setCanAbortSession(false);
-  }, [selectedProject, selectedSession, loadSessionMessages, setSessionMessages, setIsLoading, setCanAbortSession]);
+  }, [
+    selectedProject,
+    selectedSession,
+    loadSessionMessages,
+    refreshLatestMessages,
+    setSessionMessages,
+    setIsLoading,
+    setCanAbortSession,
+  ]);
+
+  const handleDesktopCommandDelivered = useCallback(() => {
+    void refreshLatestMessages({ preserveScroll: true, showIndicator: false });
+  }, [refreshLatestMessages]);
 
   useChatRealtimeHandlers({
     latestMessage,
@@ -305,6 +321,7 @@ function ChatInterface({
     onReplaceTemporarySession,
     onNavigateToSession,
     onWebSocketReconnect: handleWebSocketReconnect,
+    onDesktopCommandDelivered: handleDesktopCommandDelivered,
   });
 
   useEffect(() => {

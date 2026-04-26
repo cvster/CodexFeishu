@@ -237,6 +237,8 @@ C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microso
 
 如果 worker ready 超时或请求超时，后端会清理整棵 PowerShell / Python 进程树，避免残留 worker 越堆越多。worker 启动阶段失败时，发送会安全回退到 one-shot；但如果 `send-message` 已经开始执行，失败后不会自动重试，避免重复发送。
 
+最后一条“发送中”消息是否已真正发到 Codex，由后端 `pending-delivery` 检查接口读取完整 Codex JSONL 历史判断；前端不再用当前页面渲染出的消息列表自行确认。
+
 ### 清理残留桌面自动化进程
 
 正常情况下不需要手动清理。若排障时确认有异常残留，可以只清理本项目的 worker 进程：

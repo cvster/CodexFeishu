@@ -2026,6 +2026,119 @@ function normalizeCodexUserMessageForDisplay(message) {
   return extractedRequest || normalized;
 }
 
+function normalizeCodexPendingDeliveryText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+function getCodexPendingDeliveryCandidates(value) {
+  const normalized = normalizeCodexPendingDeliveryText(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const candidates = new Set([normalized]);
+  const requestMatch = normalized.match(/##\s*My request for Codex:\s*([\s\S]*)$/i);
+  const extractedRequest = normalizeCodexPendingDeliveryText(requestMatch?.[1]);
+  if (extractedRequest) {
+    candidates.add(extractedRequest);
+  }
+
+  return [...candidates];
+}
+
+function getTimestampMs(value) {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+function getCodexMessageText(message) {
+  if (typeof message?.message?.content === 'string') {
+    return message.message.content;
+  }
+  if (typeof message?.content === 'string') {
+    return message.content;
+  }
+  return '';
+}
+
+function matchesPendingCodexUserMessage(message, pendingMessage) {
+  if (!pendingMessage || message?.type !== 'user') {
+    return false;
+  }
+
+  const pendingCandidates = [
+    ...getCodexPendingDeliveryCandidates(pendingMessage.displayContent),
+    ...getCodexPendingDeliveryCandidates(pendingMessage.sentContent),
+  ];
+  if (pendingCandidates.length === 0) {
+    return false;
+  }
+
+  const messageCandidates = getCodexPendingDeliveryCandidates(getCodexMessageText(message));
+  if (!messageCandidates.some((candidate) => pendingCandidates.includes(candidate))) {
+    return false;
+  }
+
+  const pendingTimestamp = getTimestampMs(pendingMessage.timestamp);
+  const messageTimestamp = getTimestampMs(message.timestamp);
+  if (pendingTimestamp === null || messageTimestamp === null) {
+    return true;
+  }
+
+  const delta = messageTimestamp - pendingTimestamp;
+  return delta >= -15_000;
+}
+
+function getCodexPendingDeliveryFromMessages(messages, pendingMessage) {
+  if (!pendingMessage) {
+    return {
+      status: 'unknown',
+      matched: false,
+      reason: 'missing-pending-message',
+    };
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (matchesPendingCodexUserMessage(message, pendingMessage)) {
+      return {
+        status: 'sent',
+        matched: true,
+        reason: 'matched-codex-user-message',
+        matchedMessage: {
+          timestamp: message.timestamp || null,
+          content: getCodexMessageText(message),
+        },
+      };
+    }
+  }
+
+  return {
+    status: 'sending',
+    matched: false,
+    reason: 'not-yet-in-codex-history',
+  };
+}
+
+async function getCodexPendingDeliveryStatus(sessionId, pendingMessage) {
+  const result = await getCodexSessionMessages(sessionId, null, 0);
+  const messages = Array.isArray(result?.messages) ? result.messages : [];
+  return getCodexPendingDeliveryFromMessages(messages, pendingMessage);
+}
+
 // Parse a Codex session JSONL file to extract metadata
 async function parseCodexSessionFile(filePath) {
   try {
@@ -2325,10 +2438,9 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
       const endIndex = total - offset;
       let paginatedMessages = messages.slice(startIndex, endIndex);
 
-      // The mobile UI uses the latest synced user message to mark a pending
-      // desktop-send as delivered. Codex can append many assistant/tool events
-      // after that user message, and the current page may already contain an
-      // older user input, so explicitly include the latest user-visible input.
+      // Keep the latest page useful for display even when assistant/tool events
+      // would otherwise push the latest user input outside the visible slice.
+      // Delivery confirmation is handled by the pending-delivery endpoint.
       if (offset === 0) {
         let latestUserMessageIndex = -1;
         for (let index = endIndex - 1; index >= 0; index -= 1) {
@@ -3132,6 +3244,7 @@ export {
   clearProjectDirectoryCache,
   getCodexSessions,
   getCodexSessionMessages,
+  getCodexPendingDeliveryStatus,
   deleteCodexSession,
   getGeminiCliSessions,
   getGeminiCliSessionMessages,

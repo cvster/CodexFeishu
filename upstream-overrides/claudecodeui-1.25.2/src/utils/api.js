@@ -95,6 +95,11 @@ export const api = {
     authenticatedFetch(`/api/codex/sessions/${sessionId}`, {
       method: 'DELETE',
     }),
+  codexPendingDelivery: (sessionId, pendingMessage) =>
+    authenticatedFetch(`/api/codex/sessions/${sessionId}/pending-delivery`, {
+      method: 'POST',
+      body: JSON.stringify({ pendingMessage }),
+    }),
   deleteGeminiSession: (sessionId) =>
     authenticatedFetch(`/api/gemini/sessions/${sessionId}`, {
       method: 'DELETE',

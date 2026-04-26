@@ -102,10 +102,12 @@ The current implementation intentionally keeps this boundary lightweight:
 
 ### How “sent” is confirmed
 
-The frontend does not treat the HTTP / WebSocket request result as final delivery.
-The real confirmation is seeing the same user-visible message come back from synced Codex history.
+The frontend does not treat the HTTP / WebSocket request result as final delivery, and it no longer decides delivery by matching only the currently rendered message list.
+The backend owns the final decision: it reads the complete Codex JSONL history and confirms that the same user-visible message has appeared there.
 
-To make that reliable, the backend makes the latest message page include the latest user-visible input even if assistant, tool, or system events would otherwise push it outside the page. The mobile UI can then compare the latest pending message against synced Codex history.
+The frontend sends the latest pending message content and timestamp to the backend pending-delivery endpoint. The backend normalizes content, applies the timestamp window, and returns `sending` or `sent`. The frontend only consumes that result.
+
+The latest message page may still include the latest user-visible input, but that is now for display quality only, not the source of truth for delivery.
 
 This still tracks only the latest pending message per session by design. Older sends may already be in the desktop automation queue, and the UI should not imply that they can be cancelled or independently managed.
 

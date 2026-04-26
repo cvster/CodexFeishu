@@ -952,26 +952,53 @@ class CodexDesktopAutomation:
         return None
 
     def _composer(self) -> Any:
+        window_rect = self.window.rectangle()
+        window_height = max(1, int(window_rect.bottom - window_rect.top))
+        composer_region_top = int(window_rect.bottom - max(360, window_height * 0.35))
         composers = []
-        for element in self._iter_descendants(control_type="Group"):
+
+        for element in self._iter_descendants():
             try:
                 if not element.is_visible():
                     continue
                 rect = element.rectangle()
-                if rect.left < self.sidebar_right_edge or rect.bottom < 1100:
+                if rect.left < self.sidebar_right_edge or rect.bottom < composer_region_top:
                     continue
+                if rect.width() < 240 or rect.height() < 20 or rect.height() > 320:
+                    continue
+                control_type = getattr(element.element_info, "control_type", "") or ""
                 class_name = getattr(element.element_info, "class_name", "") or ""
-                if "ProseMirror" not in class_name:
+                name = _control_name(element)
+                haystack = f"{name} {class_name}".casefold()
+
+                score = 0
+                if "ProseMirror" in class_name:
+                    score += 100
+                if control_type in {"Edit", "Document"}:
+                    score += 30
+                if any(token in haystack for token in ("要求后续变更", "message", "输入", "ask")):
+                    score += 20
+                if score <= 0:
                     continue
-                composers.append(element)
+                composers.append((score, element))
             except Exception:
                 continue
 
         if not composers:
-            raise RuntimeError("Could not find the Codex composer input.")
+            raise RuntimeError(
+                "Could not find the Codex composer input "
+                f"(window={_rect_to_list(window_rect)}, composer_region_top={composer_region_top})."
+            )
 
-        composers.sort(key=lambda element: (element.rectangle().bottom, element.rectangle().left), reverse=True)
-        return composers[0]
+        composers.sort(
+            key=lambda item: (
+                item[0],
+                item[1].rectangle().bottom,
+                item[1].rectangle().left,
+            ),
+            reverse=True,
+        )
+        return composers[0][1]
 
     def _composer_send_button(self, composer_rect: Any) -> Any:
         candidates = []

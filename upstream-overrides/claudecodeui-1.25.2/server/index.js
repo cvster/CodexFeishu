@@ -1717,7 +1717,14 @@ function handleChatConnection(ws, request = null) {
                                 error: bridgeResult?.error || 'Failed to submit the message to the desktop Codex app.',
                                 provider: 'codex'
                             });
+                            return;
                         }
+
+                        writer.send({
+                            type: 'codex-desktop-command-delivered',
+                            sessionId: resolvedCodexOptions.sessionId || null,
+                            provider: 'codex'
+                        });
                     });
                     return;
                 }

@@ -49,6 +49,7 @@ interface UseChatRealtimeHandlersArgs {
   onReplaceTemporarySession?: (sessionId?: string | null) => void;
   onNavigateToSession?: (sessionId: string) => void;
   onWebSocketReconnect?: () => void;
+  onDesktopCommandDelivered?: () => void;
 }
 
 const appendStreamingChunk = (
@@ -115,6 +116,7 @@ export function useChatRealtimeHandlers({
   onReplaceTemporarySession,
   onNavigateToSession,
   onWebSocketReconnect,
+  onDesktopCommandDelivered,
 }: UseChatRealtimeHandlersArgs) {
   const lastProcessedMessageRef = useRef<LatestChatMessage | null>(null);
 
@@ -144,6 +146,7 @@ export function useChatRealtimeHandlers({
       'session-created',
       'websocket-reconnected',
       'codex-desktop-command-submitted',
+      'codex-desktop-command-delivered',
       'codex-desktop-command-error',
     ];
     const isGlobalMessage = globalMessageTypes.includes(messageType);
@@ -307,6 +310,10 @@ export function useChatRealtimeHandlers({
         if (typeof window !== 'undefined' && window.refreshProjects) {
           setTimeout(() => window.refreshProjects?.(), 300);
         }
+        break;
+
+      case 'codex-desktop-command-delivered':
+        onDesktopCommandDelivered?.();
         break;
 
       case 'codex-desktop-command-error':

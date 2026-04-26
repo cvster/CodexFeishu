@@ -493,6 +493,51 @@ export function useChatSessionState({
     [selectedSession?.__provider],
   );
 
+  const resolvePendingUserMessageDelivery = useCallback(
+    async (
+      pendingMessage: PendingUserMessageRecord | null,
+      provider: Provider | string,
+    ) => {
+      if (
+        !selectedProject ||
+        !pendingMessage ||
+        pendingMessage.status === 'sent' ||
+        provider !== 'codex'
+      ) {
+        return pendingMessage;
+      }
+
+      try {
+        const response = await (api.codexPendingDelivery as any)(
+          pendingMessage.sessionId,
+          {
+            displayContent: pendingMessage.displayContent,
+            sentContent: pendingMessage.sentContent,
+            timestamp: pendingMessage.timestamp,
+          },
+        );
+        if (!response.ok) {
+          return pendingMessage;
+        }
+
+        const data = await response.json();
+        if (data?.pendingDelivery?.status !== 'sent') {
+          return pendingMessage;
+        }
+
+        return markPendingUserMessageSent(
+          selectedProject.name,
+          pendingMessage.sessionId,
+          pendingMessage.provider,
+        ) || { ...pendingMessage, status: 'sent' as const };
+      } catch (error) {
+        console.error('Error checking Codex pending delivery:', error);
+        return pendingMessage;
+      }
+    },
+    [selectedProject],
+  );
+
   useEffect(() => {
     if (!selectedProject || !selectedSession?.id) {
       setPendingUserMessage(null);
@@ -639,14 +684,10 @@ export function useChatSessionState({
         );
         const total = Number(data.total || mergedMessages.length);
         const convertedMergedMessages = convertSessionMessages(mergedMessages);
-        const nextPendingUserMessage =
-          pendingUserMessage && hasSyncedPendingUserMessage(convertedMergedMessages, pendingUserMessage)
-            ? markPendingUserMessageSent(
-                selectedProject.name,
-                selectedSession.id,
-                sessionProvider,
-              )
-            : pendingUserMessage;
+        const nextPendingUserMessage = await resolvePendingUserMessageDelivery(
+          pendingUserMessage,
+          sessionProvider,
+        );
         const renderedMessages = applyPendingUserMessage(convertedMergedMessages, nextPendingUserMessage);
 
         if (preserveScroll && container) {
@@ -691,7 +732,15 @@ export function useChatSessionState({
         }
       }
     },
-    [loadCursorSessionMessages, pendingUserMessage, selectedProject, selectedSession, sendMessage, setChatMessages],
+    [
+      loadCursorSessionMessages,
+      pendingUserMessage,
+      resolvePendingUserMessageDelivery,
+      selectedProject,
+      selectedSession,
+      sendMessage,
+      setChatMessages,
+    ],
   );
 
   const handleScroll = useCallback(async () => {
@@ -904,12 +953,20 @@ export function useChatSessionState({
           setCurrentSessionId(selectedSession.id);
 
           if (!isSystemSessionChange) {
+            const provider = selectedSession.__provider || 'claude';
             const messages = await loadSessionMessages(
               selectedProject.name,
               selectedSession.id,
               false,
-              selectedSession.__provider || 'claude',
+              provider,
             );
+            const nextPendingUserMessage = await resolvePendingUserMessageDelivery(
+              pendingUserMessage,
+              provider,
+            );
+            if (nextPendingUserMessage !== pendingUserMessage) {
+              setPendingUserMessage(nextPendingUserMessage);
+            }
             setSessionMessages(messages);
           } else {
             setIsSystemSessionChange(false);
@@ -951,6 +1008,7 @@ export function useChatSessionState({
     loadSessionMessages,
     pendingUserMessage,
     pendingViewSessionRef,
+    resolvePendingUserMessageDelivery,
     resetStreamingState,
     resolvedSessionProvider,
     selectedProject,
@@ -1074,7 +1132,8 @@ export function useChatSessionState({
       !selectedProject ||
       !selectedSession?.id ||
       !pendingUserMessage ||
-      pendingUserMessage.status === 'sent'
+      pendingUserMessage.status === 'sent' ||
+      resolvedSessionProvider === 'codex'
     ) {
       return;
     }

@@ -4,7 +4,12 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 import TOML from '@iarna/toml';
-import { getCodexSessions, getCodexSessionMessages, deleteCodexSession } from '../projects.js';
+import {
+  getCodexSessions,
+  getCodexSessionMessages,
+  getCodexPendingDeliveryStatus,
+  deleteCodexSession,
+} from '../projects.js';
 import { applyCustomSessionNames, sessionNamesDb } from '../database/db.js';
 
 const router = express.Router();
@@ -89,6 +94,19 @@ router.get('/sessions/:sessionId/messages', async (req, res) => {
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Error fetching Codex session messages:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/sessions/:sessionId/pending-delivery', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const pendingMessage = req.body?.pendingMessage || req.body || null;
+
+    const pendingDelivery = await getCodexPendingDeliveryStatus(sessionId, pendingMessage);
+    res.json({ success: true, pendingDelivery });
+  } catch (error) {
+    console.error('Error checking Codex pending delivery:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
