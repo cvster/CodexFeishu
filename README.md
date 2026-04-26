@@ -148,6 +148,24 @@ powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\s
 powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 dump-state --json
 ```
 
+### 查看 Codex 桌面项目列表
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 list-projects --json
+```
+
+### 验证桌面自动化 worker
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 worker
+```
+
+正常时会立即输出：
+
+```json
+{"event":"ready"}
+```
+
 ### 打开 Codex 桌面里的指定会话
 
 ```powershell
@@ -204,6 +222,36 @@ C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microso
 
 - `C:\software\mobileCodexHelper\tmp\logs\mobile-codex-app.stdout.log`
 - `C:\software\mobileCodexHelper\tmp\logs\mobile-codex-app.stderr.log`
+
+### 手机发消息后 Codex 桌面没动作
+
+先判断是哪一层卡住：
+
+1. 看 `tmp\logs\mobile-codex-app.stdout.log` 是否有 `[mobile-codex][bridge-request]`
+2. 如果有，说明前端消息已经到后端
+3. 再看 `tmp\logs\mobile-codex-app.stderr.log` 是否有 `[Codex Desktop Worker]` 或 `[Codex Desktop Bridge]` 错误
+4. 运行 `list-projects --json`，确认桌面自动化能读到 Codex 左侧项目
+5. 运行 `worker`，确认能立即输出 `{"event":"ready"}`
+
+当前设计里，桌面自动化会先用 Win32 找到标题为 `Codex`、类名为 `Chrome_WidgetWin_1` 的主窗口，再用 UIA 按窗口句柄连接。这样比 UIA 全局搜索稳定。
+
+如果 worker ready 超时或请求超时，后端会清理整棵 PowerShell / Python 进程树，避免残留 worker 越堆越多。worker 启动阶段失败时，发送会安全回退到 one-shot；但如果 `send-message` 已经开始执行，失败后不会自动重试，避免重复发送。
+
+### 清理残留桌面自动化进程
+
+正常情况下不需要手动清理。若排障时确认有异常残留，可以只清理本项目的 worker 进程：
+
+```powershell
+$current = $PID
+$workers = Get-CimInstance Win32_Process | Where-Object {
+  $_.ProcessId -ne $current -and (
+    ($_.Name -in @('powershell.exe','pwsh.exe') -and $_.CommandLine -like '*run-codex-desktop-automation.ps1 worker*') -or
+    ($_.Name -eq 'python.exe' -and $_.CommandLine -like '*codex_desktop_automation.py worker*')
+  )
+}
+$workers | Select-Object ProcessId,Name,CommandLine
+$workers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
 
 ### 手机打不开远程地址
 

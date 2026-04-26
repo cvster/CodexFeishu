@@ -95,6 +95,24 @@ function normalizeSourceContext(sourceContext = null) {
   };
 }
 
+function terminateProcessTree(child) {
+  if (!child || child.killed) {
+    return;
+  }
+
+  if (process.platform === 'win32' && child.pid) {
+    const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+      windowsHide: true,
+    });
+    killer.on('error', () => {
+      child.kill();
+    });
+    return;
+  }
+
+  child.kill();
+}
+
 function runDesktopAutomationOnce(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -109,7 +127,7 @@ function runDesktopAutomationOnce(args) {
     let stdout = '';
     let stderr = '';
     const timeoutHandle = setTimeout(() => {
-      child.kill();
+      terminateProcessTree(child);
       reject(new Error(`Desktop automation timed out after ${AUTOMATION_TIMEOUT_MS} ms`));
     }, AUTOMATION_TIMEOUT_MS);
 
@@ -200,7 +218,8 @@ class DesktopAutomationWorkerClient {
         }
         settled = true;
         cleanupStartup();
-        this._handleWorkerExit(error);
+        error.desktopWorkerStartup = true;
+        this._terminateWorker(error);
         reject(error);
       };
 
@@ -259,7 +278,9 @@ class DesktopAutomationWorkerClient {
     return new Promise((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         this.pendingRequests.delete(requestId);
-        reject(new Error(`Desktop automation worker request timed out after ${AUTOMATION_TIMEOUT_MS} ms.`));
+        const error = new Error(`Desktop automation worker request timed out after ${AUTOMATION_TIMEOUT_MS} ms.`);
+        this._terminateWorker(error);
+        reject(error);
       }, AUTOMATION_TIMEOUT_MS);
 
       this.pendingRequests.set(requestId, {
@@ -344,6 +365,11 @@ class DesktopAutomationWorkerClient {
       request.reject(error);
     }
   }
+
+  _terminateWorker(error) {
+    terminateProcessTree(this.child);
+    this._handleWorkerExit(error);
+  }
 }
 
 function getDesktopAutomationWorker() {
@@ -376,7 +402,7 @@ async function runDesktopAutomation(args) {
     try {
       return await getDesktopAutomationWorker().run(args);
     } catch (error) {
-      if (isSideEffectfulSend) {
+      if (isSideEffectfulSend && !error?.desktopWorkerStartup) {
         throw error;
       }
       console.warn('[Codex Desktop Worker] Falling back to one-shot automation:', error.message);

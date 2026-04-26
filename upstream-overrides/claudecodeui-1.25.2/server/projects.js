@@ -69,6 +69,9 @@ import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames } from './database/db.js';
 
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
+const CODEX_PROJECTLESS_PROJECT_NAME = '__codex_projectless__';
+const CODEX_PROJECTLESS_PROJECT_PATH = 'codex://projectless';
+const CODEX_PROJECTLESS_PROJECT_DISPLAY_NAME = '无项目会话';
 
 // Import TaskMaster detection functions
 async function detectTaskMasterFolder(projectPath) {
@@ -269,6 +272,12 @@ function doesProjectPathExist(projectPath) {
   return fsSync.existsSync(resolvedPath);
 }
 
+function getCodexProjectMapKey(projectPath) {
+  return projectPath === CODEX_PROJECTLESS_PROJECT_PATH
+    ? CODEX_PROJECTLESS_PROJECT_PATH
+    : normalizeComparablePath(projectPath);
+}
+
 function mergeCodexProjectMetadata(existingMetadata, candidateMetadata) {
   if (!existingMetadata) {
     return candidateMetadata;
@@ -354,15 +363,20 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
   for (const [normalizedProjectPath, sessions] of projectEntries) {
     processedProjects++;
 
-    const actualProjectDir = resolveProjectPath(sessions[0]?.cwd) || sessions[0]?.cwd || '';
+    const isProjectlessProject = normalizedProjectPath === CODEX_PROJECTLESS_PROJECT_PATH;
+    const actualProjectDir = isProjectlessProject
+      ? CODEX_PROJECTLESS_PROJECT_PATH
+      : resolveProjectPath(sessions[0]?.cwd) || sessions[0]?.cwd || '';
     const matchedMetadata = metadataByPath.get(normalizedProjectPath);
-    const projectName = matchedMetadata?.name || encodeProjectNameFromPath(actualProjectDir);
+    const projectName = isProjectlessProject
+      ? CODEX_PROJECTLESS_PROJECT_NAME
+      : matchedMetadata?.name || encodeProjectNameFromPath(actualProjectDir);
 
     if (!projectName || !actualProjectDir) {
       continue;
     }
 
-    if (!doesProjectPathExist(actualProjectDir)) {
+    if (!isProjectlessProject && !doesProjectPathExist(actualProjectDir)) {
       continue;
     }
 
@@ -376,7 +390,9 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
     }
 
     const customName = matchedMetadata?.displayName || '';
-    const displayName = customName || await generateDisplayName(projectName, actualProjectDir);
+    const displayName = isProjectlessProject
+      ? CODEX_PROJECTLESS_PROJECT_DISPLAY_NAME
+      : customName || await generateDisplayName(projectName, actualProjectDir);
 
     projects.push({
       name: projectName,
@@ -385,6 +401,7 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
       fullPath: actualProjectDir,
       isCustomName: Boolean(customName),
       isManuallyAdded: Boolean(matchedMetadata?.isManuallyAdded),
+      isProjectless: isProjectlessProject,
       sessions: [],
       cursorSessions: [],
       codexSessions: [...sessions],
@@ -1896,7 +1913,10 @@ async function buildCodexSessionsIndex() {
         continue;
       }
 
-      const normalizedProjectPath = normalizeComparablePath(sessionData.cwd);
+      const isProjectlessSession = projectlessSessionIds.has(sessionData.id);
+      const normalizedProjectPath = isProjectlessSession
+        ? CODEX_PROJECTLESS_PROJECT_PATH
+        : normalizeComparablePath(sessionData.cwd);
       if (!normalizedProjectPath) {
         continue;
       }
@@ -1904,12 +1924,12 @@ async function buildCodexSessionsIndex() {
       if (
         shouldFilterWorkspaceRoots &&
         !visibleWorkspaceRoots.has(normalizedProjectPath) &&
-        !projectlessSessionIds.has(sessionData.id)
+        !isProjectlessSession
       ) {
         continue;
       }
 
-      if (!doesProjectPathExist(sessionData.cwd)) {
+      if (!isProjectlessSession && !doesProjectPathExist(sessionData.cwd)) {
         continue;
       }
 
@@ -1932,6 +1952,7 @@ async function buildCodexSessionsIndex() {
         model: sessionData.model,
         filePath,
         provider: 'codex',
+        isProjectless: isProjectlessSession,
       };
 
       if (!sessionsByProject.has(normalizedProjectPath)) {
@@ -1955,7 +1976,7 @@ async function buildCodexSessionsIndex() {
 async function getCodexSessions(projectPath, options = {}) {
   const { limit = 5, indexRef = null } = options;
   try {
-    const normalizedProjectPath = normalizeComparablePath(projectPath);
+    const normalizedProjectPath = getCodexProjectMapKey(projectPath);
     if (!normalizedProjectPath) {
       return [];
     }
@@ -2306,17 +2327,20 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
 
       // The mobile UI uses the latest synced user message to mark a pending
       // desktop-send as delivered. Codex can append many assistant/tool events
-      // after that user message, so make the latest page include at least one
-      // user-visible input even when it means returning slightly more than limit.
-      if (offset === 0 && !paginatedMessages.some((message) => message.type === 'user')) {
-        let userMessageIndex = startIndex - 1;
-        while (userMessageIndex >= 0) {
-          if (messages[userMessageIndex]?.type === 'user') {
-            startIndex = userMessageIndex;
-            paginatedMessages = messages.slice(startIndex, endIndex);
+      // after that user message, and the current page may already contain an
+      // older user input, so explicitly include the latest user-visible input.
+      if (offset === 0) {
+        let latestUserMessageIndex = -1;
+        for (let index = endIndex - 1; index >= 0; index -= 1) {
+          if (messages[index]?.type === 'user') {
+            latestUserMessageIndex = index;
             break;
           }
-          userMessageIndex -= 1;
+        }
+
+        if (latestUserMessageIndex >= 0 && latestUserMessageIndex < startIndex) {
+          startIndex = latestUserMessageIndex;
+          paginatedMessages = messages.slice(startIndex, endIndex);
         }
       }
 

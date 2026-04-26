@@ -680,7 +680,10 @@ export function useChatComposerState({
       };
 
       const toolsSettings = getToolsSettings();
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const selectedSessionCwd = typeof selectedSession?.cwd === 'string' ? selectedSession.cwd : '';
+      const resolvedProjectPath = selectedProject.isProjectless
+        ? selectedSessionCwd || selectedProject.fullPath || selectedProject.path || ''
+        : selectedProject.fullPath || selectedProject.path || '';
       if (pendingMessageSessionId) {
         // By design, mobile only tracks the latest pending bubble per session.
         // Earlier sends remain in the desktop automation queue even if this marker is replaced.

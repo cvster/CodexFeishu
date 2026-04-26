@@ -109,6 +109,7 @@ export default function SidebarProjectItem({
   const singleSessionView = singleSession ? createSessionViewModel(singleSession, currentTime, t) : null;
   const isSingleSessionSelected = Boolean(singleSession && selectedSession?.id === singleSession.id);
   const isSingleSessionProcessing = Boolean(singleSession && processingSessions.has(singleSession.id));
+  const projectPathLabel = project.isProjectless ? project.displayName : project.fullPath;
 
   const toggleProject = () => onToggleProject(project.name);
   const toggleStarProject = () => onToggleStarProject(project.name);
@@ -342,8 +343,8 @@ export default function SidebarProjectItem({
                       }
                     }}
                   />
-                  <div className="truncate text-xs text-muted-foreground" title={project.fullPath}>
-                    {project.fullPath}
+                  <div className="truncate text-xs text-muted-foreground" title={projectPathLabel}>
+                    {projectPathLabel}
                   </div>
                 </div>
               ) : (

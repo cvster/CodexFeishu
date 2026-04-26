@@ -18,7 +18,7 @@ try:
     import win32clipboard
     import win32con
     import win32gui
-    from pywinauto import Desktop
+    from pywinauto.application import Application
     from pywinauto.controls.uiawrapper import UIAWrapper
 except ImportError as exc:  # pragma: no cover - exercised through the wrapper
     raise SystemExit(
@@ -427,11 +427,19 @@ class CodexDesktopAutomation:
         self.sidebar_right_edge = sidebar_right_edge
         self.click_delay = click_delay
         self.scroll_delay = scroll_delay
-        self.window_spec = Desktop(backend="uia").window(
-            title="Codex",
-            class_name="Chrome_WidgetWin_1",
-        )
-        self.window_spec.wait("exists enabled visible ready", timeout=10)
+        hwnd = 0
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            hwnd = win32gui.FindWindow("Chrome_WidgetWin_1", "Codex")
+            if hwnd and win32gui.IsWindow(hwnd):
+                break
+            time.sleep(0.1)
+        if not hwnd:
+            raise RuntimeError("Could not find the Codex desktop window.")
+
+        # Connecting by handle avoids a slow global UIA window search on some machines.
+        self.app = Application(backend="uia").connect(handle=hwnd, timeout=10)
+        self.window_spec = self.app.window(handle=hwnd)
         self.window = self.window_spec.wrapper_object()
 
     def _ensure_interactive_desktop(self) -> None:
