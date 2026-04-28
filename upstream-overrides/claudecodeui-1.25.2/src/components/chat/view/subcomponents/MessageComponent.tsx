@@ -152,7 +152,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
         /* User message bubble on the right */
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
           <div className="group flex-1 rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:flex-initial sm:px-4">
-            <div className="whitespace-pre-wrap break-words text-sm">
+            <div className="whitespace-pre-wrap break-words text-[15px] leading-6 sm:text-base sm:leading-7">
               {message.content}
             </div>
             {message.images && message.images.length > 0 && (
@@ -274,7 +274,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
                   <SessionProviderLogo provider={provider} className="h-full w-full" />
                 </div>
               )}
-              <div className="text-sm font-medium text-gray-900 dark:text-white">
+              <div className="text-base font-medium text-gray-900 dark:text-white">
                 {message.type === 'error' ? t('messageTypes.error') : message.type === 'tool' ? t('messageTypes.tool') : (provider === 'cursor' ? t('messageTypes.cursor') : provider === 'codex' ? t('messageTypes.codex') : provider === 'gemini' ? t('messageTypes.gemini') : t('messageTypes.claude'))}
               </div>
             </div>
@@ -286,7 +286,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
               <>
                 <div className="flex flex-col">
                   <div className="flex flex-col">
-                    <Markdown className="prose prose-sm max-w-none dark:prose-invert">
+                    <Markdown className="prose max-w-none dark:prose-invert">
                       {String(message.displayText || '')}
                     </Markdown>
                   </div>
@@ -324,8 +324,8 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
                         </svg>
                         <span className="text-xs font-medium text-red-700 dark:text-red-300">{t('messageTypes.error')}</span>
                       </div>
-                      <div className="relative text-sm text-red-900 dark:text-red-100">
-                        <Markdown className="prose prose-sm prose-red max-w-none dark:prose-invert">
+                      <div className="relative text-[15px] leading-6 text-red-900 dark:text-red-100 sm:text-base sm:leading-7">
+                        <Markdown className="prose prose-red max-w-none dark:prose-invert">
                           {String(message.toolResult.content || '')}
                         </Markdown>
                         {permissionSuggestion && (
@@ -480,7 +480,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
               </div>
             ) : message.isThinking ? (
               /* Thinking messages - collapsible by default */
-              <div className="text-sm text-gray-700 dark:text-gray-300">
+              <div className="text-[15px] leading-6 text-gray-700 dark:text-gray-300 sm:text-base sm:leading-7">
                 <details className="group">
                   <summary className="flex cursor-pointer items-center gap-2 font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
                     <svg className="h-3 w-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -488,22 +488,22 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
                     </svg>
                     <span>{t('thinking.emoji')}</span>
                   </summary>
-                  <div className="mt-2 border-l-2 border-gray-300 pl-4 text-sm text-gray-600 dark:border-gray-600 dark:text-gray-400">
-                    <Markdown className="prose prose-sm prose-gray max-w-none dark:prose-invert">
+                  <div className="mt-2 border-l-2 border-gray-300 pl-4 text-[15px] leading-6 text-gray-600 dark:border-gray-600 dark:text-gray-400 sm:text-base sm:leading-7">
+                    <Markdown className="prose prose-gray max-w-none dark:prose-invert">
                       {message.content}
                     </Markdown>
                   </div>
                 </details>
               </div>
             ) : (
-              <div className="text-sm text-gray-700 dark:text-gray-300">
+              <div className="text-[15px] leading-6 text-gray-700 dark:text-gray-300 sm:text-base sm:leading-7">
                 {/* Thinking accordion for reasoning */}
                 {showThinking && message.reasoning && (
                   <details className="mb-3">
                     <summary className="cursor-pointer font-medium text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200">
                       {t('thinking.emoji')}
                     </summary>
-                    <div className="mt-2 border-l-2 border-gray-300 pl-4 text-sm italic text-gray-600 dark:border-gray-600 dark:text-gray-400">
+                    <div className="mt-2 border-l-2 border-gray-300 pl-4 text-[15px] leading-6 italic text-gray-600 dark:border-gray-600 dark:text-gray-400 sm:text-base sm:leading-7">
                       <div className="whitespace-pre-wrap">
                         {message.reasoning}
                       </div>
@@ -532,7 +532,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
                           </div>
                           <div className="overflow-hidden rounded-lg border border-gray-600/30 bg-gray-800 dark:border-gray-700 dark:bg-gray-900">
                             <pre className="overflow-x-auto p-4">
-                              <code className="block whitespace-pre font-mono text-sm text-gray-100 dark:text-gray-200">
+                              <code className="block whitespace-pre font-mono text-[15px] leading-6 text-gray-100 dark:text-gray-200 sm:text-base sm:leading-7">
                                 {formatted}
                               </code>
                             </pre>
@@ -546,7 +546,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
 
                   // Normal rendering for non-JSON content
                   return message.type === 'assistant' ? (
-                    <Markdown className="prose prose-sm prose-gray max-w-none dark:prose-invert">
+                    <Markdown className="prose prose-gray max-w-none dark:prose-invert">
                       {content}
                     </Markdown>
                   ) : (

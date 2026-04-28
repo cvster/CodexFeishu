@@ -339,7 +339,7 @@ export default function ChatComposer({
         >
           <input {...getInputProps()} />
           <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-            <div className={`chat-input-placeholder block w-full whitespace-pre-wrap break-words py-1.5 pr-20 text-base leading-6 text-transparent sm:py-4 sm:pr-40 ${inputLeftPaddingClass}`}>
+            <div className={`chat-input-placeholder block w-full whitespace-pre-wrap break-words py-1.5 pr-20 text-[17px] leading-7 text-transparent sm:py-4 sm:pr-40 sm:text-lg ${inputLeftPaddingClass}`}>
               {renderInputWithMentions(input)}
             </div>
           </div>
@@ -424,7 +424,7 @@ export default function ChatComposer({
               onBlur={() => onInputFocusChange?.(false)}
               onInput={onTextareaInput}
               placeholder={placeholder}
-              className={`chat-input-placeholder block max-h-[40vh] min-h-[50px] w-full resize-none overflow-y-auto rounded-2xl bg-transparent py-1.5 pr-20 text-base leading-6 text-foreground placeholder-muted-foreground/50 transition-all duration-200 focus:outline-none sm:max-h-[300px] sm:min-h-[80px] sm:py-4 sm:pr-40 ${inputLeftPaddingClass}`}
+              className={`chat-input-placeholder block max-h-[40vh] min-h-[50px] w-full resize-none overflow-y-auto rounded-2xl bg-transparent py-1.5 pr-20 text-[17px] leading-7 text-foreground placeholder-muted-foreground/50 transition-all duration-200 focus:outline-none sm:max-h-[300px] sm:min-h-[80px] sm:py-4 sm:pr-40 sm:text-lg ${inputLeftPaddingClass}`}
               style={{ height: '50px' }}
             />
 
