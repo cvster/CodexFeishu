@@ -602,11 +602,12 @@ export function useChatComposerState({
         }
       }
 
+      const userMessageTimestamp = new Date();
       const userMessage: ChatMessage = {
         type: 'user',
         content: currentInput,
         images: uploadedImages as any,
-        timestamp: new Date(),
+        timestamp: userMessageTimestamp,
         __pendingSync: true,
         __deliveryStatus: 'sending',
       };
@@ -690,7 +691,7 @@ export function useChatComposerState({
         const nextPendingUserMessage: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'> = {
           displayContent: currentInput,
           sentContent: messageContent,
-          timestamp: userMessage.timestamp.toISOString(),
+          timestamp: userMessageTimestamp.toISOString(),
           status: 'sending',
         };
 

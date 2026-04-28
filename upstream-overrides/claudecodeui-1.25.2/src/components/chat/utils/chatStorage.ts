@@ -12,6 +12,14 @@ export interface PendingUserMessageRecord {
 }
 
 const PENDING_USER_MESSAGE_PREFIX = 'pending_user_message_';
+export const PENDING_USER_MESSAGE_CHANGED_EVENT = 'pending-user-message-changed';
+
+export interface PendingUserMessageChangedEventDetail {
+  projectName: string;
+  sessionId: string;
+  provider: string;
+  status: PendingUserMessageRecord['status'] | null;
+}
 
 const getPendingUserMessageStorageKey = (
   projectName: string,
@@ -35,6 +43,28 @@ const isPendingUserMessageRecord = (value: unknown): value is PendingUserMessage
     typeof candidate.sentContent === 'string' &&
     typeof candidate.timestamp === 'string' &&
     (candidate.status === 'sending' || candidate.status === 'sent' || candidate.status === 'failed')
+  );
+};
+
+const emitPendingUserMessageChanged = (
+  projectName: string,
+  sessionId: string,
+  provider: string,
+  status: PendingUserMessageChangedEventDetail['status'],
+) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.dispatchEvent(
+    new CustomEvent<PendingUserMessageChangedEventDetail>(PENDING_USER_MESSAGE_CHANGED_EVENT, {
+      detail: {
+        projectName,
+        sessionId,
+        provider,
+        status,
+      },
+    }),
   );
 };
 
@@ -119,17 +149,20 @@ export const savePendingUserMessage = (
   // Intentional lightweight tracking: one pending record per project/provider/session.
   // The desktop Codex queue still owns actual delivery; this local record only decorates
   // the latest unsynced bubble, so a newer send may replace the previous local marker.
+  const record: PendingUserMessageRecord = {
+    sessionId,
+    provider,
+    displayContent: message.displayContent,
+    sentContent: message.sentContent,
+    timestamp: message.timestamp,
+    status: 'sending',
+  };
+
   safeLocalStorage.setItem(
     getPendingUserMessageStorageKey(projectName, sessionId, provider),
-    JSON.stringify({
-      sessionId,
-      provider,
-      displayContent: message.displayContent,
-      sentContent: message.sentContent,
-      timestamp: message.timestamp,
-      status: 'sending',
-    } satisfies PendingUserMessageRecord),
+    JSON.stringify(record),
   );
+  emitPendingUserMessageChanged(projectName, sessionId, provider, record.status);
 };
 
 export const loadPendingUserMessage = (
@@ -163,6 +196,7 @@ export const clearPendingUserMessage = (
   provider: string,
 ) => {
   safeLocalStorage.removeItem(getPendingUserMessageStorageKey(projectName, sessionId, provider));
+  emitPendingUserMessageChanged(projectName, sessionId, provider, null);
 };
 
 export const markPendingUserMessageSent = (
@@ -184,6 +218,7 @@ export const markPendingUserMessageSent = (
     getPendingUserMessageStorageKey(projectName, sessionId, provider),
     JSON.stringify(nextRecord),
   );
+  emitPendingUserMessageChanged(projectName, sessionId, provider, nextRecord.status);
 
   return nextRecord;
 };
@@ -207,6 +242,7 @@ export const markPendingUserMessageFailed = (
     getPendingUserMessageStorageKey(projectName, sessionId, provider),
     JSON.stringify(nextRecord),
   );
+  emitPendingUserMessageChanged(projectName, sessionId, provider, nextRecord.status);
 
   return nextRecord;
 };

@@ -10,6 +10,8 @@ import { createSessionViewModel, getTaskIndicatorStatus } from '../../utils/util
 import TaskIndicator from './TaskIndicator';
 import SidebarProjectSessions from './SidebarProjectSessions';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import SidebarProjectStatusBadge from './SidebarProjectStatusBadge';
+import SidebarSessionStatusBadge from './SidebarSessionStatusBadge';
 
 type SidebarProjectItemProps = {
   project: Project;
@@ -107,7 +109,6 @@ export default function SidebarProjectItem({
   const hasSingleDirectSession = sessions.length === 1 && !hasMoreSessions;
   const singleSession = hasSingleDirectSession ? sessions[0] : null;
   const singleSessionView = singleSession ? createSessionViewModel(singleSession, currentTime, t) : null;
-  const isSingleSessionSelected = Boolean(singleSession && selectedSession?.id === singleSession.id);
   const isSingleSessionProcessing = Boolean(singleSession && processingSessions.has(singleSession.id));
   const projectPathLabel = project.isProjectless ? project.displayName : project.fullPath;
 
@@ -198,14 +199,25 @@ export default function SidebarProjectItem({
                         <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                           <SessionProviderLogo provider={singleSession.__provider} className="h-3 w-3 flex-shrink-0" />
                           <span className="min-w-0 flex-1 truncate">{singleSessionView.sessionName}</span>
-                          {isSingleSessionProcessing ? (
-                            <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
-                              {t('status.thinking')}
-                            </Badge>
-                          ) : null}
+                          <SidebarSessionStatusBadge
+                            projectName={project.name}
+                            sessionId={singleSession.id}
+                            provider={singleSession.__provider}
+                            isProcessing={isSingleSessionProcessing}
+                            showCompleted={!isSingleSessionProcessing}
+                            t={t}
+                          />
                         </div>
                       ) : (
-                        <p className="text-xs text-muted-foreground">{sessionCountLabel}</p>
+                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <span>{sessionCountLabel}</span>
+                          <SidebarProjectStatusBadge
+                            projectName={project.name}
+                            sessions={sessions}
+                            processingSessions={processingSessions}
+                            t={t}
+                          />
+                        </div>
                       )}
                       {singleSession && singleSessionView ? (
                         <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
@@ -361,15 +373,14 @@ export default function SidebarProjectItem({
                       <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
                         <Clock className="h-2.5 w-2.5" />
                         <span>{formatTimeAgo(singleSessionView.sessionTime, currentTime, t)}</span>
-                        {isSingleSessionProcessing ? (
-                          <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
-                            {t('status.thinking')}
-                          </Badge>
-                        ) : isSingleSessionSelected ? (
-                          <Badge variant="secondary" className="px-1 py-0 text-[10px] text-muted-foreground">
-                            {t('common:status.completed')}
-                          </Badge>
-                        ) : null}
+                        <SidebarSessionStatusBadge
+                          projectName={project.name}
+                          sessionId={singleSession.id}
+                          provider={singleSession.__provider}
+                          isProcessing={isSingleSessionProcessing}
+                          showCompleted={!isSingleSessionProcessing}
+                          t={t}
+                        />
                         {singleSessionView.messageCount > 0 ? (
                           <Badge variant="secondary" className="ml-auto px-1 py-0 text-xs">
                             {singleSessionView.messageCount}
@@ -378,7 +389,15 @@ export default function SidebarProjectItem({
                       </div>
                     </>
                   ) : (
-                    <div className="text-xs text-muted-foreground">{sessionCountDisplay}</div>
+                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span>{sessionCountDisplay}</span>
+                      <SidebarProjectStatusBadge
+                        projectName={project.name}
+                        sessions={sessions}
+                        processingSessions={processingSessions}
+                        t={t}
+                      />
+                    </div>
                   )}
                 </div>
               )}

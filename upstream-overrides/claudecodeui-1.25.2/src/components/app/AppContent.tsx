@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
@@ -8,7 +8,73 @@ import { IS_CODEX_ONLY_HARDENED } from '../../constants/config';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
+import type { Project, ProjectSession, SessionProvider } from '../../types/app';
 import MobileNav from './MobileNav';
+
+const SIDEBAR_STATUS_POLL_INTERVAL_MS = 3000;
+const MAX_SIDEBAR_STATUS_POLL_TARGETS = 40;
+
+type SidebarStatusPollTarget = {
+  sessionId: string;
+  provider: SessionProvider;
+};
+
+const SIDEBAR_PROCESSING_STARTED_TYPES = new Set(['codex-desktop-command-submitted']);
+
+const SIDEBAR_PROCESSING_FINISHED_TYPES = new Set([
+  'claude-complete',
+  'codex-complete',
+  'cursor-result',
+  'session-aborted',
+  'claude-error',
+  'cursor-error',
+  'codex-error',
+  'gemini-error',
+  'error',
+]);
+
+const addSidebarStatusTargets = (
+  targets: SidebarStatusPollTarget[],
+  seen: Set<string>,
+  sessions: ProjectSession[] | undefined,
+  fallbackProvider: SessionProvider,
+) => {
+  for (const session of sessions ?? []) {
+    if (!session.id) {
+      continue;
+    }
+
+    const provider = (session.__provider || fallbackProvider) as SessionProvider;
+    const key = `${provider}:${session.id}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    targets.push({ sessionId: session.id, provider });
+  }
+};
+
+const collectSidebarStatusPollTargets = (projects: Project[]): SidebarStatusPollTarget[] => {
+  const targets: SidebarStatusPollTarget[] = [];
+  const seen = new Set<string>();
+
+  for (const project of projects) {
+    addSidebarStatusTargets(targets, seen, project.codexSessions, 'codex');
+
+    if (!IS_CODEX_ONLY_HARDENED) {
+      addSidebarStatusTargets(targets, seen, project.sessions, 'claude');
+      addSidebarStatusTargets(targets, seen, project.cursorSessions, 'cursor');
+      addSidebarStatusTargets(targets, seen, project.geminiSessions, 'gemini');
+    }
+
+    if (targets.length >= MAX_SIDEBAR_STATUS_POLL_TARGETS) {
+      return targets.slice(0, MAX_SIDEBAR_STATUS_POLL_TARGETS);
+    }
+  }
+
+  return targets;
+};
 
 export default function AppContent() {
   const navigate = useNavigate();
@@ -37,6 +103,7 @@ export default function AppContent() {
     isLoadingProjects,
     isInputFocused,
     externalMessageUpdate,
+    projects,
     setActiveTab,
     setSidebarOpen,
     setIsInputFocused,
@@ -51,6 +118,10 @@ export default function AppContent() {
     isMobile,
     activeSessions,
   });
+  const sidebarStatusPollTargets = useMemo(
+    () => collectSidebarStatusPollTargets(projects),
+    [projects],
+  );
 
   useEffect(() => {
     // Expose a non-blocking refresh for chat/session flows.
@@ -127,6 +198,64 @@ export default function AppContent() {
       });
     }
   }, [isConnected, selectedSession?.id, sendMessage]);
+
+  useEffect(() => {
+    if (!isConnected || sidebarStatusPollTargets.length === 0) {
+      return;
+    }
+
+    const pollSidebarSessionStatuses = () => {
+      sidebarStatusPollTargets.forEach((target) => {
+        sendMessage({
+          type: 'check-session-status',
+          sessionId: target.sessionId,
+          provider: target.provider,
+        });
+      });
+    };
+
+    pollSidebarSessionStatuses();
+    const intervalId = window.setInterval(pollSidebarSessionStatuses, SIDEBAR_STATUS_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isConnected, sendMessage, sidebarStatusPollTargets]);
+
+  useEffect(() => {
+    const messageType = latestMessage?.type;
+    const messageSessionId =
+      typeof latestMessage?.sessionId === 'string' ? latestMessage.sessionId : null;
+
+    if (!messageType || !messageSessionId) {
+      return;
+    }
+
+    if (messageType === 'session-status') {
+      if (latestMessage.isProcessing) {
+        markSessionAsProcessing(messageSessionId);
+      } else {
+        markSessionAsInactive(messageSessionId);
+        markSessionAsNotProcessing(messageSessionId);
+      }
+      return;
+    }
+
+    if (SIDEBAR_PROCESSING_STARTED_TYPES.has(messageType)) {
+      markSessionAsProcessing(messageSessionId);
+      return;
+    }
+
+    if (SIDEBAR_PROCESSING_FINISHED_TYPES.has(messageType)) {
+      markSessionAsInactive(messageSessionId);
+      markSessionAsNotProcessing(messageSessionId);
+    }
+  }, [
+    latestMessage,
+    markSessionAsInactive,
+    markSessionAsNotProcessing,
+    markSessionAsProcessing,
+  ]);
 
   return (
     <div className="fixed inset-0 flex bg-background">

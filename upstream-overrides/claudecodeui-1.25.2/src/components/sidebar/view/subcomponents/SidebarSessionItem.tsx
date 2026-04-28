@@ -8,6 +8,7 @@ import type { Project, ProjectSession, SessionProvider } from '../../../../types
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel } from '../../utils/utils';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import SidebarSessionStatusBadge from './SidebarSessionStatusBadge';
 
 type SidebarSessionItemProps = {
   project: Project;
@@ -52,7 +53,7 @@ export default function SidebarSessionItem({
   const sessionView = createSessionViewModel(session, currentTime, t);
   const isSelected = selectedSession?.id === session.id;
   const isProcessing = processingSessions.has(session.id);
-  const showCompletedState = isSelected && !isProcessing;
+  const showCompletedState = !isProcessing;
 
   const selectMobileSession = () => {
     onProjectSelect(project);
@@ -103,16 +104,14 @@ export default function SidebarSessionItem({
                 <span className="text-xs text-muted-foreground">
                   {formatTimeAgo(sessionView.sessionTime, currentTime, t)}
                 </span>
-                {isProcessing ? (
-                  <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
-                    {t('status.thinking')}
-                  </Badge>
-                ) : null}
-                {showCompletedState ? (
-                  <Badge variant="secondary" className="px-1 py-0 text-[10px] text-muted-foreground">
-                    {t('common:status.completed')}
-                  </Badge>
-                ) : null}
+                <SidebarSessionStatusBadge
+                  projectName={project.name}
+                  sessionId={session.id}
+                  provider={session.__provider}
+                  isProcessing={isProcessing}
+                  showCompleted={showCompletedState}
+                  t={t}
+                />
                 {sessionView.messageCount > 0 && (
                   <Badge variant="secondary" className="ml-auto px-1 py-0 text-xs">
                     {sessionView.messageCount}
@@ -157,16 +156,14 @@ export default function SidebarSessionItem({
                 <span className="text-xs text-muted-foreground">
                   {formatTimeAgo(sessionView.sessionTime, currentTime, t)}
                 </span>
-                {isProcessing ? (
-                  <Badge variant="secondary" className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700 dark:text-green-300">
-                    {t('status.thinking')}
-                  </Badge>
-                ) : null}
-                {showCompletedState ? (
-                  <Badge variant="secondary" className="px-1 py-0 text-[10px] text-muted-foreground">
-                    {t('common:status.completed')}
-                  </Badge>
-                ) : null}
+                <SidebarSessionStatusBadge
+                  projectName={project.name}
+                  sessionId={session.id}
+                  provider={session.__provider}
+                  isProcessing={isProcessing}
+                  showCompleted={showCompletedState}
+                  t={t}
+                />
                 {sessionView.messageCount > 0 && (
                   <Badge
                     variant="secondary"
