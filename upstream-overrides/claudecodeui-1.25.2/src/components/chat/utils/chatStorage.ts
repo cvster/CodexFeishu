@@ -8,7 +8,7 @@ export interface PendingUserMessageRecord {
   displayContent: string;
   sentContent: string;
   timestamp: string;
-  status: 'sending' | 'sent';
+  status: 'sending' | 'sent' | 'failed';
 }
 
 const PENDING_USER_MESSAGE_PREFIX = 'pending_user_message_';
@@ -34,7 +34,7 @@ const isPendingUserMessageRecord = (value: unknown): value is PendingUserMessage
     typeof candidate.displayContent === 'string' &&
     typeof candidate.sentContent === 'string' &&
     typeof candidate.timestamp === 'string' &&
-    (candidate.status === 'sending' || candidate.status === 'sent')
+    (candidate.status === 'sending' || candidate.status === 'sent' || candidate.status === 'failed')
   );
 };
 
@@ -178,6 +178,29 @@ export const markPendingUserMessageSent = (
   const nextRecord: PendingUserMessageRecord = {
     ...existing,
     status: 'sent',
+  };
+
+  safeLocalStorage.setItem(
+    getPendingUserMessageStorageKey(projectName, sessionId, provider),
+    JSON.stringify(nextRecord),
+  );
+
+  return nextRecord;
+};
+
+export const markPendingUserMessageFailed = (
+  projectName: string,
+  sessionId: string,
+  provider: string,
+) => {
+  const existing = loadPendingUserMessage(projectName, sessionId, provider);
+  if (!existing) {
+    return null;
+  }
+
+  const nextRecord: PendingUserMessageRecord = {
+    ...existing,
+    status: 'failed',
   };
 
   safeLocalStorage.setItem(

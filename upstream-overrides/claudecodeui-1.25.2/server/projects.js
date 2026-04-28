@@ -2064,6 +2064,8 @@ function getTimestampMs(value) {
   return null;
 }
 
+const CODEX_PENDING_DELIVERY_TIMEOUT_MS = 60_000;
+
 function getCodexMessageText(message) {
   if (typeof message?.message?.content === 'string') {
     return message.message.content;
@@ -2124,6 +2126,16 @@ function getCodexPendingDeliveryFromMessages(messages, pendingMessage) {
         },
       };
     }
+  }
+
+  const pendingTimestamp = getTimestampMs(pendingMessage.timestamp);
+  if (pendingTimestamp !== null && Date.now() - pendingTimestamp >= CODEX_PENDING_DELIVERY_TIMEOUT_MS) {
+    return {
+      status: 'failed',
+      matched: false,
+      reason: 'pending-delivery-timeout',
+      timeoutMs: CODEX_PENDING_DELIVERY_TIMEOUT_MS,
+    };
   }
 
   return {

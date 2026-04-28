@@ -59,10 +59,30 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
   const [permissionGrantState, setPermissionGrantState] = useState<PermissionGrantState>('idle');
   const userCopyContent = String(message.content || '');
   const deliveryStatus = isLatestUserMessage
-    ? (message.__deliveryStatus === 'sending' || message.__deliveryStatus === 'sent'
+    ? (message.__deliveryStatus === 'sending' ||
+      message.__deliveryStatus === 'sent' ||
+      message.__deliveryStatus === 'failed'
         ? message.__deliveryStatus
         : null)
     : null;
+  const deliveryStatusClass =
+    deliveryStatus === 'sending'
+      ? 'text-amber-200'
+      : deliveryStatus === 'failed'
+        ? 'text-red-200'
+        : 'text-emerald-200';
+  const deliveryStatusDotClass =
+    deliveryStatus === 'sending'
+      ? 'bg-amber-300'
+      : deliveryStatus === 'failed'
+        ? 'bg-red-300'
+        : 'bg-emerald-300';
+  const deliveryStatusLabel =
+    deliveryStatus === 'sending'
+      ? t('deliveryStatus.sending', { defaultValue: '发送中' })
+      : deliveryStatus === 'failed'
+        ? t('deliveryStatus.failed', { defaultValue: '发送失败' })
+        : t('deliveryStatus.sent', { defaultValue: '已发送' });
   const formattedMessageContent = useMemo(
     () => formatUsageLimitText(String(message.content || '')),
     [message.content]
@@ -78,7 +98,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
   const shouldShowPendingDeleteControl =
     shouldShowUserCopyControl &&
     isLatestUserMessage &&
-    deliveryStatus === 'sending' &&
+    (deliveryStatus === 'sending' || deliveryStatus === 'failed') &&
     typeof onDeletePendingMessage === 'function';
   const shouldShowAssistantCopyControl = message.type === 'assistant' &&
     assistantCopyContent.trim().length > 0 &&
@@ -151,19 +171,13 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
             <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
               {deliveryStatus && (
                 <span
-                  className={`inline-flex items-center gap-1 rounded px-1 py-0.5 ${
-                    deliveryStatus === 'sending' ? 'text-amber-200' : 'text-emerald-200'
-                  }`}
+                  className={`inline-flex items-center gap-1 rounded px-1 py-0.5 ${deliveryStatusClass}`}
                 >
                   <span
-                    className={`h-1.5 w-1.5 rounded-full ${
-                      deliveryStatus === 'sending' ? 'bg-amber-300' : 'bg-emerald-300'
-                    }`}
+                    className={`h-1.5 w-1.5 rounded-full ${deliveryStatusDotClass}`}
                   />
                   <span className="text-[10px] font-medium">
-                    {deliveryStatus === 'sending'
-                      ? t('deliveryStatus.sending', { defaultValue: '发送中' })
-                      : t('deliveryStatus.sent', { defaultValue: '已发送' })}
+                    {deliveryStatusLabel}
                   </span>
                 </span>
               )}

@@ -105,7 +105,9 @@ The current implementation intentionally keeps this boundary lightweight:
 The frontend does not treat the HTTP / WebSocket request result as final delivery, and it no longer decides delivery by matching only the currently rendered message list.
 The backend owns the final decision: it reads the complete Codex JSONL history and confirms that the same user-visible message has appeared there.
 
-The frontend sends the latest pending message content and timestamp to the backend pending-delivery endpoint. The backend normalizes content, applies the timestamp window, and returns `sending` or `sent`. The frontend only consumes that result.
+The frontend sends the latest pending message content and timestamp to the backend pending-delivery endpoint. The backend normalizes content, applies the timestamp window, and returns `sending`, `sent`, or `failed`. If the pending message is still absent from the complete Codex history after 60 seconds, the backend marks it `failed`; the frontend only consumes that result.
+
+The composer status button separates delivery from answer generation: `sending` shows "sending", `failed` shows a failed delivery state, Codex processing with no unconfirmed delivery or with the latest pending message confirmed as `sent` shows "replying", and an idle session shows the completed state.
 
 The latest message page may still include the latest user-visible input, but that is now for display quality only, not the source of truth for delivery.
 

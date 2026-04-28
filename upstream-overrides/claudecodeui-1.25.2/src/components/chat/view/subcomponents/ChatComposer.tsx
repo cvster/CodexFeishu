@@ -45,6 +45,8 @@ interface ChatComposerProps {
   isLoading: boolean;
   isRefreshingLatest: boolean;
   isPendingUserMessageSending: boolean;
+  isPendingUserMessageFailed: boolean;
+  isPendingUserMessageReplying: boolean;
   provider: Provider | string;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
@@ -104,6 +106,8 @@ export default function ChatComposer({
   isLoading,
   isRefreshingLatest,
   isPendingUserMessageSending,
+  isPendingUserMessageFailed,
+  isPendingUserMessageReplying,
   provider,
   permissionMode,
   onModeSwitch,
@@ -175,11 +179,15 @@ export default function ChatComposer({
     : '';
   const inputLeftPaddingClass = IS_CODEX_ONLY_HARDENED ? 'pl-14' : 'pl-24';
   const isSessionBusy = isSessionProcessing || isLoading;
-  const isStatusBusy = isRefreshingLatest || isPendingUserMessageSending || isSessionBusy;
+  const isStatusBusy = isRefreshingLatest || isPendingUserMessageSending || isPendingUserMessageReplying || isSessionBusy;
   const sessionStatusLabel = isRefreshingLatest
     ? t('common:buttons.refresh')
     : isPendingUserMessageSending
       ? t('deliveryStatus.sending', { defaultValue: '发送中' })
+    : isPendingUserMessageFailed
+      ? t('deliveryStatus.failed', { defaultValue: '发送失败' })
+    : isPendingUserMessageReplying
+      ? t('deliveryStatus.replying', { defaultValue: '回复中' })
     : isSessionBusy
       ? t('thinking.title')
       : t('common:status.completed');
@@ -339,14 +347,31 @@ export default function ChatComposer({
           <div className="relative z-10">
             <div
               className={`absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border transition-colors sm:h-8 sm:w-8 ${
-                isStatusBusy
+                isPendingUserMessageFailed
+                  ? 'border-red-500/40 bg-red-500/10 text-red-500'
+                  : isPendingUserMessageReplying
+                  ? 'border-sky-500/40 bg-sky-500/10 text-sky-500'
+                  : isStatusBusy
                   ? 'border-orange-400/40 bg-orange-500/10 text-orange-500'
                   : 'border-green-500/30 bg-green-500/10 text-green-600'
               }`}
               title={sessionStatusLabel}
               aria-label={sessionStatusLabel}
             >
-              {isRefreshingLatest ? (
+              {isPendingUserMessageFailed ? (
+                <svg className="h-4 w-4 sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M12 8v5" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M12 17h.01" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                </svg>
+              ) : isPendingUserMessageReplying ? (
+                <svg className="h-4 w-4 animate-pulse sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M4 12h6" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M14 12h6" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v6" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 14v6" />
+                </svg>
+              ) : isRefreshingLatest ? (
                 <svg className="h-4 w-4 animate-spin sm:h-[18px] sm:w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                   <path
                     strokeLinecap="round"

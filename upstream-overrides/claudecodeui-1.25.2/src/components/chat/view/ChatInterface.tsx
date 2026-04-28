@@ -251,7 +251,7 @@ function ChatInterface({
         const message = previousMessages[index];
         if (
           message.type === 'user' &&
-          message.__deliveryStatus === 'sending' &&
+          (message.__deliveryStatus === 'sending' || message.__deliveryStatus === 'failed') &&
           String(message.content || '') === pendingUserMessage.displayContent
         ) {
           indexToRemove = index;
@@ -438,6 +438,11 @@ function ChatInterface({
           isLoading={isLoading}
           isRefreshingLatest={isRefreshingLatest}
           isPendingUserMessageSending={pendingUserMessage?.status === 'sending'}
+          isPendingUserMessageFailed={pendingUserMessage?.status === 'failed'}
+          isPendingUserMessageReplying={
+            (isSessionProcessing || isLoading) &&
+            (!pendingUserMessage || pendingUserMessage.status === 'sent')
+          }
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}

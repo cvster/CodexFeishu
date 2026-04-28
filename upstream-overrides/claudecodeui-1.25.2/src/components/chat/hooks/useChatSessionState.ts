@@ -6,6 +6,7 @@ import type { ChatMessage, Provider } from '../types/types';
 import type { Project, ProjectSession } from '../../../types/app';
 import {
   loadPendingUserMessage,
+  markPendingUserMessageFailed,
   markPendingUserMessageSent,
   safeLocalStorage,
   type PendingUserMessageRecord,
@@ -22,6 +23,7 @@ const INITIAL_VISIBLE_MESSAGES = 100;
 const MIN_REFRESHING_LATEST_MS = 500;
 const SESSION_STATUS_POLL_MS = 3000;
 const BACKGROUND_REFRESH_INDICATOR_INTERVAL_MS = 3_000;
+const PENDING_DELIVERY_TIMEOUT_MS = 60_000;
 const BOTTOM_REFRESH_GAP_PX = 12;
 const BOTTOM_REFRESH_TRIGGER_DISTANCE_PX = 28;
 const BOTTOM_REFRESH_TIMEOUT_MS = 1400;
@@ -297,13 +299,13 @@ const applyPendingUserMessage = (
         ? {
             ...message,
             __pendingSync: pendingMessage.status === 'sending',
-            __deliveryStatus: pendingMessage.status === 'sending' ? 'sending' : 'sent',
+            __deliveryStatus: pendingMessage.status,
           }
         : message,
     );
   }
 
-  if (pendingMessage.status !== 'sending') {
+  if (pendingMessage.status === 'sent') {
     return messages;
   }
 
@@ -313,8 +315,8 @@ const applyPendingUserMessage = (
       type: 'user',
       content: pendingMessage.displayContent,
       timestamp: pendingMessage.timestamp,
-      __pendingSync: true,
-      __deliveryStatus: 'sending',
+      __pendingSync: pendingMessage.status === 'sending',
+      __deliveryStatus: pendingMessage.status,
     } satisfies ChatMessage,
   ];
 };
@@ -521,15 +523,23 @@ export function useChatSessionState({
         }
 
         const data = await response.json();
-        if (data?.pendingDelivery?.status !== 'sent') {
-          return pendingMessage;
+        if (data?.pendingDelivery?.status === 'sent') {
+          return markPendingUserMessageSent(
+            selectedProject.name,
+            pendingMessage.sessionId,
+            pendingMessage.provider,
+          ) || { ...pendingMessage, status: 'sent' as const };
         }
 
-        return markPendingUserMessageSent(
-          selectedProject.name,
-          pendingMessage.sessionId,
-          pendingMessage.provider,
-        ) || { ...pendingMessage, status: 'sent' as const };
+        if (data?.pendingDelivery?.status === 'failed') {
+          return markPendingUserMessageFailed(
+            selectedProject.name,
+            pendingMessage.sessionId,
+            pendingMessage.provider,
+          ) || { ...pendingMessage, status: 'failed' as const };
+        }
+
+        return pendingMessage;
       } catch (error) {
         console.error('Error checking Codex pending delivery:', error);
         return pendingMessage;
@@ -742,6 +752,28 @@ export function useChatSessionState({
       setChatMessages,
     ],
   );
+
+  useEffect(() => {
+    if (
+      !pendingUserMessage ||
+      pendingUserMessage.status !== 'sending' ||
+      resolvedSessionProvider !== 'codex'
+    ) {
+      return;
+    }
+
+    const pendingTimestamp = getTimestampMs(pendingUserMessage.timestamp);
+    if (pendingTimestamp === null) {
+      return;
+    }
+
+    const delay = Math.max(0, pendingTimestamp + PENDING_DELIVERY_TIMEOUT_MS - Date.now() + 250);
+    const timeoutId = window.setTimeout(() => {
+      void refreshLatestMessages({ preserveScroll: true, showIndicator: false });
+    }, delay);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [pendingUserMessage, refreshLatestMessages, resolvedSessionProvider]);
 
   const handleScroll = useCallback(async () => {
     const container = scrollContainerRef.current;
