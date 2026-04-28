@@ -8,6 +8,7 @@ import re
 import sys
 import time
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -40,6 +41,8 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_ABSOLUTE = 0x8000
 SPI_GETSCREENSAVERRUNNING = 114
+SPI_GETSCREENSAVEACTIVE = 16
+SPI_SETSCREENSAVEACTIVE = 17
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
 WM_CLOSE = 0x0010
@@ -177,6 +180,45 @@ def _is_screensaver_running() -> bool:
         0,
     )
     return bool(success and running.value)
+
+
+def _get_screensaver_active() -> bool | None:
+    active = wintypes.BOOL()
+    success = user32.SystemParametersInfoW(
+        SPI_GETSCREENSAVEACTIVE,
+        0,
+        ctypes.byref(active),
+        0,
+    )
+    if not success:
+        return None
+    return bool(active.value)
+
+
+def _set_screensaver_active(active: bool) -> bool:
+    return bool(
+        user32.SystemParametersInfoW(
+            SPI_SETSCREENSAVEACTIVE,
+            1 if active else 0,
+            None,
+            0,
+        )
+    )
+
+
+@contextmanager
+def _temporarily_disable_screensaver() -> Iterable[None]:
+    previous_active = _get_screensaver_active()
+    disabled = False
+    if previous_active:
+        # Disable only for this desktop automation run, then restore the user's setting.
+        disabled = _set_screensaver_active(False)
+
+    try:
+        yield
+    finally:
+        if previous_active and disabled:
+            _set_screensaver_active(True)
 
 
 def _request_display_awake() -> None:
@@ -625,30 +667,31 @@ class CodexDesktopAutomation:
         session_exact: bool,
         max_scrolls: int,
     ) -> dict[str, Any]:
-        _dismiss_screensaver_or_wake()
-        self._ensure_interactive_desktop()
+        with _temporarily_disable_screensaver():
+            _dismiss_screensaver_or_wake()
+            self._ensure_interactive_desktop()
 
-        if session_name:
-            selection = self.open_session(
-                project_name,
-                session_name,
-                project_exact=project_exact,
-                session_exact=session_exact,
-                max_scrolls=max_scrolls,
-                wait_for_main_change=True,
-            )
-        else:
-            selection = self.open_latest_session(
-                project_name,
-                project_exact=project_exact,
-                max_scrolls=max_scrolls,
-                wait_for_main_change=True,
-            )
+            if session_name:
+                selection = self.open_session(
+                    project_name,
+                    session_name,
+                    project_exact=project_exact,
+                    session_exact=session_exact,
+                    max_scrolls=max_scrolls,
+                    wait_for_main_change=True,
+                )
+            else:
+                selection = self.open_latest_session(
+                    project_name,
+                    project_exact=project_exact,
+                    max_scrolls=max_scrolls,
+                    wait_for_main_change=True,
+                )
 
-        before = tuple(self._main_text_preview())
-        composer = self._composer()
-        self._set_composer_text_via_messages(composer, message)
-        self._submit_composer_message(composer, before)
+            before = tuple(self._main_text_preview())
+            composer = self._composer()
+            self._set_composer_text_via_messages(composer, message)
+            self._submit_composer_message(composer, before)
 
         return {
             "selected_project": selection["selected_project"],

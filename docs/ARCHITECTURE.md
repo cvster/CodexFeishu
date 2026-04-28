@@ -107,6 +107,8 @@ The backend owns the final decision: it reads the complete Codex JSONL history a
 
 The frontend sends the latest pending message content and timestamp to the backend pending-delivery endpoint. The backend normalizes content, applies the timestamp window, and returns `sending`, `sent`, or `failed`. If the pending message is still absent from the complete Codex history after 60 seconds, the backend marks it `failed`; the frontend only consumes that result.
 
+When the user clicks `重发` on the latest pending message, the frontend reuses that local pending bubble, resets its status to `sending`, and rewrites the pending timestamp with the current time. The backend 60-second failure window therefore starts from the resend time instead of the previous failed attempt.
+
 The composer status button separates delivery from answer generation: `sending` shows "sending", `failed` shows a failed delivery state, Codex processing with no unconfirmed delivery or with the latest pending message confirmed as `sent` shows "replying", and an idle session shows the completed state. The sidebar reuses the same status model for all loaded session rows; single-session projects show the status directly on the project row, and multi-session project rows show an aggregate status for loaded sessions. To keep background sessions fresh, the app shell periodically requests `session-status` for loaded sessions, and sidebar status badges directly call the backend pending-delivery check while a message is still `sending`.
 
 The latest message page may still include the latest user-visible input, but that is now for display quality only, not the source of truth for delivery.
@@ -152,6 +154,8 @@ Tradeoffs:
 - the PC must be on an interactive desktop
 - Codex App must be running and discoverable by window automation
 - screensavers, lock screens, or broken window state can block sending
+
+During `send-message`, desktop automation temporarily disables the Windows screensaver, then still runs the existing monitor wake, screensaver close, and light input fallback path. It restores the previous screensaver enabled state after the send attempt finishes, so the automation does not permanently change the user's system settings. Lock screens are not screensavers and still require the user to return to an interactive desktop.
 
 ### Worker and one-shot automation
 

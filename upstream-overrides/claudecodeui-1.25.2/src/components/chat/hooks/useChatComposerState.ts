@@ -152,6 +152,7 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+  const resendContentRef = useRef<string | null>(null);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -417,6 +418,7 @@ export function useChatComposerState({
       return;
     }
 
+    resendContentRef.current = nextInput;
     setInput(nextInput);
     inputValueRef.current = nextInput;
     setAttachedImages([]);
@@ -521,6 +523,7 @@ export function useChatComposerState({
       event.preventDefault();
       const currentInput = inputValueRef.current;
       if (!currentInput.trim() || !selectedProject) {
+        resendContentRef.current = null;
         return;
       }
 
@@ -531,6 +534,7 @@ export function useChatComposerState({
         const commandName = firstSpace > 0 ? trimmedInput.slice(0, firstSpace) : trimmedInput;
         const matchedCommand = slashCommands.find((cmd: SlashCommand) => cmd.name === commandName);
         if (matchedCommand) {
+          resendContentRef.current = null;
           executeCommand(matchedCommand, trimmedInput);
           setInput('');
           inputValueRef.current = '';
@@ -553,6 +557,8 @@ export function useChatComposerState({
       }
 
       const selectedSessionId = selectedSession?.id || null;
+      const isResendSubmit = resendContentRef.current === currentInput;
+      resendContentRef.current = null;
       const latestProjectCodexSessionId =
         provider === 'codex' && !selectedSessionId
           ? getLatestProjectCodexSessionId(selectedProject)
@@ -612,7 +618,33 @@ export function useChatComposerState({
         __deliveryStatus: 'sending',
       };
 
-      setChatMessages((previous) => [...previous, userMessage]);
+      setChatMessages((previous) => {
+        if (!isResendSubmit) {
+          return [...previous, userMessage];
+        }
+
+        const indexToReplace = (() => {
+          for (let index = previous.length - 1; index >= 0; index -= 1) {
+            const message = previous[index];
+            if (
+              message.type === 'user' &&
+              String(message.content || '') === currentInput &&
+              (message.__deliveryStatus === 'sending' || message.__deliveryStatus === 'failed')
+            ) {
+              return index;
+            }
+          }
+          return -1;
+        })();
+
+        if (indexToReplace < 0) {
+          return [...previous, userMessage];
+        }
+
+        return previous.map((message, index) =>
+          index === indexToReplace ? userMessage : message,
+        );
+      });
 
       if (!shouldBridgeMobileCodexSubmit) {
         setCanAbortSession(true);
@@ -702,7 +734,7 @@ export function useChatComposerState({
           nextPendingUserMessage,
         );
 
-        if (selectedSession?.id === pendingMessageSessionId) {
+        if (selectedSession?.id === pendingMessageSessionId || currentSessionId === pendingMessageSessionId) {
           setPendingUserMessage?.({
             sessionId: pendingMessageSessionId,
             provider,
