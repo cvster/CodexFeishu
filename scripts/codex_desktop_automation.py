@@ -281,6 +281,10 @@ def _input_desktop_is_switchable() -> bool:
         user32.CloseDesktop(desktop)
 
 
+def _desktop_is_ready_for_automation() -> bool:
+    return not _is_screensaver_running() and _input_desktop_is_switchable()
+
+
 def _send_wake_input() -> None:
     _send_input_events(
         [
@@ -374,16 +378,17 @@ def _dismiss_screensaver_or_wake(timeout: float = 12.0) -> None:
     _request_display_awake()
     _close_screensaver_windows()
 
-    if not _is_screensaver_running() and _input_desktop_is_switchable():
+    if _desktop_is_ready_for_automation():
         return
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         screensaver_running = _is_screensaver_running()
+        desktop_switchable = _input_desktop_is_switchable()
         _request_monitor_on()
         _close_screensaver_windows()
         _send_wake_input()
-        if screensaver_running:
+        if screensaver_running or not desktop_switchable:
             time.sleep(0.1)
             _send_wake_click()
             time.sleep(0.1)
@@ -392,7 +397,7 @@ def _dismiss_screensaver_or_wake(timeout: float = 12.0) -> None:
             _tap_key(win32con.VK_RETURN)
         time.sleep(0.35)
         _request_display_awake()
-        if not _is_screensaver_running() and _input_desktop_is_switchable():
+        if _desktop_is_ready_for_automation():
             return
 
 
@@ -485,6 +490,8 @@ class CodexDesktopAutomation:
         self.window = self.window_spec.wrapper_object()
 
     def _ensure_interactive_desktop(self) -> None:
+        _dismiss_screensaver_or_wake(timeout=4.0)
+
         if not _input_desktop_is_switchable():
             raise RuntimeError(
                 "Windows desktop is not currently interactive. Please dismiss the lock screen or screensaver and try again."

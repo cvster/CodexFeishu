@@ -286,7 +286,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
               <>
                 <div className="flex flex-col">
                   <div className="flex flex-col">
-                    <Markdown className="prose max-w-none dark:prose-invert">
+                    <Markdown className="prose prose-sm max-w-none text-[15px] leading-6 sm:text-base sm:leading-7 dark:prose-invert">
                       {String(message.displayText || '')}
                     </Markdown>
                   </div>
@@ -325,7 +325,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
                         <span className="text-xs font-medium text-red-700 dark:text-red-300">{t('messageTypes.error')}</span>
                       </div>
                       <div className="relative text-[15px] leading-6 text-red-900 dark:text-red-100 sm:text-base sm:leading-7">
-                        <Markdown className="prose prose-red max-w-none dark:prose-invert">
+                        <Markdown className="prose prose-sm prose-red max-w-none text-[15px] leading-6 sm:text-base sm:leading-7 dark:prose-invert">
                           {String(message.toolResult.content || '')}
                         </Markdown>
                         {permissionSuggestion && (
@@ -489,7 +489,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
                     <span>{t('thinking.emoji')}</span>
                   </summary>
                   <div className="mt-2 border-l-2 border-gray-300 pl-4 text-[15px] leading-6 text-gray-600 dark:border-gray-600 dark:text-gray-400 sm:text-base sm:leading-7">
-                    <Markdown className="prose prose-gray max-w-none dark:prose-invert">
+                    <Markdown className="prose prose-sm prose-gray max-w-none text-[15px] leading-6 sm:text-base sm:leading-7 dark:prose-invert">
                       {message.content}
                     </Markdown>
                   </div>
@@ -546,7 +546,7 @@ const MessageComponent = memo(({ message, prevMessage, isLatestUserMessage = fal
 
                   // Normal rendering for non-JSON content
                   return message.type === 'assistant' ? (
-                    <Markdown className="prose prose-gray max-w-none dark:prose-invert">
+                    <Markdown className="prose prose-sm prose-gray max-w-none text-[15px] leading-6 sm:text-base sm:leading-7 dark:prose-invert">
                       {content}
                     </Markdown>
                   ) : (
