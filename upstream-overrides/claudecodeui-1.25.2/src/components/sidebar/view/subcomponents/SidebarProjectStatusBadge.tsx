@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Badge } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import { api } from '../../../../utils/api';
 import {
@@ -29,23 +28,14 @@ const isPendingUserMessageRecord = (
   pendingMessage: PendingUserMessageRecord | null,
 ): pendingMessage is PendingUserMessageRecord => Boolean(pendingMessage);
 
-const getBadgeClassName = (status: ProjectSidebarStatus) =>
-  status === 'sending'
-    ? 'border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-    : status === 'failed'
-      ? 'border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300'
-      : status === 'replying'
-        ? 'border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300'
-        : 'border-green-500/20 bg-green-500/10 text-green-700 dark:text-green-300';
-
-const getDotClassName = (status: ProjectSidebarStatus) =>
-  status === 'sending'
-    ? 'bg-amber-500 animate-pulse'
-    : status === 'failed'
-      ? 'bg-red-500'
-      : status === 'replying'
-        ? 'bg-sky-500 animate-pulse'
-        : 'bg-green-500';
+const getStatusClassName = (status: ProjectSidebarStatus) =>
+  status === 'failed'
+    ? 'border-red-500/40 bg-red-500/10 text-red-500'
+    : status === 'replying'
+      ? 'border-sky-500/40 bg-sky-500/10 text-sky-500'
+      : status === 'sending'
+        ? 'border-orange-400/40 bg-orange-500/10 text-orange-500'
+        : 'border-green-500/30 bg-green-500/10 text-green-600';
 
 export default function SidebarProjectStatusBadge({
   projectName,
@@ -156,12 +146,39 @@ export default function SidebarProjectStatusBadge({
           : t('common:status.completed');
 
   return (
-    <Badge
-      variant="secondary"
-      className={cn('inline-flex items-center gap-1 px-1 py-0 text-[10px]', getBadgeClassName(status), className)}
+    <div
+      className={cn(
+        'inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border transition-colors',
+        getStatusClassName(status),
+        className,
+      )}
+      title={label}
+      aria-label={label}
+      role="status"
     >
-      <span className={cn('h-1.5 w-1.5 rounded-full', getDotClassName(status))} />
-      {label}
-    </Badge>
+      {status === 'failed' ? (
+        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M12 8v5" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M12 17h.01" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+        </svg>
+      ) : status === 'replying' ? (
+        <svg className="h-3.5 w-3.5 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M4 12h6" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M14 12h6" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v6" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 14v6" />
+        </svg>
+      ) : status === 'sending' ? (
+        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M5 12h11" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M13 8l4 4-4 4" />
+        </svg>
+      ) : (
+        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M7 12.5l3.2 3.2L17 9" />
+        </svg>
+      )}
+    </div>
   );
 }
