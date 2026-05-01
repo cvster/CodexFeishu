@@ -1,4 +1,4 @@
-import { Check, Clock, Edit3, Folder, FolderOpen, Plus, Star, Trash2, X } from 'lucide-react';
+import { Archive, Check, Clock, Edit3, Folder, FolderOpen, Plus, Star, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
@@ -41,6 +41,12 @@ type SidebarProjectItemProps = {
   onDeleteProject: (project: Project) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
   onDeleteSession: (
+    projectName: string,
+    sessionId: string,
+    sessionTitle: string,
+    provider: SessionProvider,
+  ) => void;
+  onArchiveSession: (
     projectName: string,
     sessionId: string,
     sessionTitle: string,
@@ -92,6 +98,7 @@ export default function SidebarProjectItem({
   onDeleteProject,
   onSessionSelect,
   onDeleteSession,
+  onArchiveSession,
   onLoadMoreSessions,
   onNewSession,
   onEditingSessionNameChange,
@@ -115,6 +122,26 @@ export default function SidebarProjectItem({
   const toggleProject = () => onToggleProject(project.name);
   const toggleStarProject = () => onToggleStarProject(project.name);
   const startNewSession = () => onNewSession(project);
+  const renameSingleSession = () => {
+    if (!singleSession || !singleSessionView) {
+      return;
+    }
+
+    const nextName = window.prompt(
+      t('sessions.renameSession', { defaultValue: 'Rename Session' }),
+      singleSessionView.sessionName,
+    );
+    if (nextName !== null) {
+      onSaveEditingSession(project.name, singleSession.id, nextName, singleSession.__provider);
+    }
+  };
+  const archiveSingleSession = () => {
+    if (!singleSession || !singleSessionView) {
+      return;
+    }
+
+    onArchiveSession(project.name, singleSession.id, singleSessionView.sessionName, singleSession.__provider);
+  };
 
   const saveProjectName = () => {
     onSaveProjectName(project.name);
@@ -302,6 +329,31 @@ export default function SidebarProjectItem({
                       </>
                     )}
 
+                    {singleSession && (
+                      <>
+                        <button
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-gray-500/10 active:scale-90 dark:border-gray-800 dark:bg-gray-900/30"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            renameSingleSession();
+                          }}
+                          title={t('tooltips.editSessionName', { defaultValue: 'Rename session' })}
+                        >
+                          <Edit3 className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                        </button>
+                        <button
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-amber-200 bg-amber-500/10 active:scale-90 dark:border-amber-800 dark:bg-amber-900/30"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            archiveSingleSession();
+                          }}
+                          title={t('tooltips.archiveSession', { defaultValue: '归档此会话' })}
+                        >
+                          <Archive className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                        </button>
+                      </>
+                    )}
+
                     <button
                       className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 active:scale-90 dark:border-primary/30 dark:bg-primary/20"
                       onClick={(event) => {
@@ -475,6 +527,30 @@ export default function SidebarProjectItem({
                     </div>
                   </>
                 )}
+                {singleSession && (
+                  <>
+                    <div
+                      className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-accent group-hover:opacity-100"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        renameSingleSession();
+                      }}
+                      title={t('tooltips.editSessionName', { defaultValue: 'Rename session' })}
+                    >
+                      <Edit3 className="h-3 w-3 text-muted-foreground" />
+                    </div>
+                    <div
+                      className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-amber-50 group-hover:opacity-100 dark:hover:bg-amber-900/20"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        archiveSingleSession();
+                      }}
+                      title={t('tooltips.archiveSession', { defaultValue: '归档此会话' })}
+                    >
+                      <Archive className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+                    </div>
+                  </>
+                )}
                 <div
                   className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-100 transition-all duration-200 hover:bg-primary/10 hover:text-primary"
                   onClick={(event) => {
@@ -519,6 +595,7 @@ export default function SidebarProjectItem({
         onProjectSelect={onProjectSelect}
         onSessionSelect={onSessionSelect}
         onDeleteSession={onDeleteSession}
+        onArchiveSession={onArchiveSession}
         onLoadMoreSessions={onLoadMoreSessions}
         onNewSession={onNewSession}
         t={t}

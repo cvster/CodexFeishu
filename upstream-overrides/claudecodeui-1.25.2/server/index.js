@@ -67,7 +67,7 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import { startEnabledPluginServers, stopAllPlugins } from './utils/plugin-process-manager.js';
-import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
+import { initializeDatabase, sessionNamesDb, sessionArchivesDb, applyCustomSessionNames } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocketRequest } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 
@@ -686,10 +686,6 @@ app.delete('/api/projects/:projectName/sessions/:sessionId', authenticateToken, 
 
 // Rename session endpoint
 app.put('/api/sessions/:sessionId/rename', authenticateToken, async (req, res) => {
-    if (CODEX_ONLY_HARDENED_MODE) {
-        return blockDisabledFeature(res, 'Session rename');
-    }
-
     try {
         const { sessionId } = req.params;
         const safeSessionId = String(sessionId).replace(/[^a-zA-Z0-9._-]/g, '');
@@ -715,6 +711,35 @@ app.put('/api/sessions/:sessionId/rename', authenticateToken, async (req, res) =
         res.json({ success: true });
     } catch (error) {
         console.error(`[API] Error renaming session ${req.params.sessionId}:`, error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Archive session endpoint
+app.put('/api/sessions/:sessionId/archive', authenticateToken, async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const safeSessionId = String(sessionId).replace(/[^a-zA-Z0-9._-]/g, '');
+        if (!safeSessionId || safeSessionId !== String(sessionId)) {
+            return res.status(400).json({ error: 'Invalid sessionId' });
+        }
+
+        const { provider } = req.body;
+        if (!provider || !VALID_PROVIDERS.includes(provider)) {
+            return res.status(400).json({ error: `Provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
+        }
+
+        // Archive only in this frontend's session list; do not archive the Codex desktop app thread.
+        sessionArchivesDb.archive(safeSessionId, provider);
+        await broadcastProjectsUpdated({
+            changeType: 'session_archived',
+            provider,
+            sessionId: safeSessionId
+        });
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error(`[API] Error archiving session ${req.params.sessionId}:`, error);
         res.status(500).json({ error: error.message });
     }
 });

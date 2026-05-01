@@ -66,7 +66,7 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
-import { applyCustomSessionNames } from './database/db.js';
+import { applyCustomSessionNames, sessionArchivesDb } from './database/db.js';
 
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
 const CODEX_PROJECTLESS_PROJECT_NAME = '__codex_projectless__';
@@ -977,6 +977,7 @@ async function getSessions(projectName, limit = 5, offset = 0) {
     });
     const visibleSessions = [...latestFromGroups, ...standaloneSessionsArray]
       .filter(session => !session.summary.startsWith('{ "'))
+      .filter(session => !sessionArchivesDb.isArchived(session.id, 'claude'))
       .sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
 
     const total = visibleSessions.length;
@@ -1600,7 +1601,9 @@ async function getCursorSessions(projectPath) {
     sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     // Return only the first 5 sessions for performance
-    return sessions.slice(0, 5);
+    return sessions
+      .filter(session => !sessionArchivesDb.isArchived(session.id, 'cursor'))
+      .slice(0, 5);
 
   } catch (error) {
     console.error('Error fetching Cursor sessions:', error);
@@ -1888,6 +1891,7 @@ async function buildCodexSessionsIndex() {
   } = await loadCodexDesktopThreadMetadata();
   const threadNames = await loadCodexThreadNames();
   const shouldFilterWorkspaceRoots = hasDesktopState && visibleWorkspaceRoots.size > 0;
+  const locallyArchivedSessionIds = sessionArchivesDb.getArchivedIds('codex');
 
   for (const filePath of jsonlFiles) {
     try {
@@ -1902,6 +1906,10 @@ async function buildCodexSessionsIndex() {
       }
 
       if (archivedSessionIds.has(sessionData.id)) {
+        continue;
+      }
+
+      if (locallyArchivedSessionIds.has(sessionData.id)) {
         continue;
       }
 
@@ -3181,9 +3189,11 @@ async function getGeminiCliSessions(projectPath) {
     }
   }
 
-  return sessions.sort((a, b) =>
-    new Date(b.lastActivity || 0) - new Date(a.lastActivity || 0)
-  );
+  return sessions
+    .filter(session => !sessionArchivesDb.isArchived(session.id, 'gemini'))
+    .sort((a, b) =>
+      new Date(b.lastActivity || 0) - new Date(a.lastActivity || 0)
+    );
 }
 
 async function getGeminiCliSessionMessages(sessionId) {

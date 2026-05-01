@@ -119,6 +119,15 @@ const runMigrations = () => {
     )`);
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_names_lookup ON session_names(session_id, provider)');
 
+    db.exec(`CREATE TABLE IF NOT EXISTS session_archives (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'claude',
+      archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(session_id, provider)
+    )`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_session_archives_lookup ON session_archives(session_id, provider)');
+
     db.exec(`CREATE TABLE IF NOT EXISTS trusted_devices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -658,6 +667,31 @@ const sessionNamesDb = {
   },
 };
 
+const sessionArchivesDb = {
+  archive: (sessionId, provider) => {
+    db.prepare(`
+      INSERT INTO session_archives (session_id, provider)
+      VALUES (?, ?)
+      ON CONFLICT(session_id, provider)
+      DO UPDATE SET archived_at = CURRENT_TIMESTAMP
+    `).run(sessionId, provider);
+  },
+
+  isArchived: (sessionId, provider) => {
+    const row = db.prepare(
+      'SELECT 1 FROM session_archives WHERE session_id = ? AND provider = ? LIMIT 1'
+    ).get(sessionId, provider);
+    return Boolean(row);
+  },
+
+  getArchivedIds: (provider) => {
+    const rows = db.prepare(
+      'SELECT session_id FROM session_archives WHERE provider = ?'
+    ).all(provider);
+    return new Set(rows.map((row) => row.session_id));
+  },
+};
+
 // Apply custom session names from the database (overrides CLI-generated summaries)
 function applyCustomSessionNames(sessions, provider) {
   if (!sessions?.length) return;
@@ -727,6 +761,7 @@ export {
   credentialsDb,
   trustedDevicesDb,
   sessionNamesDb,
+  sessionArchivesDb,
   applyCustomSessionNames,
   appConfigDb,
   githubTokensDb // Backward compatibility

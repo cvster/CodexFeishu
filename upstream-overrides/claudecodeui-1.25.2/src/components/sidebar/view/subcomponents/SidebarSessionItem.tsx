@@ -1,4 +1,4 @@
-import { Check, Clock, Edit2, Trash2, X } from 'lucide-react';
+import { Archive, Check, Clock, Edit2, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
@@ -30,6 +30,12 @@ type SidebarSessionItemProps = {
     sessionTitle: string,
     provider: SessionProvider,
   ) => void;
+  onArchiveSession: (
+    projectName: string,
+    sessionId: string,
+    sessionTitle: string,
+    provider: SessionProvider,
+  ) => void;
   t: TFunction;
 };
 
@@ -48,12 +54,14 @@ export default function SidebarSessionItem({
   onProjectSelect,
   onSessionSelect,
   onDeleteSession,
+  onArchiveSession,
   t,
 }: SidebarSessionItemProps) {
   const sessionView = createSessionViewModel(session, currentTime, t);
   const isSelected = selectedSession?.id === session.id;
   const isProcessing = processingSessions.has(session.id);
   const showCompletedState = !isProcessing;
+  const canDelete = !IS_CODEX_ONLY_HARDENED && !sessionView.isCursorSession;
 
   const selectMobileSession = () => {
     onProjectSelect(project);
@@ -66,6 +74,25 @@ export default function SidebarSessionItem({
 
   const requestDeleteSession = () => {
     onDeleteSession(project.name, session.id, sessionView.sessionName, session.__provider);
+  };
+
+  const requestArchiveSession = () => {
+    onArchiveSession(project.name, session.id, sessionView.sessionName, session.__provider);
+  };
+
+  const requestRenameSession = () => {
+    if (window.matchMedia('(min-width: 768px)').matches) {
+      onStartEditingSession(session.id, sessionView.sessionName);
+      return;
+    }
+
+    const nextName = window.prompt(
+      t('sessions.renameSession', { defaultValue: 'Rename Session' }),
+      sessionView.sessionName,
+    );
+    if (nextName !== null) {
+      onSaveEditingSession(project.name, session.id, nextName, session.__provider);
+    }
   };
 
   return (
@@ -123,9 +150,31 @@ export default function SidebarSessionItem({
               </div>
             </div>
 
-            {!IS_CODEX_ONLY_HARDENED && !sessionView.isCursorSession && (
+            <button
+              className="ml-1 flex h-5 w-5 items-center justify-center rounded-md bg-gray-50 opacity-70 transition-transform active:scale-95 dark:bg-gray-900/20"
+              onClick={(event) => {
+                event.stopPropagation();
+                requestRenameSession();
+              }}
+              title={t('tooltips.editSessionName', { defaultValue: 'Rename session' })}
+              aria-label={t('tooltips.editSessionName', { defaultValue: 'Rename session' })}
+            >
+              <Edit2 className="h-2.5 w-2.5 text-gray-600 dark:text-gray-400" />
+            </button>
+            <button
+              className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-50 opacity-70 transition-transform active:scale-95 dark:bg-amber-900/20"
+              onClick={(event) => {
+                event.stopPropagation();
+                requestArchiveSession();
+              }}
+              title={t('tooltips.archiveSession', { defaultValue: '归档此会话' })}
+              aria-label={t('tooltips.archiveSession', { defaultValue: '归档此会话' })}
+            >
+              <Archive className="h-2.5 w-2.5 text-amber-600 dark:text-amber-400" />
+            </button>
+            {canDelete && (
               <button
-                className="ml-1 flex h-5 w-5 items-center justify-center rounded-md bg-red-50 opacity-70 transition-transform active:scale-95 dark:bg-red-900/20"
+                className="flex h-5 w-5 items-center justify-center rounded-md bg-red-50 opacity-70 transition-transform active:scale-95 dark:bg-red-900/20"
                 onClick={(event) => {
                   event.stopPropagation();
                   requestDeleteSession();
@@ -181,7 +230,7 @@ export default function SidebarSessionItem({
         </Button>
 
         <div className="absolute right-2 top-1/2 flex -translate-y-1/2 transform items-center gap-1 opacity-0 transition-all duration-200 group-hover:opacity-100">
-            {!IS_CODEX_ONLY_HARDENED && editingSession === session.id ? (
+            {editingSession === session.id ? (
               <>
                 <input
                   type="text"
@@ -220,19 +269,29 @@ export default function SidebarSessionItem({
                   <X className="h-3 w-3 text-gray-600 dark:text-gray-400" />
                 </button>
               </>
-            ) : !IS_CODEX_ONLY_HARDENED ? (
+            ) : (
               <>
                 <button
                   className="flex h-6 w-6 items-center justify-center rounded bg-gray-50 hover:bg-gray-100 dark:bg-gray-900/20 dark:hover:bg-gray-900/40"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onStartEditingSession(session.id, sessionView.sessionName);
+                    requestRenameSession();
                   }}
                   title={t('tooltips.editSessionName')}
                 >
                   <Edit2 className="h-3 w-3 text-gray-600 dark:text-gray-400" />
                 </button>
-                {!sessionView.isCursorSession && (
+                <button
+                  className="flex h-6 w-6 items-center justify-center rounded bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/40"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    requestArchiveSession();
+                  }}
+                  title={t('tooltips.archiveSession', { defaultValue: '归档此会话' })}
+                >
+                  <Archive className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+                </button>
+                {canDelete && (
                   <button
                     className="flex h-6 w-6 items-center justify-center rounded bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40"
                     onClick={(event) => {
@@ -245,7 +304,7 @@ export default function SidebarSessionItem({
                   </button>
                 )}
               </>
-            ) : null}
+            )}
           </div>
       </div>
     </div>

@@ -28,6 +28,12 @@ type SidebarProjectSessionsProps = {
     sessionTitle: string,
     provider: SessionProvider,
   ) => void;
+  onArchiveSession: (
+    projectName: string,
+    sessionId: string,
+    sessionTitle: string,
+    provider: SessionProvider,
+  ) => void;
   onLoadMoreSessions: (project: Project) => void;
   onNewSession: (project: Project) => void;
   t: TFunction;
@@ -69,6 +75,7 @@ export default function SidebarProjectSessions({
   onProjectSelect,
   onSessionSelect,
   onDeleteSession,
+  onArchiveSession,
   onLoadMoreSessions,
   onNewSession: _onNewSession,
   t,
@@ -111,6 +118,7 @@ export default function SidebarProjectSessions({
             onProjectSelect={onProjectSelect}
             onSessionSelect={onSessionSelect}
             onDeleteSession={onDeleteSession}
+            onArchiveSession={onArchiveSession}
             t={t}
           />
         ))

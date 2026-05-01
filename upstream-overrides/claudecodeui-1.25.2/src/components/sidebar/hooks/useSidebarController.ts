@@ -448,6 +448,42 @@ export function useSidebarController({
     }
   }, [onSessionDelete, sessionDeleteConfirmation, t]);
 
+  const archiveSession = useCallback(
+    async (
+      _projectName: string,
+      sessionId: string,
+      sessionTitle: string,
+      provider: SessionProvider,
+    ) => {
+      const displayName = sessionTitle || t('sessions.unnamed');
+      const confirmed = window.confirm(
+        t('messages.archiveSessionConfirm', {
+          name: displayName,
+          defaultValue: `确定要归档“${displayName}”吗？归档后会从会话列表隐藏。`,
+        }),
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      try {
+        const response = await api.archiveSession(sessionId, provider);
+        if (response.ok) {
+          onSessionDelete?.(sessionId);
+          await onRefresh();
+        } else {
+          console.error('[Sidebar] Failed to archive session:', response.status);
+          alert(t('messages.archiveSessionFailed', { defaultValue: '归档会话失败，请重试。' }));
+        }
+      } catch (error) {
+        console.error('[Sidebar] Error archiving session:', error);
+        alert(t('messages.archiveSessionError', { defaultValue: '归档会话时出错，请重试。' }));
+      }
+    },
+    [onRefresh, onSessionDelete, t],
+  );
+
   const requestProjectDelete = useCallback(
     (project: Project) => {
       setDeleteConfirmation({
@@ -561,12 +597,6 @@ export function useSidebarController({
 
   const updateSessionSummary = useCallback(
     async (_projectName: string, sessionId: string, summary: string, provider: SessionProvider) => {
-      if (IS_CODEX_ONLY_HARDENED) {
-        setEditingSession(null);
-        setEditingSessionName('');
-        return;
-      }
-
       const trimmed = summary.trim();
       if (!trimmed) {
         setEditingSession(null);
@@ -631,6 +661,7 @@ export function useSidebarController({
     saveProjectName,
     showDeleteSessionConfirmation,
     confirmDeleteSession,
+    archiveSession,
     requestProjectDelete,
     confirmDeleteProject,
     loadMoreSessions,

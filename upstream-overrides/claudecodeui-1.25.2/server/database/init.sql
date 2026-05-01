@@ -64,6 +64,17 @@ CREATE TABLE IF NOT EXISTS session_names (
 
 CREATE INDEX IF NOT EXISTS idx_session_names_lookup ON session_names(session_id, provider);
 
+-- Session archives (provider-agnostic hidden session records)
+CREATE TABLE IF NOT EXISTS session_archives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'claude',
+    archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, provider)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_archives_lookup ON session_archives(session_id, provider);
+
 -- Approved devices (browser/app wrappers) that are allowed to log in for this single-user system
 CREATE TABLE IF NOT EXISTS trusted_devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
