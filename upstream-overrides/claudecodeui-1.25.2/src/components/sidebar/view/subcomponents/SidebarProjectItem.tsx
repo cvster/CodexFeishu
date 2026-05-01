@@ -1,17 +1,14 @@
-import { Archive, Check, Clock, Edit3, Folder, FolderOpen, Plus, Star, Trash2, X } from 'lucide-react';
+import { Check, Edit3, Folder, FolderOpen, Plus, Star, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
-import { Badge, Button } from '../../../../shared/view/ui';
+import { Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import { IS_CODEX_ONLY_HARDENED } from '../../../../constants/config';
-import { formatTimeAgo } from '../../../../utils/dateUtils';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
 import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
-import { createSessionViewModel, getTaskIndicatorStatus } from '../../utils/utils';
+import { getTaskIndicatorStatus } from '../../utils/utils';
 import TaskIndicator from './TaskIndicator';
 import SidebarProjectSessions from './SidebarProjectSessions';
-import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import SidebarProjectStatusBadge from './SidebarProjectStatusBadge';
-import SidebarSessionStatusBadge from './SidebarSessionStatusBadge';
 
 type SidebarProjectItemProps = {
   project: Project;
@@ -113,48 +110,17 @@ export default function SidebarProjectItem({
   const sessionCountDisplay = getSessionCountDisplay(sessions, hasMoreSessions);
   const sessionCountLabel = `${sessionCountDisplay} session${sessions.length === 1 ? '' : 's'}`;
   const taskStatus = getTaskIndicatorStatus(project, mcpServerStatus);
-  const hasSingleDirectSession = sessions.length === 1 && !hasMoreSessions;
-  const singleSession = hasSingleDirectSession ? sessions[0] : null;
-  const singleSessionView = singleSession ? createSessionViewModel(singleSession, currentTime, t) : null;
-  const isSingleSessionProcessing = Boolean(singleSession && processingSessions.has(singleSession.id));
   const projectPathLabel = project.isProjectless ? project.displayName : project.fullPath;
 
   const toggleProject = () => onToggleProject(project.name);
   const toggleStarProject = () => onToggleStarProject(project.name);
   const startNewSession = () => onNewSession(project);
-  const renameSingleSession = () => {
-    if (!singleSession || !singleSessionView) {
-      return;
-    }
-
-    const nextName = window.prompt(
-      t('sessions.renameSession', { defaultValue: 'Rename Session' }),
-      singleSessionView.sessionName,
-    );
-    if (nextName !== null) {
-      onSaveEditingSession(project.name, singleSession.id, nextName, singleSession.__provider);
-    }
-  };
-  const archiveSingleSession = () => {
-    if (!singleSession || !singleSessionView) {
-      return;
-    }
-
-    onArchiveSession(project.name, singleSession.id, singleSessionView.sessionName, singleSession.__provider);
-  };
 
   const saveProjectName = () => {
     onSaveProjectName(project.name);
   };
 
-  const handleProjectClick = () => {
-    if (hasSingleDirectSession) {
-      onSessionSelect(sessions[0], project.name);
-      return;
-    }
-
-    toggleProject();
-  };
+  const handleProjectClick = () => toggleProject();
 
   return (
     <div className={cn('md:space-y-1', isDeleting && 'opacity-50 pointer-events-none')}>
@@ -223,36 +189,15 @@ export default function SidebarProjectItem({
                           />
                         )}
                       </div>
-                      {singleSession && singleSessionView ? (
-                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <SessionProviderLogo provider={singleSession.__provider} className="h-3 w-3 flex-shrink-0" />
-                          <span className="min-w-0 flex-1 truncate">{singleSessionView.sessionName}</span>
-                          <SidebarSessionStatusBadge
-                            projectName={project.name}
-                            sessionId={singleSession.id}
-                            provider={singleSession.__provider}
-                            isProcessing={isSingleSessionProcessing}
-                            showCompleted={!isSingleSessionProcessing}
-                            t={t}
-                          />
-                        </div>
-                      ) : (
-                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span>{sessionCountLabel}</span>
-                          <SidebarProjectStatusBadge
-                            projectName={project.name}
-                            sessions={sessions}
-                            processingSessions={processingSessions}
-                            t={t}
-                          />
-                        </div>
-                      )}
-                      {singleSession && singleSessionView ? (
-                        <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-                          <Clock className="h-2.5 w-2.5" />
-                          <span>{formatTimeAgo(singleSessionView.sessionTime, currentTime, t)}</span>
-                        </div>
-                      ) : null}
+                      <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <span>{sessionCountLabel}</span>
+                        <SidebarProjectStatusBadge
+                          projectName={project.name}
+                          sessions={sessions}
+                          processingSessions={processingSessions}
+                          t={t}
+                        />
+                      </div>
                     </>
                   )}
                 </div>
@@ -329,31 +274,6 @@ export default function SidebarProjectItem({
                       </>
                     )}
 
-                    {singleSession && (
-                      <>
-                        <button
-                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-gray-500/10 active:scale-90 dark:border-gray-800 dark:bg-gray-900/30"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            renameSingleSession();
-                          }}
-                          title={t('tooltips.editSessionName', { defaultValue: 'Rename session' })}
-                        >
-                          <Edit3 className="h-4 w-4 text-gray-600 dark:text-gray-400" />
-                        </button>
-                        <button
-                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-amber-200 bg-amber-500/10 active:scale-90 dark:border-amber-800 dark:bg-amber-900/30"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            archiveSingleSession();
-                          }}
-                          title={t('tooltips.archiveSession', { defaultValue: '归档此会话' })}
-                        >
-                          <Archive className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-                        </button>
-                      </>
-                    )}
-
                     <button
                       className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 active:scale-90 dark:border-primary/30 dark:bg-primary/20"
                       onClick={(event) => {
@@ -384,9 +304,7 @@ export default function SidebarProjectItem({
           onClick={handleProjectClick}
         >
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            {hasSingleDirectSession ? (
-              <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-            ) : isExpanded ? (
+            {isExpanded ? (
               <FolderOpen className="h-4 w-4 flex-shrink-0 text-primary" />
             ) : (
               <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
@@ -419,41 +337,15 @@ export default function SidebarProjectItem({
                   <div className="truncate text-sm font-semibold text-foreground" title={project.displayName}>
                     {project.displayName}
                   </div>
-                  {singleSession && singleSessionView ? (
-                    <>
-                      <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-                        <SessionProviderLogo provider={singleSession.__provider} className="h-3 w-3 flex-shrink-0" />
-                        <span className="truncate">{singleSessionView.sessionName}</span>
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-                        <Clock className="h-2.5 w-2.5" />
-                        <span>{formatTimeAgo(singleSessionView.sessionTime, currentTime, t)}</span>
-                        <SidebarSessionStatusBadge
-                          projectName={project.name}
-                          sessionId={singleSession.id}
-                          provider={singleSession.__provider}
-                          isProcessing={isSingleSessionProcessing}
-                          showCompleted={!isSingleSessionProcessing}
-                          t={t}
-                        />
-                        {singleSessionView.messageCount > 0 ? (
-                          <Badge variant="secondary" className="ml-auto px-1 py-0 text-xs">
-                            {singleSessionView.messageCount}
-                          </Badge>
-                        ) : null}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <span>{sessionCountDisplay}</span>
-                      <SidebarProjectStatusBadge
-                        projectName={project.name}
-                        sessions={sessions}
-                        processingSessions={processingSessions}
-                        t={t}
-                      />
-                    </div>
-                  )}
+                  <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span>{sessionCountDisplay}</span>
+                    <SidebarProjectStatusBadge
+                      projectName={project.name}
+                      sessions={sessions}
+                      processingSessions={processingSessions}
+                      t={t}
+                    />
+                  </div>
                 </div>
               )}
             </div>
@@ -524,30 +416,6 @@ export default function SidebarProjectItem({
                       title={t('tooltips.deleteProject')}
                     >
                       <Trash2 className="h-3 w-3 text-red-600 dark:text-red-400" />
-                    </div>
-                  </>
-                )}
-                {singleSession && (
-                  <>
-                    <div
-                      className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-accent group-hover:opacity-100"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        renameSingleSession();
-                      }}
-                      title={t('tooltips.editSessionName', { defaultValue: 'Rename session' })}
-                    >
-                      <Edit3 className="h-3 w-3 text-muted-foreground" />
-                    </div>
-                    <div
-                      className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-amber-50 group-hover:opacity-100 dark:hover:bg-amber-900/20"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        archiveSingleSession();
-                      }}
-                      title={t('tooltips.archiveSession', { defaultValue: '归档此会话' })}
-                    >
-                      <Archive className="h-3 w-3 text-amber-600 dark:text-amber-400" />
                     </div>
                   </>
                 )}
