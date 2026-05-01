@@ -114,9 +114,16 @@ async function resolveMobileCodexCommandOptions(options = {}, desktopSyncContext
         typeof normalizedOptions.executionMode === 'string'
             ? normalizedOptions.executionMode.trim().toLowerCase()
             : '';
-    const treatAsMobile = Boolean(desktopSyncContext?.isMobile) || executionMode === 'desktop-ui';
+    const treatAsMobile =
+        executionMode === 'desktop-ui' ||
+        (Boolean(desktopSyncContext?.isMobile) && executionMode !== 'sdk');
 
-    if (normalizedOptions.sessionId || !treatAsMobile) {
+    if (
+        normalizedOptions.sessionId ||
+        normalizedOptions.newSession ||
+        !treatAsMobile ||
+        normalizedOptions.allowImplicitSessionCreation
+    ) {
         return normalizedOptions;
     }
 
@@ -1685,7 +1692,8 @@ function handleChatConnection(ws, request = null) {
                 console.log('🤖 Model:', resolvedCodexOptions.model || 'default');
 
                 const shouldBridgeToDesktopUI =
-                    desktopSyncContext?.isMobile || resolvedCodexOptions.executionMode === 'desktop-ui';
+                    resolvedCodexOptions.executionMode === 'desktop-ui' ||
+                    (desktopSyncContext?.isMobile && resolvedCodexOptions.executionMode !== 'sdk');
 
                 if (shouldBridgeToDesktopUI) {
                     const bridgedProjectPath = resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd;
@@ -1694,6 +1702,7 @@ function handleChatConnection(ws, request = null) {
                     console.log('[mobile-codex][bridge-request]', JSON.stringify({
                         projectPath: bridgedProjectPath,
                         sessionId: resolvedCodexOptions.sessionId || null,
+                        newSession: Boolean(resolvedCodexOptions.newSession),
                         sessionTitleHint: resolvedCodexOptions.sessionTitleHint || null,
                         executionMode: resolvedCodexOptions.executionMode || null,
                     }));
@@ -1707,6 +1716,7 @@ function handleChatConnection(ws, request = null) {
                         sessionId: resolvedCodexOptions.sessionId || null,
                         projectPath: bridgedProjectPath,
                         message: data.command || '',
+                        newSession: Boolean(resolvedCodexOptions.newSession),
                         sessionTitleHint: resolvedCodexOptions.sessionTitleHint || null,
                         sourceContext: bridgeSourceContext
                     }).then((bridgeResult) => {
@@ -1722,7 +1732,7 @@ function handleChatConnection(ws, request = null) {
 
                         writer.send({
                             type: 'codex-desktop-command-delivered',
-                            sessionId: resolvedCodexOptions.sessionId || null,
+                            sessionId: bridgeResult?.sessionId || resolvedCodexOptions.sessionId || null,
                             provider: 'codex'
                         });
                     });

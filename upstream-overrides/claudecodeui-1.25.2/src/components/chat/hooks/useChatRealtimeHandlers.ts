@@ -313,6 +313,9 @@ export function useChatRealtimeHandlers({
         break;
 
       case 'codex-desktop-command-delivered':
+        // Desktop delivery only means the automation submitted the text to Codex.
+        // The UI must keep confirming success from the synced session history so a
+        // failed or misrouted desktop send is not shown as delivered prematurely.
         onDesktopCommandDelivered?.();
         break;
 

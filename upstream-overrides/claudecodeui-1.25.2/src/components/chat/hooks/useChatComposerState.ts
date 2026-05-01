@@ -94,14 +94,6 @@ const MOBILE_USER_AGENT_PATTERN =
 const isLikelyMobileBrowser = () =>
   typeof navigator !== 'undefined' && MOBILE_USER_AGENT_PATTERN.test(navigator.userAgent || '');
 
-const getLatestProjectCodexSessionId = (project: Project | null) => {
-  const latestSession = project?.codexSessions?.find(
-    (session) => typeof session?.id === 'string' && session.id.trim().length > 0,
-  );
-
-  return latestSession?.id?.trim() || null;
-};
-
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -559,14 +551,9 @@ export function useChatComposerState({
       const selectedSessionId = selectedSession?.id || null;
       const isResendSubmit = resendContentRef.current === currentInput;
       resendContentRef.current = null;
-      const latestProjectCodexSessionId =
-        provider === 'codex' && !selectedSessionId
-          ? getLatestProjectCodexSessionId(selectedProject)
-          : null;
       const effectiveSessionId =
         selectedSessionId ||
-        (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null) ||
-        latestProjectCodexSessionId;
+        (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null);
       const shouldBridgeMobileCodexSubmit = provider === 'codex' && isLikelyMobileBrowser();
 
       if (isLoading && !shouldBridgeMobileCodexSubmit) {
@@ -748,7 +735,6 @@ export function useChatComposerState({
           selectedProjectName: selectedProject.name,
           selectedProjectPath: resolvedProjectPath,
           selectedSessionId,
-          latestProjectCodexSessionId,
           effectiveSessionId,
           shouldBridgeMobileCodexSubmit,
         });
@@ -782,6 +768,8 @@ export function useChatComposerState({
             model: codexModel,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
             executionMode: shouldBridgeMobileCodexSubmit ? 'desktop-ui' : 'sdk',
+            newSession: !effectiveSessionId,
+            allowImplicitSessionCreation: !effectiveSessionId,
           },
         });
       } else if (provider === 'gemini') {

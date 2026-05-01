@@ -497,6 +497,25 @@ async function resolveNavigationTarget({
   };
 }
 
+async function waitForNewCodexSessionId(projectPath, previousSessionIds) {
+  const previousIds = new Set(previousSessionIds);
+  for (let attempt = 0; attempt < MAX_METADATA_ATTEMPTS; attempt += 1) {
+    const sessions = await getCodexSessions(projectPath, { limit: 0 });
+    const newSession = sessions.find(
+      (session) => typeof session.id === 'string' && !previousIds.has(session.id),
+    );
+    if (newSession?.id) {
+      return newSession.id;
+    }
+
+    if (attempt < MAX_METADATA_ATTEMPTS - 1) {
+      await sleep(METADATA_RETRY_DELAY_MS);
+    }
+  }
+
+  return null;
+}
+
 async function executeDesktopSync({
   sessionId,
   projectPath,
@@ -617,7 +636,7 @@ export function enqueueCodexDesktopMessageBridge(payload) {
 
       const messageText = typeof payload.message === 'string' ? payload.message : '';
 
-      if (!payload.sessionId || !payload.projectPath || messageText.trim().length === 0) {
+      if ((!payload.sessionId && !payload.newSession) || !payload.projectPath || messageText.trim().length === 0) {
         return {
           skipped: true,
           reason: 'missing-session-project-or-message',
@@ -625,19 +644,32 @@ export function enqueueCodexDesktopMessageBridge(payload) {
       }
 
       const resolveStartedAt = Date.now();
-      let target = await resolveNavigationTarget({
-        sessionId: payload.sessionId,
-        projectPath: payload.projectPath,
-        sessionTitleHint: payload.sessionTitleHint || null,
-        allowLatestFallback: false,
-        preferImmediateHint: false,
-        allowSessionTitleHintFallback: false,
-      });
+      const previousSessionIds = payload.newSession
+        ? (await getCodexSessions(payload.projectPath, { limit: 0 }))
+            .map((session) => session.id)
+            .filter((sessionId) => typeof sessionId === 'string')
+        : [];
+      let target = payload.newSession
+        ? {
+            projectDisplayName: getProjectDisplayName(payload.projectPath),
+            sessionTitle: null,
+            selectionMode: 'new-session',
+            resolutionSource: 'new-session',
+          }
+        : await resolveNavigationTarget({
+            sessionId: payload.sessionId,
+            projectPath: payload.projectPath,
+            sessionTitleHint: payload.sessionTitleHint || null,
+            allowLatestFallback: false,
+            preferImmediateHint: false,
+            allowSessionTitleHintFallback: false,
+          });
       console.log(
         '[mobile-codex][bridge-target]',
         JSON.stringify({
           projectPath: payload.projectPath,
           sessionId: payload.sessionId,
+          newSession: Boolean(payload.newSession),
           resolvedProjectDisplayName: target.projectDisplayName,
           resolvedSessionTitle: target.sessionTitle,
           selectionMode: target.selectionMode,
@@ -659,7 +691,9 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         const runSendAutomation = async (resolvedTarget) => {
           const automationArgs = ['send-message', '--message-file', messagePath, '--json'];
           pushDesktopAutomationTextArg(automationArgs, '--project', resolvedTarget.projectDisplayName);
-          if (resolvedTarget.selectionMode !== 'latest' && resolvedTarget.sessionTitle) {
+          if (resolvedTarget.selectionMode === 'new-session') {
+            automationArgs.push('--new-session');
+          } else if (resolvedTarget.selectionMode !== 'latest' && resolvedTarget.sessionTitle) {
             pushDesktopAutomationTextArg(automationArgs, '--session', resolvedTarget.sessionTitle);
           }
 
@@ -672,6 +706,10 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         try {
           result = await runSendAutomation(target);
         } catch (error) {
+          if (payload.newSession) {
+            throw error;
+          }
+
           const shouldRetryWithMetadata =
             typeof payload.sessionId === 'string' &&
             typeof payload.projectPath === 'string';
@@ -714,9 +752,14 @@ export function enqueueCodexDesktopMessageBridge(payload) {
           console.warn('[Codex Desktop Bridge] stderr:', result.stderr);
         }
 
+        const newSessionId = payload.newSession
+          ? await waitForNewCodexSessionId(payload.projectPath, previousSessionIds)
+          : null;
+
         return {
           skipped: false,
           target,
+          sessionId: newSessionId,
           output: result.stdout,
           sourceContext: normalizedContext,
         };

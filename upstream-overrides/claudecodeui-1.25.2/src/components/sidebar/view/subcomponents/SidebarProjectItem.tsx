@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, Clock, Edit3, Folder, FolderOpen, Star, Trash2, X } from 'lucide-react';
+import { Check, Clock, Edit3, Folder, FolderOpen, Plus, Star, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
@@ -114,6 +114,7 @@ export default function SidebarProjectItem({
 
   const toggleProject = () => onToggleProject(project.name);
   const toggleStarProject = () => onToggleStarProject(project.name);
+  const startNewSession = () => onNewSession(project);
 
   const saveProjectName = () => {
     onSaveProjectName(project.name);
@@ -301,15 +302,17 @@ export default function SidebarProjectItem({
                       </>
                     )}
 
-                    {!hasSingleDirectSession ? (
-                      <div className="flex h-6 w-6 items-center justify-center rounded-md bg-muted/30">
-                        {isExpanded ? (
-                          <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                        ) : (
-                          <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                        )}
-                      </div>
-                    ) : null}
+                    <button
+                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 active:scale-90 dark:border-primary/30 dark:bg-primary/20"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startNewSession();
+                      }}
+                      title={t('sessions.newSession')}
+                      aria-label={t('sessions.newSession')}
+                    >
+                      <Plus className="h-4 w-4 text-primary" />
+                    </button>
                   </>
                 )}
               </div>
@@ -472,13 +475,26 @@ export default function SidebarProjectItem({
                     </div>
                   </>
                 )}
-                {!hasSingleDirectSession ? (
-                  isExpanded ? (
-                    <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-                  )
-                ) : null}
+                <div
+                  className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-100 transition-all duration-200 hover:bg-primary/10 hover:text-primary"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    startNewSession();
+                  }}
+                  title={t('sessions.newSession')}
+                  aria-label={t('sessions.newSession')}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      startNewSession();
+                    }
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5 text-primary" />
+                </div>
               </>
             )}
           </div>

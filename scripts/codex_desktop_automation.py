@@ -453,6 +453,7 @@ class ProjectRef:
     expanded: bool
     item: Any
     button: Any | None
+    new_session_button: Any | None
     sessions: list[SessionRef]
 
     def to_json(self) -> dict[str, Any]:
@@ -460,6 +461,7 @@ class ProjectRef:
             "title": self.title,
             "rect": self.rect,
             "expanded": self.expanded,
+            "has_new_session_button": self.new_session_button is not None,
             "sessions": [session.to_json() for session in self.sessions],
         }
 
@@ -664,12 +666,36 @@ class CodexDesktopAutomation:
             "state": self.snapshot(),
         }
 
+    def open_new_session(
+        self,
+        project_name: str,
+        *,
+        project_exact: bool,
+        max_scrolls: int,
+        wait_for_main_change: bool = True,
+    ) -> dict[str, Any]:
+        project = self._find_project(project_name, exact=project_exact, max_scrolls=max_scrolls)
+        before = tuple(self._main_text_preview())
+        new_session_button = project.new_session_button or self._find_project_new_session_button(project)
+        if new_session_button is None:
+            raise RuntimeError(f"Could not find the new conversation button for project '{project_name}'.")
+
+        self._activate_control(new_session_button, label=f"new conversation in project '{project.title}'")
+        self._wait_for_main_text_change(before, timeout=4.0 if wait_for_main_change else 1.5)
+        return {
+            "selected_project": project.title,
+            "selected_session": None,
+            "selection_mode": "new-session",
+            "state": self.snapshot(),
+        }
+
     def send_message(
         self,
         project_name: str,
         message: str,
         *,
         session_name: str | None,
+        new_session: bool,
         project_exact: bool,
         session_exact: bool,
         max_scrolls: int,
@@ -678,7 +704,14 @@ class CodexDesktopAutomation:
             _dismiss_screensaver_or_wake()
             self._ensure_interactive_desktop()
 
-            if session_name:
+            if new_session:
+                selection = self.open_new_session(
+                    project_name,
+                    project_exact=project_exact,
+                    max_scrolls=max_scrolls,
+                    wait_for_main_change=True,
+                )
+            elif session_name:
                 selection = self.open_session(
                     project_name,
                     session_name,
@@ -703,6 +736,7 @@ class CodexDesktopAutomation:
         return {
             "selected_project": selection["selected_project"],
             "selected_session": selection["selected_session"],
+            "selection_mode": selection.get("selection_mode"),
             "submitted_message": message,
             "state": self.snapshot(),
         }
@@ -793,6 +827,7 @@ class CodexDesktopAutomation:
 
     def _parse_project(self, item: Any, viewport: Any | None) -> ProjectRef:
         button = None
+        new_session_button = None
         sessions: list[SessionRef] = []
         expanded = False
 
@@ -801,6 +836,8 @@ class CodexDesktopAutomation:
             if control_type == "Button" and child.is_visible():
                 if button is None:
                     button = child
+                if self._is_project_new_session_button(child, item.window_text().strip()):
+                    new_session_button = child
             elif control_type == "List":
                 expanded = True
                 for session_item in child.children():
@@ -822,14 +859,43 @@ class CodexDesktopAutomation:
                         )
                     )
 
+        if new_session_button is None:
+            project_title = item.window_text().strip()
+            for control in item.descendants(control_type="Button"):
+                try:
+                    if control.is_visible() and self._is_project_new_session_button(control, project_title):
+                        new_session_button = control
+                        break
+                except Exception:
+                    continue
+
         return ProjectRef(
             title=item.window_text().strip(),
             rect=_rect_to_list(item.rectangle()),
             expanded=expanded,
             item=item,
             button=button,
+            new_session_button=new_session_button,
             sessions=sessions,
         )
+
+    def _is_project_new_session_button(self, control: Any, project_title: str) -> bool:
+        name = _control_name(control)
+        normalized_name = name.casefold()
+        normalized_project = (project_title or "").casefold()
+        if "开始新对话" in name and (not normalized_project or normalized_project in normalized_name):
+            return True
+        return "new conversation" in normalized_name and (not normalized_project or normalized_project in normalized_name)
+
+    def _find_project_new_session_button(self, project: ProjectRef) -> Any | None:
+        project_title = project.title
+        for control in project.item.descendants(control_type="Button"):
+            try:
+                if control.is_visible() and self._is_project_new_session_button(control, project_title):
+                    return control
+            except Exception:
+                continue
+        return None
 
     def _best_session_match(
         self,
@@ -1004,7 +1070,9 @@ class CodexDesktopAutomation:
     def _composer(self) -> Any:
         window_rect = self.window.rectangle()
         window_height = max(1, int(window_rect.bottom - window_rect.top))
-        composer_region_top = int(window_rect.bottom - max(360, window_height * 0.35))
+        # Existing conversations keep the composer near the bottom, but a fresh
+        # Codex desktop conversation centers the composer in the main pane.
+        composer_region_top = int(window_rect.bottom - max(760, window_height * 0.60))
         composers = []
 
         for element in self._iter_descendants():
@@ -1228,6 +1296,7 @@ def _build_parser() -> argparse.ArgumentParser:
     send_message = subparsers.add_parser("send-message")
     send_message.add_argument("--project", required=True)
     send_message.add_argument("--session")
+    send_message.add_argument("--new-session", action="store_true")
     send_message.add_argument("--project-b64")
     send_message.add_argument("--session-b64")
     send_message.add_argument("--project-contains", action="store_true")
@@ -1318,10 +1387,13 @@ def _execute_command(automation: CodexDesktopAutomation, args: argparse.Namespac
     if args.command == "send-message":
         project_name = _decode_text_argument(args.project, args.project_b64, "project")
         session_name = _decode_text_argument(args.session, args.session_b64, "session") if args.session or args.session_b64 else None
+        if args.new_session and session_name:
+            raise SystemExit("Use either --new-session or --session, not both.")
         return automation.send_message(
             project_name=project_name,
             message=_load_message_text(args),
             session_name=session_name,
+            new_session=args.new_session,
             project_exact=not args.project_contains,
             session_exact=args.session_exact,
             max_scrolls=args.max_scrolls,
