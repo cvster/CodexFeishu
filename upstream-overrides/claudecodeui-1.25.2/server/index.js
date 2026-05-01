@@ -67,7 +67,7 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import { startEnabledPluginServers, stopAllPlugins } from './utils/plugin-process-manager.js';
-import { initializeDatabase, sessionNamesDb, sessionArchivesDb, applyCustomSessionNames } from './database/db.js';
+import { initializeDatabase, sessionNamesDb, sessionArchivesDb, sessionOriginsDb, applyCustomSessionNames } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocketRequest } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 
@@ -1760,13 +1760,20 @@ function handleChatConnection(ws, request = null) {
                             sessionId: bridgeResult?.sessionId || resolvedCodexOptions.sessionId || null,
                             provider: 'codex'
                         });
+
+                        const bridgedSessionId = bridgeResult?.sessionId || resolvedCodexOptions.sessionId || null;
+                        if (bridgedSessionId) {
+                            sessionOriginsDb.setOrigin(bridgedSessionId, 'codex', 'app');
+                        }
                     });
                     return;
                 }
 
                 await queryCodex(data.command, {
                     ...resolvedCodexOptions,
-                    desktopSync: desktopSyncContext
+                    sessionOrigin: 'backend',
+                    syncToDesktop: false,
+                    desktopSync: null
                 }, writer);
             } else if (data.type === 'gemini-command') {
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');

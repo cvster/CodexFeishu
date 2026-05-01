@@ -661,8 +661,8 @@ export function enqueueCodexDesktopMessageBridge(payload) {
             projectPath: payload.projectPath,
             sessionTitleHint: payload.sessionTitleHint || null,
             allowLatestFallback: false,
-            preferImmediateHint: false,
-            allowSessionTitleHintFallback: false,
+            preferImmediateHint: Boolean(payload.sessionTitleHint),
+            allowSessionTitleHintFallback: Boolean(payload.sessionTitleHint),
           });
       console.log(
         '[mobile-codex][bridge-target]',
@@ -725,7 +725,7 @@ export function enqueueCodexDesktopMessageBridge(payload) {
             sessionTitleHint: payload.sessionTitleHint || null,
             allowLatestFallback: false,
             preferImmediateHint: false,
-            allowSessionTitleHintFallback: false,
+            allowSessionTitleHintFallback: Boolean(payload.sessionTitleHint),
           });
           const retryResolveMs = elapsedMs(retryResolveStartedAt);
 

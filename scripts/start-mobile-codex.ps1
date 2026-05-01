@@ -79,6 +79,9 @@ $env:HOST = '127.0.0.1'
 $env:PORT = '3001'
 $env:CODEX_ONLY_HARDENED_MODE = 'true'
 $env:VITE_CODEX_ONLY_HARDENED_MODE = 'true'
+if (-not $env:NODE_OPTIONS -or $env:NODE_OPTIONS -notmatch '--max-old-space-size=') {
+  $env:NODE_OPTIONS = (($env:NODE_OPTIONS, '--max-old-space-size=8192') -join ' ').Trim()
+}
 
 Set-Location $repo
 & $node 'server/index.js' 1>> $stdoutLog 2>> $stderrLog

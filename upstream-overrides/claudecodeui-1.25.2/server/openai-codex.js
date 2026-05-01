@@ -20,6 +20,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { enqueueCodexDesktopSync } from './codex-desktop-sync.js';
+import { sessionOriginsDb } from './database/db.js';
 
 // Track active sessions
 const activeCodexSessions = new Map();
@@ -259,6 +260,120 @@ async function inferDesktopCodexSessionActive(sessionId) {
   return isActive;
 }
 
+function normalizeComparablePath(value) {
+  if (!value || typeof value !== 'string') {
+    return '';
+  }
+
+  try {
+    return path.resolve(value.replace(/^\\\\\?\\/, '')).toLowerCase();
+  } catch {
+    return value.trim().toLowerCase();
+  }
+}
+
+async function collectCodexJsonlFiles(dirPath, files = []) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      await collectCodexJsonlFiles(fullPath, files);
+    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
+
+async function readCodexSessionMeta(filePath) {
+  let fileStream;
+  let rl;
+  try {
+    fileStream = fsSync.createReadStream(filePath);
+    rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'session_meta' && entry.payload?.id) {
+          return {
+            id: entry.payload.id,
+            cwd: entry.payload.cwd || '',
+            source: entry.payload.source || '',
+            timestamp: entry.payload.timestamp || entry.timestamp || null,
+          };
+        }
+      } catch {
+        // Skip malformed JSONL entries.
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    rl?.close();
+    fileStream?.destroy();
+  }
+
+  return null;
+}
+
+async function resolveCodexSdkRolloutSessionId(projectPath, startedAtMs) {
+  const sessionsRoot = path.join(os.homedir(), '.codex', 'sessions');
+  const comparableProjectPath = normalizeComparablePath(projectPath);
+  const files = await collectCodexJsonlFiles(sessionsRoot);
+  const candidates = [];
+
+  for (const filePath of files) {
+    let stats;
+    try {
+      stats = await fs.stat(filePath);
+    } catch {
+      continue;
+    }
+
+    if (stats.mtimeMs < startedAtMs - 5 * 60 * 1000) {
+      continue;
+    }
+
+    const meta = await readCodexSessionMeta(filePath);
+    if (!meta?.id) {
+      continue;
+    }
+
+    const metaTimestampMs = Date.parse(meta.timestamp || '');
+    if (Number.isFinite(metaTimestampMs) && metaTimestampMs < startedAtMs - 60 * 1000) {
+      continue;
+    }
+
+    if (comparableProjectPath && normalizeComparablePath(meta.cwd) !== comparableProjectPath) {
+      continue;
+    }
+
+    candidates.push({
+      id: meta.id,
+      source: meta.source,
+      timestampMs: Number.isFinite(metaTimestampMs) ? metaTimestampMs : stats.mtimeMs,
+    });
+  }
+
+  candidates.sort((left, right) => right.timestampMs - left.timestampMs);
+  return candidates.find((candidate) => candidate.source === 'exec')?.id || candidates[0]?.id || null;
+}
+
 /**
  * Transform Codex SDK event to WebSocket message format
  * @param {object} event - SDK event
@@ -436,7 +551,9 @@ export async function queryCodex(command, options = {}, ws) {
     projectPath,
     model,
     permissionMode = 'default',
-    desktopSync = null
+    desktopSync = null,
+    sessionOrigin = 'backend',
+    syncToDesktop = true
   } = options;
 
   const requestedWorkingDirectory = cwd || projectPath || process.cwd();
@@ -450,6 +567,8 @@ export async function queryCodex(command, options = {}, ws) {
   let codex;
   let thread;
   let currentSessionId = sessionId;
+  let actualSessionId = sessionId || null;
+  const turnStartedAtMs = Date.now();
   const abortController = new AbortController();
 
   try {
@@ -474,6 +593,7 @@ export async function queryCodex(command, options = {}, ws) {
 
     // Get the thread ID
     currentSessionId = thread.id || sessionId || `codex-${Date.now()}`;
+    sessionOriginsDb.setOrigin(currentSessionId, 'codex', sessionOrigin === 'app' ? 'app' : 'backend');
 
     // Track the session
     activeCodexSessions.set(currentSessionId, {
@@ -498,14 +618,16 @@ export async function queryCodex(command, options = {}, ws) {
       provider: 'codex'
     });
 
-    void enqueueCodexDesktopSync({
-      sessionId: currentSessionId,
-      projectPath: displayProjectPath,
-      sessionTitleHint: null,
-      allowLatestFallback: !sessionId,
-      reason: 'turn-start',
-      sourceContext: desktopSync
-    });
+    if (syncToDesktop) {
+      void enqueueCodexDesktopSync({
+        sessionId: currentSessionId,
+        projectPath: displayProjectPath,
+        sessionTitleHint: null,
+        allowLatestFallback: !sessionId,
+        reason: 'turn-start',
+        sourceContext: desktopSync
+      });
+    }
 
     // Execute with streaming
     const streamedTurn = await thread.runStreamed(command, {
@@ -545,21 +667,28 @@ export async function queryCodex(command, options = {}, ws) {
       }
     }
 
+    actualSessionId = thread.id || await resolveCodexSdkRolloutSessionId(displayProjectPath, turnStartedAtMs);
+    if (actualSessionId && actualSessionId !== currentSessionId) {
+      sessionOriginsDb.setOrigin(actualSessionId, 'codex', sessionOrigin === 'app' ? 'app' : 'backend');
+    }
+
     // Send completion event
     sendMessage(ws, {
       type: 'codex-complete',
       sessionId: currentSessionId,
-      actualSessionId: thread.id
+      actualSessionId: actualSessionId || thread.id
     });
 
-    void enqueueCodexDesktopSync({
-      sessionId: currentSessionId,
-      projectPath: displayProjectPath,
-      sessionTitleHint: null,
-      allowLatestFallback: true,
-      reason: 'turn-complete',
-      sourceContext: desktopSync
-    });
+    if (syncToDesktop) {
+      void enqueueCodexDesktopSync({
+        sessionId: currentSessionId,
+        projectPath: displayProjectPath,
+        sessionTitleHint: null,
+        allowLatestFallback: true,
+        reason: 'turn-complete',
+        sourceContext: desktopSync
+      });
+    }
 
   } catch (error) {
     const session = currentSessionId ? activeCodexSessions.get(currentSessionId) : null;

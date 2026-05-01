@@ -94,6 +94,21 @@ const MOBILE_USER_AGENT_PATTERN =
 const isLikelyMobileBrowser = () =>
   typeof navigator !== 'undefined' && MOBILE_USER_AGENT_PATTERN.test(navigator.userAgent || '');
 
+const getCodexSessionOrigin = (selectedSession: ProjectSession | null): 'app' | 'backend' => {
+  const selectedOrigin = selectedSession?.sessionOrigin;
+  if (selectedOrigin === 'backend' || selectedOrigin === 'app') {
+    return selectedOrigin;
+  }
+
+  const pendingOrigin =
+    typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('codex-new-session-origin') : null;
+  if (pendingOrigin === 'backend' || pendingOrigin === 'app') {
+    return pendingOrigin;
+  }
+
+  return isLikelyMobileBrowser() ? 'app' : 'backend';
+};
+
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -554,9 +569,14 @@ export function useChatComposerState({
       const effectiveSessionId =
         selectedSessionId ||
         (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null);
-      const shouldBridgeMobileCodexSubmit = provider === 'codex' && isLikelyMobileBrowser();
+      const codexSessionOrigin = provider === 'codex' ? getCodexSessionOrigin(selectedSession) : null;
+      const shouldBridgeCodexToApp = provider === 'codex' && codexSessionOrigin === 'app';
+      const codexSessionTitleHint =
+        provider === 'codex' && selectedSession
+          ? selectedSession.summary || selectedSession.title || selectedSession.name || null
+          : null;
 
-      if (isLoading && !shouldBridgeMobileCodexSubmit) {
+      if (isLoading && !shouldBridgeCodexToApp) {
         return;
       }
 
@@ -633,7 +653,7 @@ export function useChatComposerState({
         );
       });
 
-      if (!shouldBridgeMobileCodexSubmit) {
+      if (!shouldBridgeCodexToApp) {
         setCanAbortSession(true);
         setClaudeStatus({
           text: 'Processing',
@@ -643,13 +663,13 @@ export function useChatComposerState({
       } else {
         setCanAbortSession(false);
         setClaudeStatus({
-          text: 'Sending to desktop...',
+          text: 'Sending to Codex app...',
           tokens: 0,
           can_interrupt: false,
         });
       }
 
-      if (!shouldBridgeMobileCodexSubmit) {
+      if (!shouldBridgeCodexToApp) {
         setIsLoading(true);
       }
 
@@ -666,7 +686,7 @@ export function useChatComposerState({
         pendingViewSessionRef.current = { sessionId: null, startedAt: Date.now() };
       }
 
-      if (!shouldBridgeMobileCodexSubmit) {
+      if (!shouldBridgeCodexToApp) {
         onSessionActive?.(sessionToActivate);
       }
 
@@ -736,7 +756,8 @@ export function useChatComposerState({
           selectedProjectPath: resolvedProjectPath,
           selectedSessionId,
           effectiveSessionId,
-          shouldBridgeMobileCodexSubmit,
+          codexSessionOrigin,
+          shouldBridgeCodexToApp,
         });
       }
 
@@ -767,7 +788,9 @@ export function useChatComposerState({
             resume: Boolean(effectiveSessionId),
             model: codexModel,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
-            executionMode: shouldBridgeMobileCodexSubmit ? 'desktop-ui' : 'sdk',
+            executionMode: shouldBridgeCodexToApp ? 'desktop-ui' : 'sdk',
+            sessionOrigin: codexSessionOrigin || 'backend',
+            sessionTitleHint: codexSessionTitleHint,
             newSession: !effectiveSessionId,
             allowImplicitSessionCreation: !effectiveSessionId,
           },

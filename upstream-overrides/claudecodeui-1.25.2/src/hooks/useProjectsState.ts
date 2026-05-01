@@ -10,6 +10,7 @@ import type {
   ProjectSession,
   ProjectsUpdatedMessage,
 } from '../types/app';
+import type { CodexSessionOrigin } from '../components/sidebar/types/types';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
@@ -249,6 +250,12 @@ export function useProjectsState({
       setSelectedProject(projects[0]);
     }
   }, [isLoadingProjects, projects, selectedProject, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId && selectedSession) {
+      setSelectedSession(null);
+    }
+  }, [sessionId, selectedSession]);
 
   useEffect(() => {
     if (!latestMessage) {
@@ -516,7 +523,14 @@ export function useProjectsState({
   );
 
   const handleNewSession = useCallback(
-    (project: Project) => {
+    (project: Project, sessionOrigin?: CodexSessionOrigin) => {
+      if (IS_CODEX_ONLY_HARDENED) {
+        sessionStorage.setItem(
+          'codex-new-session-origin',
+          sessionOrigin === 'backend' ? 'backend' : 'app',
+        );
+      }
+
       setSelectedProject(project);
       setSelectedSession(null);
       setActiveTab('chat');

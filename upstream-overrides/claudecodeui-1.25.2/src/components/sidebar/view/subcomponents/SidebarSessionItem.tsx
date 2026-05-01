@@ -1,4 +1,4 @@
-import { Archive, Check, Clock, Edit2, Trash2, X } from 'lucide-react';
+import { Archive, Check, Clock, Edit2, Server, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
@@ -62,6 +62,14 @@ export default function SidebarSessionItem({
   const isProcessing = processingSessions.has(session.id);
   const showCompletedState = !isProcessing;
   const canDelete = !IS_CODEX_ONLY_HARDENED && !sessionView.isCursorSession;
+  const codexSessionOrigin =
+    session.__provider === 'codex' && session.sessionOrigin === 'backend' ? 'backend' : 'app';
+  const codexSessionOriginLabel = codexSessionOrigin === 'backend' ? '后端' : 'App';
+  const sessionIconTitle =
+    session.__provider === 'codex' ? `${codexSessionOriginLabel} 会话` : undefined;
+  const sessionIcon = session.__provider === 'codex' && codexSessionOrigin === 'backend'
+    ? <Server className="h-3 w-3 text-sky-600 dark:text-sky-400" />
+    : <SessionProviderLogo provider={session.__provider} className="h-3 w-3" />;
 
   const selectMobileSession = () => {
     onProjectSelect(project);
@@ -120,8 +128,9 @@ export default function SidebarSessionItem({
                 'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0',
                 isSelected ? 'bg-primary/10' : 'bg-muted/50',
               )}
+              title={sessionIconTitle}
             >
-              <SessionProviderLogo provider={session.__provider} className="h-3 w-3" />
+              {sessionIcon}
             </div>
 
             <div className="min-w-0 flex-1">
@@ -144,9 +153,6 @@ export default function SidebarSessionItem({
                     {sessionView.messageCount}
                   </Badge>
                 )}
-                <span className="ml-1 opacity-70">
-                  <SessionProviderLogo provider={session.__provider} className="h-3 w-3" />
-                </span>
               </div>
             </div>
 
@@ -194,10 +200,12 @@ export default function SidebarSessionItem({
             'w-full justify-start p-2 h-auto font-normal text-left hover:bg-accent/50 transition-colors duration-200',
             isSelected && 'bg-accent text-accent-foreground',
           )}
-          onClick={() => onSessionSelect(session, project.name)}
+         onClick={() => onSessionSelect(session, project.name)}
         >
           <div className="flex w-full min-w-0 items-start gap-2">
-            <SessionProviderLogo provider={session.__provider} className="mt-0.5 h-3 w-3 flex-shrink-0" />
+            <span className="mt-0.5 flex h-3 w-3 flex-shrink-0 items-center justify-center" title={sessionIconTitle}>
+              {sessionIcon}
+            </span>
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs font-medium text-foreground">{sessionView.sessionName}</div>
               <div className="mt-0.5 flex items-center gap-1">
@@ -221,9 +229,6 @@ export default function SidebarSessionItem({
                     {sessionView.messageCount}
                   </Badge>
                 )}
-                <span className="ml-1 opacity-70 transition-opacity group-hover:opacity-0">
-                  <SessionProviderLogo provider={session.__provider} className="h-3 w-3" />
-                </span>
               </div>
             </div>
           </div>

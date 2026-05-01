@@ -66,7 +66,7 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
-import { applyCustomSessionNames, sessionArchivesDb } from './database/db.js';
+import { applyCustomSessionNames, sessionArchivesDb, sessionOriginsDb } from './database/db.js';
 
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
 const CODEX_PROJECTLESS_PROJECT_NAME = '__codex_projectless__';
@@ -362,11 +362,13 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
 
   for (const [normalizedProjectPath, sessions] of projectEntries) {
     processedProjects++;
+    const codexSessions = [...sessions];
+    applyCustomSessionNames(codexSessions, 'codex');
 
     const isProjectlessProject = normalizedProjectPath === CODEX_PROJECTLESS_PROJECT_PATH;
     const actualProjectDir = isProjectlessProject
       ? CODEX_PROJECTLESS_PROJECT_PATH
-      : resolveProjectPath(sessions[0]?.cwd) || sessions[0]?.cwd || '';
+      : resolveProjectPath(codexSessions[0]?.cwd) || codexSessions[0]?.cwd || '';
     const matchedMetadata = metadataByPath.get(normalizedProjectPath);
     const projectName = isProjectlessProject
       ? CODEX_PROJECTLESS_PROJECT_NAME
@@ -404,11 +406,11 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
       isProjectless: isProjectlessProject,
       sessions: [],
       cursorSessions: [],
-      codexSessions: [...sessions],
+      codexSessions,
       geminiSessions: [],
       sessionMeta: {
         hasMore: false,
-        total: sessions.length
+        total: codexSessions.length
       },
       taskmaster: null
     });
@@ -1892,6 +1894,14 @@ async function buildCodexSessionsIndex() {
   const threadNames = await loadCodexThreadNames();
   const shouldFilterWorkspaceRoots = hasDesktopState && visibleWorkspaceRoots.size > 0;
   const locallyArchivedSessionIds = sessionArchivesDb.getArchivedIds('codex');
+  const codexSessionOrigins = sessionOriginsDb.getOrigins('codex');
+  const backendSessionIds = sessionOriginsDb.getIdsByOrigin('codex', 'backend');
+  const backendFallbackTimestamps = Array.from(backendSessionIds)
+    .map((sessionId) => {
+      const match = String(sessionId).match(/^codex-(\d+)$/);
+      return match ? Number.parseInt(match[1], 10) : null;
+    })
+    .filter((timestamp) => Number.isFinite(timestamp));
 
   for (const filePath of jsonlFiles) {
     try {
@@ -1913,8 +1923,22 @@ async function buildCodexSessionsIndex() {
         continue;
       }
 
+      const sessionTimestampMs = Date.parse(sessionData.timestamp || '');
+      const hasBackendFallbackOrigin =
+        sessionData.source === 'exec' &&
+        Number.isFinite(sessionTimestampMs) &&
+        backendFallbackTimestamps.some((fallbackTimestamp) =>
+          Math.abs(sessionTimestampMs - fallbackTimestamp) <= 10 * 60 * 1000
+        );
+      const isBackendSession = backendSessionIds.has(sessionData.id) || hasBackendFallbackOrigin;
+      if (isBackendSession && !backendSessionIds.has(sessionData.id)) {
+        sessionOriginsDb.setOrigin(sessionData.id, 'codex', 'backend');
+        codexSessionOrigins.set(sessionData.id, 'backend');
+      }
+
       if (
         hasDesktopState &&
+        !isBackendSession &&
         !activeSessionIds.has(sessionData.id) &&
         !(normalizedFilePath && activeRolloutPaths.has(normalizedFilePath))
       ) {
@@ -1931,6 +1955,7 @@ async function buildCodexSessionsIndex() {
 
       if (
         shouldFilterWorkspaceRoots &&
+        !isBackendSession &&
         !visibleWorkspaceRoots.has(normalizedProjectPath) &&
         !isProjectlessSession
       ) {
@@ -1941,25 +1966,27 @@ async function buildCodexSessionsIndex() {
         continue;
       }
 
+      const backendDefaultTitle = isBackendSession
+        ? getDefaultBackendSessionTitle(sessionData.firstUserMessage)
+        : null;
+      const desktopTitle =
+        threadNames.get(sessionData.id) ||
+        desktopTitlesBySessionId.get(sessionData.id) ||
+        desktopTitlesByRolloutPath.get(normalizedFilePath) ||
+        null;
       const session = {
         id: sessionData.id,
-        title:
-          threadNames.get(sessionData.id) ||
-          desktopTitlesBySessionId.get(sessionData.id) ||
-          desktopTitlesByRolloutPath.get(normalizedFilePath) ||
-          null,
-        summary:
-          threadNames.get(sessionData.id) ||
-          desktopTitlesBySessionId.get(sessionData.id) ||
-          desktopTitlesByRolloutPath.get(normalizedFilePath) ||
-          sessionData.summary ||
-          'Codex Session',
+        title: isBackendSession ? backendDefaultTitle || null : desktopTitle,
+        summary: isBackendSession
+          ? backendDefaultTitle || 'Codex Session'
+          : desktopTitle || sessionData.summary || 'Codex Session',
         messageCount: sessionData.messageCount || 0,
         lastActivity: sessionData.timestamp ? new Date(sessionData.timestamp) : new Date(),
         cwd: resolveProjectPath(sessionData.cwd) || sessionData.cwd,
         model: sessionData.model,
         filePath,
         provider: 'codex',
+        sessionOrigin: codexSessionOrigins.get(sessionData.id) || (isBackendSession ? 'backend' : 'app'),
         isProjectless: isProjectlessSession,
       };
 
@@ -2032,6 +2059,17 @@ function normalizeCodexUserMessageForDisplay(message) {
   const extractedRequest = requestMatch?.[1]?.trim();
 
   return extractedRequest || normalized;
+}
+
+function getDefaultBackendSessionTitle(message) {
+  const normalized = normalizeCodexUserMessageForDisplay(message)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) {
+    return '';
+  }
+
+  return Array.from(normalized).slice(0, 5).join('');
 }
 
 function normalizeCodexPendingDeliveryText(value) {
@@ -2170,6 +2208,7 @@ async function parseCodexSessionFile(filePath) {
 
     let sessionMeta = null;
     let lastTimestamp = null;
+    let firstUserMessage = null;
     let lastUserMessage = null;
     let messageCount = 0;
 
@@ -2189,16 +2228,22 @@ async function parseCodexSessionFile(filePath) {
               id: entry.payload.id,
               cwd: entry.payload.cwd,
               model: entry.payload.model || entry.payload.model_provider,
+              source: entry.payload.source || null,
+              originator: entry.payload.originator || null,
               timestamp: entry.timestamp,
               git: entry.payload.git
             };
           }
 
-          // Count visible user messages and extract summary from the latest plain user input.
+          // Count visible user messages and keep both the first and latest plain input.
           if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
             messageCount++;
             if (entry.payload.message) {
-              lastUserMessage = normalizeCodexUserMessageForDisplay(entry.payload.message);
+              const userMessage = normalizeCodexUserMessageForDisplay(entry.payload.message);
+              if (!firstUserMessage && userMessage) {
+                firstUserMessage = userMessage;
+              }
+              lastUserMessage = userMessage;
             }
           }
 
@@ -2216,6 +2261,7 @@ async function parseCodexSessionFile(filePath) {
       return {
         ...sessionMeta,
         timestamp: lastTimestamp || sessionMeta.timestamp,
+        firstUserMessage,
         summary: lastUserMessage ?
           (lastUserMessage.length > 50 ? lastUserMessage.substring(0, 50) + '...' : lastUserMessage) :
           'Codex Session',

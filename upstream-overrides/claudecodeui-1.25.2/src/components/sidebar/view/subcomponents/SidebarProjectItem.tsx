@@ -1,10 +1,11 @@
+import { useState } from 'react';
 import { Check, Edit3, Folder, FolderOpen, Plus, Star, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import { IS_CODEX_ONLY_HARDENED } from '../../../../constants/config';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
-import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
+import type { CodexSessionOrigin, MCPServerStatus, SessionWithProvider } from '../../types/types';
 import { getTaskIndicatorStatus } from '../../utils/utils';
 import TaskIndicator from './TaskIndicator';
 import SidebarProjectSessions from './SidebarProjectSessions';
@@ -50,7 +51,7 @@ type SidebarProjectItemProps = {
     provider: SessionProvider,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
-  onNewSession: (project: Project) => void;
+  onNewSession: (project: Project, sessionOrigin?: CodexSessionOrigin) => void;
   onEditingSessionNameChange: (value: string) => void;
   onStartEditingSession: (sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
@@ -111,10 +112,73 @@ export default function SidebarProjectItem({
   const sessionCountLabel = `${sessionCountDisplay} session${sessions.length === 1 ? '' : 's'}`;
   const taskStatus = getTaskIndicatorStatus(project, mcpServerStatus);
   const projectPathLabel = project.isProjectless ? project.displayName : project.fullPath;
+  const [isNewSessionDialogOpen, setIsNewSessionDialogOpen] = useState(false);
 
   const toggleProject = () => onToggleProject(project.name);
   const toggleStarProject = () => onToggleStarProject(project.name);
-  const startNewSession = () => onNewSession(project);
+  const startNewSession = (sessionOrigin?: CodexSessionOrigin) => {
+    setIsNewSessionDialogOpen(false);
+    onNewSession(project, sessionOrigin);
+  };
+  const requestNewSession = () => {
+    if (IS_CODEX_ONLY_HARDENED) {
+      setIsNewSessionDialogOpen(true);
+      return;
+    }
+
+    startNewSession();
+  };
+  const renderNewSessionDialog = () => {
+    if (!IS_CODEX_ONLY_HARDENED || !isNewSessionDialogOpen) {
+      return null;
+    }
+
+    return (
+      <div
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-background/60 p-4 backdrop-blur-sm"
+        role="presentation"
+        onClick={(event) => {
+          event.stopPropagation();
+          setIsNewSessionDialogOpen(false);
+        }}
+      >
+        <div
+          className="w-full max-w-xs rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-session-dialog-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div id="new-session-dialog-title" className="text-sm font-semibold text-foreground">
+            新建会话
+          </div>
+          <div className="mt-3 grid gap-2">
+            <button
+              type="button"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+              onClick={() => startNewSession('app')}
+            >
+              App 会话
+            </button>
+            <button
+              type="button"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+              onClick={() => startNewSession('backend')}
+            >
+              后端会话
+            </button>
+            <button
+              type="button"
+              className="w-full rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              onClick={() => setIsNewSessionDialogOpen(false)}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const saveProjectName = () => {
     onSaveProjectName(project.name);
@@ -278,7 +342,7 @@ export default function SidebarProjectItem({
                       className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 active:scale-90 dark:border-primary/30 dark:bg-primary/20"
                       onClick={(event) => {
                         event.stopPropagation();
-                        startNewSession();
+                        requestNewSession();
                       }}
                       title={t('sessions.newSession')}
                       aria-label={t('sessions.newSession')}
@@ -423,7 +487,7 @@ export default function SidebarProjectItem({
                   className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-100 transition-all duration-200 hover:bg-primary/10 hover:text-primary"
                   onClick={(event) => {
                     event.stopPropagation();
-                    startNewSession();
+                    requestNewSession();
                   }}
                   title={t('sessions.newSession')}
                   aria-label={t('sessions.newSession')}
@@ -433,7 +497,7 @@ export default function SidebarProjectItem({
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
                       event.stopPropagation();
-                      startNewSession();
+                      requestNewSession();
                     }
                   }}
                 >
@@ -468,6 +532,7 @@ export default function SidebarProjectItem({
         onNewSession={onNewSession}
         t={t}
       />
+      {renderNewSessionDialog()}
     </div>
   );
 }
