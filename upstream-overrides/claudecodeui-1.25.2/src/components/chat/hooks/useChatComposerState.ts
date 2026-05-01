@@ -571,6 +571,7 @@ export function useChatComposerState({
         (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null);
       const codexSessionOrigin = provider === 'codex' ? getCodexSessionOrigin(selectedSession) : null;
       const shouldBridgeCodexToApp = provider === 'codex' && codexSessionOrigin === 'app';
+      const shouldConfirmPendingDelivery = provider === 'codex' && shouldBridgeCodexToApp;
       const codexSessionTitleHint =
         provider === 'codex' && selectedSession
           ? selectedSession.summary || selectedSession.title || selectedSession.name || null
@@ -621,8 +622,8 @@ export function useChatComposerState({
         content: currentInput,
         images: uploadedImages as any,
         timestamp: userMessageTimestamp,
-        __pendingSync: true,
-        __deliveryStatus: 'sending',
+        __pendingSync: shouldConfirmPendingDelivery,
+        __deliveryStatus: provider === 'codex' && !shouldConfirmPendingDelivery ? 'sent' : 'sending',
       };
 
       setChatMessages((previous) => {
@@ -724,7 +725,8 @@ export function useChatComposerState({
       const resolvedProjectPath = selectedProject.isProjectless
         ? selectedSessionCwd || selectedProject.fullPath || selectedProject.path || ''
         : selectedProject.fullPath || selectedProject.path || '';
-      if (pendingMessageSessionId) {
+
+      if (shouldConfirmPendingDelivery && pendingMessageSessionId) {
         // By design, mobile only tracks the latest pending bubble per session.
         // Earlier sends remain in the desktop automation queue even if this marker is replaced.
         const nextPendingUserMessage: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'> = {
