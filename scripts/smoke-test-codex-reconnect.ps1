@@ -1,6 +1,6 @@
 param(
   [string]$ProjectPath = '',
-  [string]$Model = 'gpt-5.4',
+  [string]$Model = 'gpt-5.5',
   [int]$SessionCreatedTimeoutSeconds = 10,
   [int]$ReconnectTimeoutSeconds = 20
 )
@@ -55,7 +55,7 @@ const WebSocket = require("ws");
 
 const token = process.env.TEST_WS_TOKEN;
 const projectPath = process.env.TEST_PROJECT_PATH;
-const model = process.env.TEST_MODEL || "gpt-5.4";
+const model = process.env.TEST_MODEL || "gpt-5.5";
 const sessionCreatedTimeoutMs = Number(process.env.TEST_SESSION_CREATED_TIMEOUT_MS || "10000");
 const reconnectTimeoutMs = Number(process.env.TEST_RECONNECT_TIMEOUT_MS || "20000");
 const url = `ws://127.0.0.1:3001/ws?token=${token}`;

@@ -1715,6 +1715,7 @@ function handleChatConnection(ws, request = null) {
                 console.log('📁 Project:', resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd || 'Unknown');
                 console.log('🔄 Session:', resolvedCodexOptions.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', resolvedCodexOptions.model || 'default');
+                console.log('🧠 Reasoning:', resolvedCodexOptions.modelReasoningEffort || 'default');
 
                 const shouldBridgeToDesktopUI =
                     resolvedCodexOptions.executionMode === 'desktop-ui' ||

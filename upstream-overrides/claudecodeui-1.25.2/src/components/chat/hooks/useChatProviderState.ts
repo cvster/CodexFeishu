@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
-import { CLAUDE_MODELS, CODEX_MODELS, CURSOR_MODELS, GEMINI_MODELS } from '../../../../shared/modelConstants';
+import {
+  CLAUDE_MODELS,
+  CODEX_MODELS,
+  CODEX_REASONING_EFFORTS,
+  CURSOR_MODELS,
+  GEMINI_MODELS,
+} from '../../../../shared/modelConstants';
 import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type { ProjectSession, SessionProvider } from '../../../types/app';
@@ -27,6 +33,9 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
   });
   const [codexModel, setCodexModel] = useState<string>(() => {
     return localStorage.getItem('codex-model') || CODEX_MODELS.DEFAULT;
+  });
+  const [codexReasoningEffort, setCodexReasoningEffort] = useState<string>(() => {
+    return localStorage.getItem('codex-reasoning-effort') || CODEX_REASONING_EFFORTS.DEFAULT;
   });
   const [geminiModel, setGeminiModel] = useState<string>(() => {
     return localStorage.getItem('gemini-model') || GEMINI_MODELS.DEFAULT;
@@ -120,6 +129,8 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
     setClaudeModel,
     codexModel,
     setCodexModel,
+    codexReasoningEffort,
+    setCodexReasoningEffort,
     geminiModel,
     setGeminiModel,
     permissionMode,

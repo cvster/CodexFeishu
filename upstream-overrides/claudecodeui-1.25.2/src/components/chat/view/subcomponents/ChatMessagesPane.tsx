@@ -25,6 +25,8 @@ interface ChatMessagesPaneProps {
   setCursorModel: (model: string) => void;
   codexModel: string;
   setCodexModel: (model: string) => void;
+  codexReasoningEffort: string;
+  setCodexReasoningEffort: (effort: string) => void;
   geminiModel: string;
   setGeminiModel: (model: string) => void;
   tasksEnabled: boolean;
@@ -76,6 +78,8 @@ export default function ChatMessagesPane({
   setCursorModel,
   codexModel,
   setCodexModel,
+  codexReasoningEffort,
+  setCodexReasoningEffort,
   geminiModel,
   setGeminiModel,
   tasksEnabled,
@@ -249,6 +253,8 @@ export default function ChatMessagesPane({
           setCursorModel={setCursorModel}
           codexModel={codexModel}
           setCodexModel={setCodexModel}
+          codexReasoningEffort={codexReasoningEffort}
+          setCodexReasoningEffort={setCodexReasoningEffort}
           geminiModel={geminiModel}
           setGeminiModel={setGeminiModel}
           tasksEnabled={tasksEnabled}

@@ -47,6 +47,7 @@ const DESKTOP_CODEX_ACTIVE_RESPONSE_TYPES = new Set([
   'custom_tool_call',
   'custom_tool_call_output',
 ]);
+const CODEX_MODEL_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
 
 const NON_ASCII_PATH_PATTERN = /[^\u0000-\u007F]/;
 
@@ -541,7 +542,7 @@ function mapPermissionModeToCodexOptions(permissionMode) {
 /**
  * Execute a Codex query with streaming
  * @param {string} command - The prompt to send
- * @param {object} options - Options including cwd, sessionId, model, permissionMode
+ * @param {object} options - Options including cwd, sessionId, model, modelReasoningEffort, permissionMode
  * @param {WebSocket|object} ws - WebSocket connection or response writer
  */
 export async function queryCodex(command, options = {}, ws) {
@@ -550,6 +551,7 @@ export async function queryCodex(command, options = {}, ws) {
     cwd,
     projectPath,
     model,
+    modelReasoningEffort,
     permissionMode = 'default',
     desktopSync = null,
     sessionOrigin = 'backend',
@@ -563,6 +565,10 @@ export async function queryCodex(command, options = {}, ws) {
     console.log('[Codex] Using ASCII working directory alias:', workingDirectory, 'for', requestedWorkingDirectory);
   }
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
+  const normalizedModelReasoningEffort =
+    typeof modelReasoningEffort === 'string' && CODEX_MODEL_REASONING_EFFORTS.has(modelReasoningEffort)
+      ? modelReasoningEffort
+      : undefined;
 
   let codex;
   let thread;
@@ -581,7 +587,8 @@ export async function queryCodex(command, options = {}, ws) {
       skipGitRepoCheck: true,
       sandboxMode,
       approvalPolicy,
-      model
+      model,
+      ...(normalizedModelReasoningEffort ? { modelReasoningEffort: normalizedModelReasoningEffort } : {})
     };
 
     // Start or resume thread

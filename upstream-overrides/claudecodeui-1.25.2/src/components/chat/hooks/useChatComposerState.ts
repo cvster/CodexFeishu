@@ -44,6 +44,7 @@ interface UseChatComposerStateArgs {
   cursorModel: string;
   claudeModel: string;
   codexModel: string;
+  codexReasoningEffort: string;
   geminiModel: string;
   isLoading: boolean;
   canAbortSession: boolean;
@@ -119,6 +120,7 @@ export function useChatComposerState({
   cursorModel,
   claudeModel,
   codexModel,
+  codexReasoningEffort,
   geminiModel,
   isLoading,
   canAbortSession,
@@ -789,6 +791,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: codexModel,
+            modelReasoningEffort: codexReasoningEffort || undefined,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
             executionMode: shouldBridgeCodexToApp ? 'desktop-ui' : 'sdk',
             sessionOrigin: codexSessionOrigin || 'backend',
@@ -848,6 +851,7 @@ export function useChatComposerState({
       attachedImages,
       claudeModel,
       codexModel,
+      codexReasoningEffort,
       currentSessionId,
       cursorModel,
       executeCommand,
