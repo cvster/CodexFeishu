@@ -9,6 +9,7 @@ import type {
   DeleteProjectConfirmation,
   LoadingSessionsByProject,
   ProjectSortOrder,
+  SessionArchiveMetadata,
   SessionDeleteConfirmation,
   SessionWithProvider,
 } from '../types/types';
@@ -454,6 +455,7 @@ export function useSidebarController({
       sessionId: string,
       sessionTitle: string,
       provider: SessionProvider,
+      metadata: SessionArchiveMetadata = {},
     ) => {
       const displayName = sessionTitle || t('sessions.unnamed');
       const confirmed = window.confirm(
@@ -468,7 +470,12 @@ export function useSidebarController({
       }
 
       try {
-        const response = await api.archiveSession(sessionId, provider);
+        const response = await api.archiveSession(sessionId, provider, {
+          projectName: _projectName,
+          projectPath: metadata.projectPath,
+          sessionOrigin: metadata.sessionOrigin,
+          sessionTitle,
+        });
         if (response.ok) {
           onSessionDelete?.(sessionId);
           await onRefresh();

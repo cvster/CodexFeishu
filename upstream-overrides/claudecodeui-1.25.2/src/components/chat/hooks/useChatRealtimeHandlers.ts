@@ -316,7 +316,26 @@ export function useChatRealtimeHandlers({
         // Desktop delivery only means the automation submitted the text to Codex.
         // The UI must keep confirming success from the synced session history so a
         // failed or misrouted desktop send is not shown as delivered prematurely.
+        if (latestMessage.sessionId) {
+          onSessionProcessing?.(latestMessage.sessionId);
+
+          if (pendingViewSessionRef.current && !pendingViewSessionRef.current.sessionId) {
+            pendingViewSessionRef.current.sessionId = latestMessage.sessionId;
+          }
+
+          if (!currentSessionId) {
+            setCurrentSessionId(latestMessage.sessionId);
+          }
+
+          if (selectedSession?.id !== latestMessage.sessionId) {
+            setIsSystemSessionChange(true);
+            onNavigateToSession?.(latestMessage.sessionId);
+          }
+        }
         onDesktopCommandDelivered?.();
+        if (typeof window !== 'undefined' && window.refreshProjects) {
+          setTimeout(() => window.refreshProjects?.(), 300);
+        }
         break;
 
       case 'codex-desktop-command-error':

@@ -1,7 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { IS_CODEX_ONLY_HARDENED } from '../../../../constants/config';
-import { CODEX_REASONING_EFFORTS } from '../../../../../shared/modelConstants';
 import type { PermissionMode, Provider } from '../../types/types';
 import ThinkingModeSelector from './ThinkingModeSelector';
 
@@ -9,8 +8,6 @@ interface ChatInputControlsProps {
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
   provider: Provider | string;
-  codexReasoningEffort: string;
-  setCodexReasoningEffort: React.Dispatch<React.SetStateAction<string>>;
   thinkingMode: string;
   setThinkingMode: React.Dispatch<React.SetStateAction<string>>;
   tokenBudget: { used?: number; total?: number } | null;
@@ -25,8 +22,6 @@ interface ChatInputControlsProps {
 
 export default function ChatInputControls({
   provider,
-  codexReasoningEffort,
-  setCodexReasoningEffort,
   thinkingMode,
   setThinkingMode,
   slashCommandsCount,
@@ -43,28 +38,6 @@ export default function ChatInputControls({
     <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
       {provider === 'claude' && (
         <ThinkingModeSelector selectedMode={thinkingMode} onModeChange={setThinkingMode} onClose={() => {}} className="" />
-      )}
-
-      {provider === 'codex' && (
-        <label className="flex items-center gap-2 rounded-lg border border-border/50 bg-card px-2 py-1 text-xs text-muted-foreground shadow-sm">
-          <span>{t('providerSelection.selectReasoning', { defaultValue: 'Reasoning' })}</span>
-          <select
-            value={codexReasoningEffort}
-            onChange={(event) => {
-              const nextValue = event.target.value;
-              setCodexReasoningEffort(nextValue);
-              localStorage.setItem('codex-reasoning-effort', nextValue);
-            }}
-            className="max-w-28 cursor-pointer appearance-none bg-transparent text-xs font-medium text-foreground outline-none"
-            title={t('providerSelection.selectReasoning', { defaultValue: 'Reasoning' })}
-          >
-            {CODEX_REASONING_EFFORTS.OPTIONS.map(({ value, label }) => (
-              <option key={`${value}-${label}`} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
       )}
 
       {!IS_CODEX_ONLY_HARDENED && (

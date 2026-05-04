@@ -73,6 +73,31 @@ Wait-MobileCodexLogReady -Path $stderrLog
 Append-MobileCodexLogMarker -Path $stdoutLog -Value ("`n==== START {0} ====`n" -f (Get-Date -Format s))
 Append-MobileCodexLogMarker -Path $stderrLog -Value ("`n==== START {0} ====`n" -f (Get-Date -Format s))
 
+$applyOverridesScript = Join-Path $PSScriptRoot 'apply-upstream-overrides.ps1'
+if (Test-Path $applyOverridesScript) {
+  powershell -NoProfile -ExecutionPolicy Bypass -File $applyOverridesScript | Write-Output
+}
+
+$overrideRoot = Join-Path $workspace 'upstream-overrides\claudecodeui-1.25.2'
+$distIndex = Join-Path $repo 'dist\index.html'
+if ((Test-Path $overrideRoot) -and (Test-Path $distIndex) -and -not $env:MOBILE_CODEX_ALLOW_STALE_DIST) {
+  $frontendOverride = Get-ChildItem -Path $overrideRoot -Recurse -File | Where-Object {
+    $relative = $_.FullName.Substring($overrideRoot.Length + 1)
+    $relative -eq 'index.html' -or
+      $relative -like 'src\*' -or
+      $relative -like 'public\*' -or
+      $relative -like 'shared\*'
+  } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+
+  if ($frontendOverride) {
+    $distWriteTime = (Get-Item $distIndex).LastWriteTimeUtc
+    if ($frontendOverride.LastWriteTimeUtc -gt $distWriteTime.AddSeconds(2)) {
+      $relativeOverride = $frontendOverride.FullName.Substring($overrideRoot.Length + 1)
+      throw "Frontend dist is older than override '$relativeOverride'. Rebuild vendor\claudecodeui-1.25.2 before starting, or set MOBILE_CODEX_ALLOW_STALE_DIST=1 to bypass deliberately."
+    }
+  }
+}
+
 $env:MOBILE_CODEX_NODE = $node
 $env:NODE_ENV = 'production'
 $env:HOST = '127.0.0.1'

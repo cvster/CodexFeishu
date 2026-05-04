@@ -110,6 +110,8 @@ const getCodexSessionOrigin = (selectedSession: ProjectSession | null): 'app' | 
   return isLikelyMobileBrowser() ? 'app' : 'backend';
 };
 
+const CODEX_PROJECTLESS_PROJECT_PATH = 'codex://projectless';
+
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -724,9 +726,12 @@ export function useChatComposerState({
 
       const toolsSettings = getToolsSettings();
       const selectedSessionCwd = typeof selectedSession?.cwd === 'string' ? selectedSession.cwd : '';
-      const resolvedProjectPath = selectedProject.isProjectless
-        ? selectedSessionCwd || selectedProject.fullPath || selectedProject.path || ''
-        : selectedProject.fullPath || selectedProject.path || '';
+      const resolvedProjectPath =
+        selectedProject.isProjectless && shouldBridgeCodexToApp
+          ? selectedProject.fullPath || selectedProject.path || CODEX_PROJECTLESS_PROJECT_PATH
+          : selectedProject.isProjectless
+            ? selectedSessionCwd || ''
+            : selectedProject.fullPath || selectedProject.path || '';
 
       if (shouldConfirmPendingDelivery && pendingMessageSessionId) {
         // By design, mobile only tracks the latest pending bubble per session.

@@ -50,8 +50,6 @@ interface ChatComposerProps {
   provider: Provider | string;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
-  codexReasoningEffort: string;
-  setCodexReasoningEffort: Dispatch<SetStateAction<string>>;
   isSessionProcessing: boolean;
   thinkingMode: string;
   setThinkingMode: Dispatch<SetStateAction<string>>;
@@ -113,8 +111,6 @@ export default function ChatComposer({
   provider,
   permissionMode,
   onModeSwitch,
-  codexReasoningEffort,
-  setCodexReasoningEffort,
   isSessionProcessing,
   thinkingMode,
   setThinkingMode,
@@ -252,8 +248,6 @@ export default function ChatComposer({
           permissionMode={permissionMode}
           onModeSwitch={onModeSwitch}
           provider={provider}
-          codexReasoningEffort={codexReasoningEffort}
-          setCodexReasoningEffort={setCodexReasoningEffort}
           thinkingMode={thinkingMode}
           setThinkingMode={setThinkingMode}
           tokenBudget={tokenBudget}

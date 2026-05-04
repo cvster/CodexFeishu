@@ -5,6 +5,7 @@ import type {
   CodexSessionOrigin,
   LoadingSessionsByProject,
   MCPServerStatus,
+  SessionArchiveMetadata,
   SessionWithProvider,
 } from '../../types/types';
 import SidebarProjectItem from './SidebarProjectItem';
@@ -51,6 +52,7 @@ export type SidebarProjectListProps = {
     sessionId: string,
     sessionTitle: string,
     provider: SessionProvider,
+    metadata?: SessionArchiveMetadata,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
   onNewSession: (project: Project, sessionOrigin?: CodexSessionOrigin) => void;

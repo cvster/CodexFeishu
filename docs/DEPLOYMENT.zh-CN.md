@@ -93,12 +93,15 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-test-override-flow.ps1 -U
 ```powershell
 cd vendor/claudecodeui-1.25.2
 npm install
+npm run build
 ```
 
 如果 `npm install` 失败，优先检查：
 
 - Node 版本是否为 22 LTS
 - 网络是否可正常访问 npm
+
+每次修改或重新应用 `upstream-overrides` 后，都需要重新执行 `npm run build`。启动脚本会自动应用 override，并在发现前端 `dist` 早于 override 时停止启动，避免继续服务旧页面。
 
 ## 第 4 步：安装 Python 依赖
 

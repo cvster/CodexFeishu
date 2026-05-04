@@ -93,12 +93,15 @@ This extracts the upstream zip into a temporary folder, applies the overrides, a
 ```powershell
 cd vendor/claudecodeui-1.25.2
 npm install
+npm run build
 ```
 
 If this fails, first check:
 
 - whether you are using Node 22 LTS
 - whether npm can access the network
+
+Run `npm run build` again after changing or reapplying `upstream-overrides`. The start script applies overrides automatically and stops when the frontend `dist` is older than the overrides, so it does not silently serve stale UI.
 
 ## Step 4: Install Python dependency
 

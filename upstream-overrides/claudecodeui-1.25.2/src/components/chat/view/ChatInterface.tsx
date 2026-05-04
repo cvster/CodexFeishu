@@ -451,8 +451,6 @@ function ChatInterface({
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
-          codexReasoningEffort={codexReasoningEffort}
-          setCodexReasoningEffort={setCodexReasoningEffort}
           isSessionProcessing={isSessionProcessing}
           thinkingMode={thinkingMode}
           setThinkingMode={setThinkingMode}

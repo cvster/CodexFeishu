@@ -19,7 +19,10 @@ type SidebarStatusPollTarget = {
   provider: SessionProvider;
 };
 
-const SIDEBAR_PROCESSING_STARTED_TYPES = new Set(['codex-desktop-command-submitted']);
+const SIDEBAR_PROCESSING_STARTED_TYPES = new Set([
+  'codex-desktop-command-submitted',
+  'codex-desktop-command-delivered',
+]);
 
 const SIDEBAR_PROCESSING_FINISHED_TYPES = new Set([
   'claude-complete',

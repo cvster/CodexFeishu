@@ -5,7 +5,7 @@ import { Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import { IS_CODEX_ONLY_HARDENED } from '../../../../constants/config';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
-import type { CodexSessionOrigin, MCPServerStatus, SessionWithProvider } from '../../types/types';
+import type { CodexSessionOrigin, MCPServerStatus, SessionArchiveMetadata, SessionWithProvider } from '../../types/types';
 import { getTaskIndicatorStatus } from '../../utils/utils';
 import TaskIndicator from './TaskIndicator';
 import SidebarProjectSessions from './SidebarProjectSessions';
@@ -49,6 +49,7 @@ type SidebarProjectItemProps = {
     sessionId: string,
     sessionTitle: string,
     provider: SessionProvider,
+    metadata?: SessionArchiveMetadata,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
   onNewSession: (project: Project, sessionOrigin?: CodexSessionOrigin) => void;

@@ -49,7 +49,7 @@ import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getAct
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
-import { createCodexDesktopSyncContextFromRequest, enqueueCodexDesktopMessageBridge } from './codex-desktop-sync.js';
+import { createCodexDesktopSyncContextFromRequest, enqueueCodexDesktopArchive, enqueueCodexDesktopMessageBridge } from './codex-desktop-sync.js';
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
@@ -724,12 +724,34 @@ app.put('/api/sessions/:sessionId/archive', authenticateToken, async (req, res) 
             return res.status(400).json({ error: 'Invalid sessionId' });
         }
 
-        const { provider } = req.body;
+        const { provider, projectPath, sessionTitle, sessionOrigin } = req.body;
         if (!provider || !VALID_PROVIDERS.includes(provider)) {
             return res.status(400).json({ error: `Provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
         }
 
-        // Archive only in this frontend's session list; do not archive the Codex desktop app thread.
+        const resolvedSessionOrigin =
+            provider === 'codex'
+                ? sessionOrigin || sessionOriginsDb.getOrigin(safeSessionId, provider) || 'app'
+                : null;
+
+        if (provider === 'codex' && resolvedSessionOrigin === 'app') {
+            const archiveResult = await enqueueCodexDesktopArchive({
+                sessionId: safeSessionId,
+                projectPath,
+                sessionTitleHint: sessionTitle || null,
+                sourceContext: createCodexDesktopSyncContextFromRequest(req)
+            });
+
+            if (archiveResult?.skipped) {
+                return res.status(409).json({
+                    error: archiveResult.error || 'Codex desktop archive was not completed',
+                    reason: archiveResult.reason,
+                    target: archiveResult.target || null
+                });
+            }
+        }
+
+        // Keep the web/mobile list hidden even if the Codex desktop state refresh is delayed.
         sessionArchivesDb.archive(safeSessionId, provider);
         await broadcastProjectsUpdated({
             changeType: 'session_archived',
@@ -1756,16 +1778,25 @@ function handleChatConnection(ws, request = null) {
                             return;
                         }
 
-                        writer.send({
-                            type: 'codex-desktop-command-delivered',
-                            sessionId: bridgeResult?.sessionId || resolvedCodexOptions.sessionId || null,
-                            provider: 'codex'
-                        });
-
                         const bridgedSessionId = bridgeResult?.sessionId || resolvedCodexOptions.sessionId || null;
                         if (bridgedSessionId) {
+                            if (bridgeResult?.sessionId && !resolvedCodexOptions.sessionId) {
+                                writer.setSessionId(bridgedSessionId);
+                                writer.send({
+                                    type: 'session-created',
+                                    sessionId: bridgedSessionId,
+                                    provider: 'codex'
+                                });
+                            }
+
                             sessionOriginsDb.setOrigin(bridgedSessionId, 'codex', 'app');
                         }
+
+                        writer.send({
+                            type: 'codex-desktop-command-delivered',
+                            sessionId: bridgedSessionId,
+                            provider: 'codex'
+                        });
                     });
                     return;
                 }

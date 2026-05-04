@@ -70,67 +70,15 @@
     }
   }
 
-  function createReasoningWrapper(select) {
-    var row = select.closest(".flex.items-center.justify-center.gap-2");
-    if (!row || !row.parentElement) {
-      return;
-    }
-
-    if (row.parentElement.querySelector('[data-mobile-codex-reasoning="true"]')) {
-      return;
-    }
-
-    var wrapper = document.createElement("div");
-    wrapper.setAttribute("data-mobile-codex-reasoning", "true");
-    wrapper.className = row.className + " mt-3";
-
-    var label = document.createElement("span");
-    label.className = "text-sm text-muted-foreground";
-    label.textContent = "推理程度";
-
-    var relative = document.createElement("div");
-    relative.className = "relative";
-
-    var reasoningSelect = document.createElement("select");
-    reasoningSelect.className =
-      "cursor-pointer appearance-none rounded-lg border border-border/60 bg-muted/50 py-1.5 pl-3 pr-7 text-sm font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/20";
-
-    [
-      ["", "默认"],
-      ["minimal", "最低"],
-      ["low", "低"],
-      ["medium", "中"],
-      ["high", "高"],
-      ["xhigh", "很高"],
-    ].forEach(function (entry) {
-      var option = document.createElement("option");
-      option.value = entry[0];
-      option.textContent = entry[1];
-      reasoningSelect.appendChild(option);
+  function removeInjectedReasoningWrappers() {
+    document.querySelectorAll('[data-mobile-codex-reasoning="true"]').forEach(function (wrapper) {
+      wrapper.remove();
     });
-
-    reasoningSelect.value = getStoredReasoningEffort();
-    reasoningSelect.addEventListener("change", function () {
-      try {
-        localStorage.setItem(CODEX_REASONING_STORAGE_KEY, reasoningSelect.value || "");
-      } catch (error) {
-        console.warn("[mobile-codex] failed to save reasoning effort", error);
-      }
-    });
-
-    var icon = document.createElement("span");
-    icon.className =
-      "pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground";
-    icon.textContent = "▾";
-
-    relative.appendChild(reasoningSelect);
-    relative.appendChild(icon);
-    wrapper.appendChild(label);
-    wrapper.appendChild(relative);
-    row.insertAdjacentElement("afterend", wrapper);
   }
 
   function patchCodexSelectors() {
+    removeInjectedReasoningWrappers();
+
     var selects = document.querySelectorAll("select");
     selects.forEach(function (select) {
       if (!isCodexModelSelect(select)) {
@@ -139,7 +87,6 @@
 
       ensureCodexModelOption(select);
       syncCodexModelSelection(select);
-      createReasoningWrapper(select);
     });
   }
 

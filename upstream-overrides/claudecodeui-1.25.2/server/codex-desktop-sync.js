@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import crypto from 'crypto';
 import { promises as fs } from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getCodexSessions } from './projects.js';
@@ -17,12 +18,19 @@ const REPO_ROOT = path.resolve(__dirname, '../../../');
 const AUTOMATION_RUNNER =
   process.env.MOBILE_CODEX_DESKTOP_AUTOMATION_RUNNER ||
   path.join(REPO_ROOT, 'scripts', 'run-codex-desktop-automation.ps1');
+const AUTOMATION_DEPENDENCY_PATHS = [
+  AUTOMATION_RUNNER,
+  path.join(REPO_ROOT, 'scripts', 'codex_desktop_automation.py'),
+];
 const MAX_METADATA_ATTEMPTS = 6;
 const METADATA_RETRY_DELAY_MS = 750;
 const AUTOMATION_TIMEOUT_MS = 90000;
 const AUTOMATION_WORKER_READY_TIMEOUT_MS = 45000;
 const DESKTOP_AUTOMATION_WORKER_ENABLED =
   process.env.MOBILE_CODEX_DESKTOP_AUTOMATION_WORKER !== 'false';
+const CODEX_PROJECTLESS_PROJECT_PATH = 'codex://projectless';
+const CODEX_PROJECTLESS_PROJECT_DISPLAY_NAME = '无项目会话';
+const SIDE_EFFECTFUL_SEND_COMMANDS = new Set(['send-message', 'send-message-current', 'archive-session']);
 const automationQueues = new Map();
 let desktopAutomationWorker = null;
 
@@ -48,9 +56,44 @@ function truncateSessionHint(value, maxLength = 80) {
 }
 
 function getProjectDisplayName(projectPath) {
+  if (projectPath === CODEX_PROJECTLESS_PROJECT_PATH) {
+    return CODEX_PROJECTLESS_PROJECT_DISPLAY_NAME;
+  }
+
   const resolved = path.resolve(projectPath);
   const parsed = path.parse(resolved);
   return path.basename(resolved) || parsed.root || resolved;
+}
+
+async function isCodexProjectlessSession(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    return false;
+  }
+
+  try {
+    const statePath = path.join(os.homedir(), '.codex', '.codex-global-state.json');
+    const rawState = await fs.readFile(statePath, 'utf8');
+    const state = JSON.parse(rawState);
+    const projectlessThreadIds = state?.['projectless-thread-ids'];
+    return Array.isArray(projectlessThreadIds) && projectlessThreadIds.includes(sessionId.trim());
+  } catch {
+    return false;
+  }
+}
+
+async function normalizeCodexDesktopProjectPath(payload) {
+  if (await isCodexProjectlessSession(payload?.sessionId)) {
+    return {
+      ...payload,
+      projectPath: CODEX_PROJECTLESS_PROJECT_PATH,
+    };
+  }
+
+  return payload;
+}
+
+function isCodexProjectlessProjectPath(projectPath) {
+  return projectPath === CODEX_PROJECTLESS_PROJECT_PATH;
 }
 
 function encodeDesktopAutomationText(value) {
@@ -160,6 +203,20 @@ function runDesktopAutomationOnce(args) {
   });
 }
 
+async function getDesktopAutomationFingerprint() {
+  const entries = await Promise.all(
+    AUTOMATION_DEPENDENCY_PATHS.map(async (dependencyPath) => {
+      try {
+        const stats = await fs.stat(dependencyPath);
+        return `${dependencyPath}:${stats.mtimeMs}:${stats.size}`;
+      } catch {
+        return `${dependencyPath}:missing`;
+      }
+    }),
+  );
+  return entries.join('|');
+}
+
 function renderWorkerPayload(payload, asJson = false) {
   if (asJson || (payload && typeof payload === 'object' && !Array.isArray(payload))) {
     return JSON.stringify(payload, null, 2);
@@ -177,6 +234,7 @@ class DesktopAutomationWorkerClient {
     this.child = null;
     this.ready = false;
     this.startPromise = null;
+    this.scriptFingerprint = null;
     this.stdoutBuffer = '';
     this.stderrBuffer = '';
     this.requestCounter = 0;
@@ -184,8 +242,15 @@ class DesktopAutomationWorkerClient {
   }
 
   async ensureStarted() {
+    const scriptFingerprint = await getDesktopAutomationFingerprint();
+
     if (this.ready && this.child && !this.child.killed) {
-      return;
+      if (this.scriptFingerprint === scriptFingerprint) {
+        return;
+      }
+
+      console.log('[Codex Desktop Worker] Automation files changed; restarting worker.');
+      this._terminateWorker(new Error('Desktop automation files changed; restarting worker.'));
     }
 
     if (this.startPromise) {
@@ -236,6 +301,7 @@ class DesktopAutomationWorkerClient {
             settled = true;
             cleanupStartup();
             this.ready = true;
+            this.scriptFingerprint = scriptFingerprint;
             resolve();
           },
         });
@@ -360,6 +426,7 @@ class DesktopAutomationWorkerClient {
     this.child = null;
     this.ready = false;
     this.startPromise = null;
+    this.scriptFingerprint = null;
 
     for (const request of pending) {
       request.reject(error);
@@ -396,7 +463,7 @@ function warmDesktopAutomationWorker() {
 
 async function runDesktopAutomation(args) {
   const commandName = Array.isArray(args) && typeof args[0] === 'string' ? args[0] : '';
-  const isSideEffectfulSend = commandName === 'send-message';
+  const isSideEffectfulSend = SIDE_EFFECTFUL_SEND_COMMANDS.has(commandName);
 
   if (DESKTOP_AUTOMATION_WORKER_ENABLED) {
     try {
@@ -524,6 +591,9 @@ async function executeDesktopSync({
   reason,
   sourceContext,
 }) {
+  const normalizedPayload = await normalizeCodexDesktopProjectPath({ sessionId, projectPath });
+  projectPath = normalizedPayload.projectPath;
+
   const normalizedContext = normalizeSourceContext(sourceContext);
   if (!shouldSyncDesktop(normalizedContext)) {
     return {
@@ -616,6 +686,93 @@ export function enqueueCodexDesktopSync(payload) {
   return next;
 }
 
+export function enqueueCodexDesktopArchive(payload) {
+  const queueKey = payload.sessionId || `${payload.projectPath}:desktop-archive`;
+  const previous = automationQueues.get(queueKey) || Promise.resolve();
+  const enqueuedAt = Date.now();
+
+  const next = previous
+    .catch(() => {})
+    .then(async () => {
+      const archivePayload = await normalizeCodexDesktopProjectPath(payload);
+      const archiveStartedAt = Date.now();
+      const queueWaitMs = archiveStartedAt - enqueuedAt;
+      if (!DESKTOP_SYNC_ENABLED) {
+        return {
+          skipped: true,
+          reason: 'desktop-automation-disabled',
+        };
+      }
+
+      if (!archivePayload.sessionId || !archivePayload.projectPath) {
+        return {
+          skipped: true,
+          reason: 'missing-session-or-project',
+        };
+      }
+
+      const resolveStartedAt = Date.now();
+      const target = await resolveNavigationTarget({
+        sessionId: archivePayload.sessionId,
+        projectPath: archivePayload.projectPath,
+        sessionTitleHint: archivePayload.sessionTitleHint || null,
+        allowLatestFallback: false,
+        preferImmediateHint: Boolean(archivePayload.sessionTitleHint),
+        allowSessionTitleHintFallback: Boolean(archivePayload.sessionTitleHint),
+      });
+      const resolveMs = elapsedMs(resolveStartedAt);
+
+      if (target.selectionMode === 'unresolved' || !target.sessionTitle) {
+        return {
+          skipped: true,
+          reason: 'session-unresolved',
+          error: 'Could not resolve the target Codex desktop session title.',
+          target,
+        };
+      }
+
+      const automationArgs = ['archive-session', '--json'];
+      pushDesktopAutomationTextArg(automationArgs, '--project', target.projectDisplayName);
+      pushDesktopAutomationTextArg(automationArgs, '--session', target.sessionTitle);
+
+      const automationStartedAt = Date.now();
+      const result = await runDesktopAutomation(automationArgs);
+      const automationMs = elapsedMs(automationStartedAt);
+      console.log(
+        `[Codex Desktop Archive] archived -> ${target.projectDisplayName} / ${
+          target.sessionTitle
+        } (${target.selectionMode}, ${target.resolutionSource || 'unknown'}) | queue=${queueWaitMs}ms resolve=${resolveMs}ms automation=${automationMs}ms total=${elapsedMs(
+          archiveStartedAt,
+        )}ms`,
+      );
+      if (result.stderr) {
+        console.warn('[Codex Desktop Archive] stderr:', result.stderr);
+      }
+
+      return {
+        skipped: false,
+        target,
+        output: result.stdout,
+      };
+    })
+    .catch((error) => {
+      console.warn('[Codex Desktop Archive] Failed:', error.message);
+      return {
+        skipped: true,
+        reason: 'error',
+        error: error.message,
+      };
+    })
+    .finally(() => {
+      if (automationQueues.get(queueKey) === next) {
+        automationQueues.delete(queueKey);
+      }
+    });
+
+  automationQueues.set(queueKey, next);
+  return next;
+}
+
 export function enqueueCodexDesktopMessageBridge(payload) {
   const queueKey = payload.sessionId || `${payload.projectPath}:desktop-message`;
   const previous = automationQueues.get(queueKey) || Promise.resolve();
@@ -624,9 +781,10 @@ export function enqueueCodexDesktopMessageBridge(payload) {
   const next = previous
     .catch(() => {})
     .then(async () => {
+      const bridgePayload = await normalizeCodexDesktopProjectPath(payload);
       const bridgeStartedAt = Date.now();
       const queueWaitMs = bridgeStartedAt - enqueuedAt;
-      const normalizedContext = normalizeSourceContext(payload.sourceContext);
+      const normalizedContext = normalizeSourceContext(bridgePayload.sourceContext);
       if (!shouldSyncDesktop(normalizedContext)) {
         return {
           skipped: true,
@@ -634,9 +792,9 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         };
       }
 
-      const messageText = typeof payload.message === 'string' ? payload.message : '';
+      const messageText = typeof bridgePayload.message === 'string' ? bridgePayload.message : '';
 
-      if ((!payload.sessionId && !payload.newSession) || !payload.projectPath || messageText.trim().length === 0) {
+      if ((!bridgePayload.sessionId && !bridgePayload.newSession) || !bridgePayload.projectPath || messageText.trim().length === 0) {
         return {
           skipped: true,
           reason: 'missing-session-project-or-message',
@@ -644,32 +802,32 @@ export function enqueueCodexDesktopMessageBridge(payload) {
       }
 
       const resolveStartedAt = Date.now();
-      const previousSessionIds = payload.newSession
-        ? (await getCodexSessions(payload.projectPath, { limit: 0 }))
+      const previousSessionIds = bridgePayload.newSession
+        ? (await getCodexSessions(bridgePayload.projectPath, { limit: 0 }))
             .map((session) => session.id)
             .filter((sessionId) => typeof sessionId === 'string')
         : [];
-      let target = payload.newSession
+      let target = bridgePayload.newSession
         ? {
-            projectDisplayName: getProjectDisplayName(payload.projectPath),
+            projectDisplayName: getProjectDisplayName(bridgePayload.projectPath),
             sessionTitle: null,
             selectionMode: 'new-session',
             resolutionSource: 'new-session',
           }
         : await resolveNavigationTarget({
-            sessionId: payload.sessionId,
-            projectPath: payload.projectPath,
-            sessionTitleHint: payload.sessionTitleHint || null,
+            sessionId: bridgePayload.sessionId,
+            projectPath: bridgePayload.projectPath,
+            sessionTitleHint: bridgePayload.sessionTitleHint || null,
             allowLatestFallback: false,
-            preferImmediateHint: Boolean(payload.sessionTitleHint),
-            allowSessionTitleHintFallback: Boolean(payload.sessionTitleHint),
+            preferImmediateHint: Boolean(bridgePayload.sessionTitleHint),
+            allowSessionTitleHintFallback: Boolean(bridgePayload.sessionTitleHint),
           });
       console.log(
         '[mobile-codex][bridge-target]',
         JSON.stringify({
-          projectPath: payload.projectPath,
-          sessionId: payload.sessionId,
-          newSession: Boolean(payload.newSession),
+          projectPath: bridgePayload.projectPath,
+          sessionId: bridgePayload.sessionId,
+          newSession: Boolean(bridgePayload.newSession),
           resolvedProjectDisplayName: target.projectDisplayName,
           resolvedSessionTitle: target.sessionTitle,
           selectionMode: target.selectionMode,
@@ -689,12 +847,27 @@ export function enqueueCodexDesktopMessageBridge(payload) {
 
       return withDesktopMessageFile(messageText, async (messagePath) => {
         const runSendAutomation = async (resolvedTarget) => {
-          const automationArgs = ['send-message', '--message-file', messagePath, '--json'];
-          pushDesktopAutomationTextArg(automationArgs, '--project', resolvedTarget.projectDisplayName);
-          if (resolvedTarget.selectionMode === 'new-session') {
-            automationArgs.push('--new-session');
-          } else if (resolvedTarget.selectionMode !== 'latest' && resolvedTarget.sessionTitle) {
-            pushDesktopAutomationTextArg(automationArgs, '--session', resolvedTarget.sessionTitle);
+          const projectlessTarget = isCodexProjectlessProjectPath(bridgePayload.projectPath);
+          const automationArgs = [
+            projectlessTarget ? 'send-message-current' : 'send-message',
+            '--message-file',
+            messagePath,
+            '--json',
+          ];
+
+          if (projectlessTarget) {
+            if (resolvedTarget.selectionMode === 'new-session') {
+              automationArgs.push('--new-session');
+            } else if (bridgePayload.sessionId) {
+              automationArgs.push('--session-id', bridgePayload.sessionId);
+            }
+          } else {
+            pushDesktopAutomationTextArg(automationArgs, '--project', resolvedTarget.projectDisplayName);
+            if (resolvedTarget.selectionMode === 'new-session') {
+              automationArgs.push('--new-session');
+            } else if (resolvedTarget.selectionMode !== 'latest' && resolvedTarget.sessionTitle) {
+              pushDesktopAutomationTextArg(automationArgs, '--session', resolvedTarget.sessionTitle);
+            }
           }
 
           return runDesktopAutomation(automationArgs);
@@ -706,13 +879,13 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         try {
           result = await runSendAutomation(target);
         } catch (error) {
-          if (payload.newSession) {
+          if (bridgePayload.newSession) {
             throw error;
           }
 
           const shouldRetryWithMetadata =
-            typeof payload.sessionId === 'string' &&
-            typeof payload.projectPath === 'string';
+            typeof bridgePayload.sessionId === 'string' &&
+            typeof bridgePayload.projectPath === 'string';
 
           if (!shouldRetryWithMetadata) {
             throw error;
@@ -720,12 +893,12 @@ export function enqueueCodexDesktopMessageBridge(payload) {
 
           const retryResolveStartedAt = Date.now();
           target = await resolveNavigationTarget({
-            sessionId: payload.sessionId,
-            projectPath: payload.projectPath,
-            sessionTitleHint: payload.sessionTitleHint || null,
+            sessionId: bridgePayload.sessionId,
+            projectPath: bridgePayload.projectPath,
+            sessionTitleHint: bridgePayload.sessionTitleHint || null,
             allowLatestFallback: false,
             preferImmediateHint: false,
-            allowSessionTitleHintFallback: Boolean(payload.sessionTitleHint),
+            allowSessionTitleHintFallback: Boolean(bridgePayload.sessionTitleHint),
           });
           const retryResolveMs = elapsedMs(retryResolveStartedAt);
 
@@ -752,8 +925,8 @@ export function enqueueCodexDesktopMessageBridge(payload) {
           console.warn('[Codex Desktop Bridge] stderr:', result.stderr);
         }
 
-        const newSessionId = payload.newSession
-          ? await waitForNewCodexSessionId(payload.projectPath, previousSessionIds)
+        const newSessionId = bridgePayload.newSession
+          ? await waitForNewCodexSessionId(bridgePayload.projectPath, previousSessionIds)
           : null;
 
         return {

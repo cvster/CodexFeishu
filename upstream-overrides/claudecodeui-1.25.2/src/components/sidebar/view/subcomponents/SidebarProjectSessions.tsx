@@ -2,7 +2,7 @@ import { ChevronDown } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Button } from '../../../../shared/view/ui';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
-import type { CodexSessionOrigin, SessionWithProvider } from '../../types/types';
+import type { CodexSessionOrigin, SessionArchiveMetadata, SessionWithProvider } from '../../types/types';
 import SidebarSessionItem from './SidebarSessionItem';
 
 type SidebarProjectSessionsProps = {
@@ -33,6 +33,7 @@ type SidebarProjectSessionsProps = {
     sessionId: string,
     sessionTitle: string,
     provider: SessionProvider,
+    metadata?: SessionArchiveMetadata,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
   onNewSession: (project: Project, sessionOrigin?: CodexSessionOrigin) => void;

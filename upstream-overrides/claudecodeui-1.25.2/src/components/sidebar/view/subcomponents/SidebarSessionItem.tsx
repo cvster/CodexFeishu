@@ -5,7 +5,7 @@ import { cn } from '../../../../lib/utils';
 import { IS_CODEX_ONLY_HARDENED } from '../../../../constants/config';
 import { formatTimeAgo } from '../../../../utils/dateUtils';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
-import type { SessionWithProvider } from '../../types/types';
+import type { SessionArchiveMetadata, SessionWithProvider } from '../../types/types';
 import { createSessionViewModel } from '../../utils/utils';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import SidebarSessionStatusBadge from './SidebarSessionStatusBadge';
@@ -35,6 +35,7 @@ type SidebarSessionItemProps = {
     sessionId: string,
     sessionTitle: string,
     provider: SessionProvider,
+    metadata?: SessionArchiveMetadata,
   ) => void;
   t: TFunction;
 };
@@ -85,7 +86,16 @@ export default function SidebarSessionItem({
   };
 
   const requestArchiveSession = () => {
-    onArchiveSession(project.name, session.id, sessionView.sessionName, session.__provider);
+    const sessionOrigin =
+      session.__provider === 'codex'
+        ? session.sessionOrigin === 'backend'
+          ? 'backend'
+          : 'app'
+        : undefined;
+    onArchiveSession(project.name, session.id, sessionView.sessionName, session.__provider, {
+      projectPath: project.fullPath || project.path,
+      sessionOrigin,
+    });
   };
 
   const requestRenameSession = () => {
