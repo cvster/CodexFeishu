@@ -338,6 +338,14 @@ class DesktopAutomationWorkerClient {
 
   async run(args) {
     await this.ensureStarted();
+
+    if (!this.child || this.child.killed || this.child.exitCode !== null || !this.child.stdin?.writable) {
+      const error = new Error('Desktop automation worker is not accepting requests.');
+      error.desktopWorkerRequestNotSent = true;
+      this._handleWorkerExit(error);
+      throw error;
+    }
+
     const requestId = `${Date.now()}-${++this.requestCounter}`;
     const request = { id: requestId, argv: args };
 
@@ -379,6 +387,8 @@ class DesktopAutomationWorkerClient {
       } catch (error) {
         clearTimeout(timeoutHandle);
         this.pendingRequests.delete(requestId);
+        error.desktopWorkerRequestNotSent = true;
+        this._handleWorkerExit(error);
         reject(error);
       }
     });
@@ -469,7 +479,7 @@ async function runDesktopAutomation(args) {
     try {
       return await getDesktopAutomationWorker().run(args);
     } catch (error) {
-      if (isSideEffectfulSend && !error?.desktopWorkerStartup) {
+      if (isSideEffectfulSend && !error?.desktopWorkerStartup && !error?.desktopWorkerRequestNotSent) {
         throw error;
       }
       console.warn('[Codex Desktop Worker] Falling back to one-shot automation:', error.message);

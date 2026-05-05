@@ -19,6 +19,7 @@ try:
     import win32api
     import win32con
     import win32gui
+    import win32clipboard
 except ImportError as exc:  # pragma: no cover - exercised through the wrapper
     raise SystemExit(
         "pywinauto is required. Run scripts\\run-codex-desktop-automation.ps1 "
@@ -28,6 +29,7 @@ except ImportError as exc:  # pragma: no cover - exercised through the wrapper
 Application: Any | None = None
 Desktop: Any | None = None
 UIAWrapper: Any | None = None
+KeyboardSendKeys: Any | None = None
 
 
 SIDEBAR_RIGHT_EDGE = 650
@@ -327,15 +329,16 @@ def _attach_thread_to_input_desktop() -> bool:
 
 
 def _ensure_pywinauto_loaded() -> None:
-    global Application, Desktop, UIAWrapper
+    global Application, Desktop, UIAWrapper, KeyboardSendKeys
 
-    if Application is not None and Desktop is not None and UIAWrapper is not None:
+    if Application is not None and Desktop is not None and UIAWrapper is not None and KeyboardSendKeys is not None:
         return
 
     try:
         from pywinauto import Desktop as LoadedDesktop
         from pywinauto.application import Application as LoadedApplication
         from pywinauto.controls.uiawrapper import UIAWrapper as LoadedUIAWrapper
+        from pywinauto.keyboard import send_keys as LoadedKeyboardSendKeys
     except ImportError as exc:  # pragma: no cover - exercised through the wrapper
         raise SystemExit(
             "pywinauto is required. Run scripts\\run-codex-desktop-automation.ps1 "
@@ -345,6 +348,7 @@ def _ensure_pywinauto_loaded() -> None:
     Application = LoadedApplication
     Desktop = LoadedDesktop
     UIAWrapper = LoadedUIAWrapper
+    KeyboardSendKeys = LoadedKeyboardSendKeys
 
 
 def _desktop_is_ready_for_automation() -> bool:
@@ -409,6 +413,50 @@ def _tap_key_combo(modifiers: Iterable[int], vk: int) -> None:
             win32api.keybd_event(modifier, 0, win32con.KEYEVENTF_KEYUP, 0)
     except Exception:
         pass
+
+
+def _open_clipboard_with_retry(timeout: float = 1.5) -> None:
+    deadline = time.time() + timeout
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            win32clipboard.OpenClipboard()
+            return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.05)
+
+    raise RuntimeError(f"Could not open clipboard for Codex composer paste: {last_error}")
+
+
+@contextmanager
+def _temporary_clipboard_text(value: str) -> Iterable[None]:
+    previous_text: str | None = None
+    had_text = False
+
+    _open_clipboard_with_retry()
+    try:
+        had_text = bool(win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT))
+        if had_text:
+            previous_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, value)
+    finally:
+        win32clipboard.CloseClipboard()
+
+    try:
+        yield
+    finally:
+        try:
+            _open_clipboard_with_retry()
+            try:
+                win32clipboard.EmptyClipboard()
+                if had_text and previous_text is not None:
+                    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, previous_text)
+            finally:
+                win32clipboard.CloseClipboard()
+        except Exception:
+            pass
 
 
 def _close_screensaver_windows() -> None:
@@ -526,6 +574,20 @@ def _looks_like_send_button(control: Any) -> bool:
 def _looks_enabled(control: Any) -> bool:
     haystack = f"{_control_name(control)} {_control_class_name(control)}".casefold()
     return "opacity-50" not in haystack and "disabled=\"true\"" not in haystack
+
+
+def _escape_pywinauto_keys_text(value: str) -> str:
+    replacements = {
+        "+": "{+}",
+        "^": "{^}",
+        "%": "{%}",
+        "~": "{~}",
+        "(": "{(}",
+        ")": "{)}",
+        "{": "{{}",
+        "}": "{}}",
+    }
+    return "".join(replacements.get(char, char) for char in value)
 
 
 def _looks_like_archive_control(control: Any, *, excluded_text: str = "") -> bool:
@@ -1295,11 +1357,15 @@ class CodexDesktopAutomation:
         raise RuntimeError(f"Archive action did not remove session '{session_name}' from the visible list.")
 
     def _project_listbox(self) -> Any:
-        lists = [
-            element
-            for element in self._iter_descendants(control_type="List")
-            if element.is_visible() and element.rectangle().left < self.sidebar_right_edge
-        ]
+        lists = self._visible_sidebar_lists()
+        if not lists:
+            self._show_sidebar_if_hidden()
+            deadline = time.time() + 2.5
+            while time.time() < deadline and not lists:
+                lists = self._visible_sidebar_lists()
+                if lists:
+                    break
+                time.sleep(0.15)
         root_lists = [element for element in lists if not element.window_text().strip()]
         candidates = root_lists or lists
         if not candidates:
@@ -1312,6 +1378,26 @@ class CodexDesktopAutomation:
             )
         )
         return candidates[0]
+
+    def _visible_sidebar_lists(self) -> list[Any]:
+        return [
+            element
+            for element in self._iter_descendants(control_type="List")
+            if element.is_visible() and element.rectangle().left < self.sidebar_right_edge
+        ]
+
+    def _show_sidebar_if_hidden(self) -> None:
+        for element in self._iter_descendants(control_type="Button"):
+            try:
+                if not element.is_visible():
+                    continue
+                if _normalize(_control_name(element)) != "显示边栏":
+                    continue
+                self._activate_control(element, label="show sidebar button")
+                time.sleep(max(0.4, self.click_delay))
+                return
+            except Exception:
+                continue
 
     def _wait_for_project_expanded(self, project_name: str, *, exact: bool, timeout: float = 2.5) -> ProjectRef | None:
         deadline = time.time() + timeout
@@ -1672,6 +1758,48 @@ class CodexDesktopAutomation:
             code_unit = int.from_bytes(utf16[index : index + 2], "little")
             win32gui.PostMessage(target, win32con.WM_CHAR, code_unit, 0)
 
+    def _send_text_with_window_messages(self, composer: Any, value: str) -> None:
+        self._focus_composer(composer)
+        self._post_text(value)
+        time.sleep(max(0.35, self.click_delay))
+
+    def _clear_composer_text_with_window_messages(self, composer: Any) -> bool:
+        self._focus_composer(composer)
+        try:
+            composer.iface_text.DocumentRange.Select()
+        except Exception:
+            return False
+
+        target = self._render_widget_handle()
+        for vk in (win32con.VK_DELETE, win32con.VK_BACK):
+            win32gui.PostMessage(target, win32con.WM_KEYDOWN, vk, 0)
+            win32gui.PostMessage(target, win32con.WM_KEYUP, vk, 0)
+            time.sleep(max(0.2, self.click_delay))
+            if not self._composer_has_enabled_send_button(composer):
+                return True
+        return not self._composer_has_enabled_send_button(composer)
+
+    def _paste_text_from_clipboard(self, composer: Any, value: str) -> None:
+        self._focus_composer(composer)
+        with _temporary_clipboard_text(value):
+            _tap_key_combo((win32con.VK_CONTROL,), ord("V"))
+            time.sleep(max(0.25, self.click_delay))
+
+    def _send_text_with_keyboard(self, composer: Any, value: str) -> None:
+        if KeyboardSendKeys is None:
+            raise RuntimeError("pywinauto keyboard support is not loaded.")
+        self._focus_composer(composer)
+        escaped_value = _escape_pywinauto_keys_text(value)
+        KeyboardSendKeys(
+            escaped_value,
+            pause=0.005,
+            with_spaces=True,
+            with_tabs=True,
+            with_newlines=True,
+            vk_packet=True,
+        )
+        time.sleep(max(0.25, self.click_delay))
+
     def _focus_composer(self, composer: Any) -> None:
         self._click_control_by_input(composer)
         try:
@@ -1688,6 +1816,9 @@ class CodexDesktopAutomation:
             return False
 
     def _clear_composer_text(self, composer: Any) -> None:
+        if self._clear_composer_text_with_window_messages(composer):
+            return
+
         self._focus_composer(composer)
         for vk in (win32con.VK_BACK, win32con.VK_DELETE):
             _tap_key_combo((win32con.VK_CONTROL,), ord("A"))
@@ -1699,26 +1830,55 @@ class CodexDesktopAutomation:
 
     def _set_composer_text_via_messages(self, composer: Any, value: str) -> None:
         self._clear_composer_text(composer)
+        method_errors: list[str] = []
 
         if value:
             if self._composer_has_enabled_send_button(composer):
                 raise RuntimeError("Codex composer still contains unsent text after clearing; refusing to append a new message.")
 
+            try:
+                self._paste_text_from_clipboard(composer, value)
+                self._wait_for_send_button(composer.rectangle(), timeout=4.0, enabled=True)
+                return
+            except Exception as exc:
+                method_errors.append(f"clipboard paste failed: {exc}")
+                self._clear_composer_text(composer)
+
+            try:
+                self._send_text_with_keyboard(composer, value)
+                self._wait_for_send_button(composer.rectangle(), timeout=4.0, enabled=True)
+                return
+            except Exception as exc:
+                method_errors.append(f"pywinauto keyboard failed: {exc}")
+                self._clear_composer_text(composer)
+
             sent_with_input = self._send_text_input(value)
             time.sleep(max(0.35, self.click_delay))
             try:
-                self._wait_for_send_button(composer.rectangle(), timeout=2.0, enabled=True)
+                self._wait_for_send_button(composer.rectangle(), timeout=4.0, enabled=True)
                 return
-            except RuntimeError:
-                if not sent_with_input:
-                    raise
+            except RuntimeError as exc:
+                method_errors.append(f"SendInput unicode failed: {exc}" if sent_with_input else "SendInput unicode failed: Windows rejected the keyboard injection.")
                 self._clear_composer_text(composer)
-                self._post_text(value)
+
+            try:
+                self._send_text_with_window_messages(composer, value)
+                self._wait_for_send_button(composer.rectangle(), timeout=4.0, enabled=True)
+                return
+            except Exception as exc:
+                method_errors.append(f"window message input failed: {exc}")
+                self._clear_composer_text(composer)
 
         time.sleep(max(0.35, self.click_delay))
 
         if value:
-            self._wait_for_send_button(composer.rectangle(), timeout=2.0, enabled=True)
+            try:
+                self._wait_for_send_button(composer.rectangle(), timeout=4.0, enabled=True)
+            except RuntimeError as exc:
+                detail = "; ".join(method_errors)
+                if detail:
+                    raise RuntimeError(f"{exc} Attempts: {detail}") from exc
+                raise
 
     def _iter_descendants(self, control_type: str | None = None) -> Iterable[Any]:
         for element_info in self.window.element_info.descendants(control_type=control_type):
