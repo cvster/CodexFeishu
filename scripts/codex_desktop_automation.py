@@ -41,6 +41,7 @@ ES_SYSTEM_REQUIRED = 0x00000001
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -271,6 +272,13 @@ def _keyboard_event_input(vk: int, flags: int = 0) -> INPUT:
     return event
 
 
+def _unicode_keyboard_event_input(code_unit: int, flags: int = 0) -> INPUT:
+    event = INPUT()
+    event.type = INPUT_KEYBOARD
+    event.union.ki = KEYBDINPUT(0, code_unit, KEYEVENTF_UNICODE | flags, 0, None)
+    return event
+
+
 def _screen_point_to_absolute(x: int, y: int) -> tuple[int, int]:
     width = max(1, win32api.GetSystemMetrics(SM_CXSCREEN) - 1)
     height = max(1, win32api.GetSystemMetrics(SM_CYSCREEN) - 1)
@@ -377,6 +385,28 @@ def _tap_key(vk: int) -> None:
     try:
         win32api.keybd_event(vk, 0, 0, 0)
         win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+    except Exception:
+        pass
+
+
+def _tap_key_combo(modifiers: Iterable[int], vk: int) -> None:
+    modifier_list = list(modifiers)
+    events: list[INPUT] = []
+    for modifier in modifier_list:
+        events.append(_keyboard_event_input(modifier))
+    events.append(_keyboard_event_input(vk))
+    events.append(_keyboard_event_input(vk, KEYEVENTF_KEYUP))
+    for modifier in reversed(modifier_list):
+        events.append(_keyboard_event_input(modifier, KEYEVENTF_KEYUP))
+    _send_input_events(events)
+
+    try:
+        for modifier in modifier_list:
+            win32api.keybd_event(modifier, 0, 0, 0)
+        win32api.keybd_event(vk, 0, 0, 0)
+        win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+        for modifier in reversed(modifier_list):
+            win32api.keybd_event(modifier, 0, win32con.KEYEVENTF_KEYUP, 0)
     except Exception:
         pass
 
@@ -867,7 +897,7 @@ class CodexDesktopAutomation:
                 )
 
             before = tuple(self._main_text_preview())
-            composer = self._composer()
+            composer = self._wait_for_composer()
             self._set_composer_text_via_messages(composer, message)
             self._submit_composer_message(composer, before)
 
@@ -904,7 +934,7 @@ class CodexDesktopAutomation:
                 self.activate()
 
             before = tuple(self._main_text_preview())
-            composer = self._composer()
+            composer = self._wait_for_composer()
             self._set_composer_text_via_messages(composer, message)
             self._submit_composer_message(composer, before)
 
@@ -915,6 +945,20 @@ class CodexDesktopAutomation:
             "submitted_message": message,
             "state": self.snapshot(),
         }
+
+    def _wait_for_composer(self, timeout: float = 8.0) -> Any:
+        deadline = time.time() + timeout
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                return self._composer()
+            except RuntimeError as exc:
+                last_error = exc
+                time.sleep(0.2)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Could not find the Codex composer input.")
 
     def _wait_for_main_text_change(self, before: Iterable[str], timeout: float = 4.0) -> bool:
         expected = tuple(before)
@@ -1605,6 +1649,22 @@ class CodexDesktopAutomation:
         hwnd = win32gui.FindWindowEx(self.window.handle, 0, "Chrome_RenderWidgetHostHWND", None)
         return hwnd or self.window.handle
 
+    def _send_text_input(self, value: str) -> bool:
+        if not value:
+            return True
+
+        utf16 = value.encode("utf-16-le", errors="surrogatepass")
+        events: list[INPUT] = []
+        for index in range(0, len(utf16), 2):
+            code_unit = int.from_bytes(utf16[index : index + 2], "little")
+            events.append(_unicode_keyboard_event_input(code_unit))
+            events.append(_unicode_keyboard_event_input(code_unit, KEYEVENTF_KEYUP))
+        for index in range(0, len(events), 128):
+            if not _send_input_events(events[index : index + 128]):
+                return False
+            time.sleep(0.005)
+        return True
+
     def _post_text(self, value: str) -> None:
         target = self._render_widget_handle()
         utf16 = value.encode("utf-16-le")
@@ -1612,7 +1672,7 @@ class CodexDesktopAutomation:
             code_unit = int.from_bytes(utf16[index : index + 2], "little")
             win32gui.PostMessage(target, win32con.WM_CHAR, code_unit, 0)
 
-    def _set_composer_text_via_messages(self, composer: Any, value: str) -> None:
+    def _focus_composer(self, composer: Any) -> None:
         self._click_control_by_input(composer)
         try:
             composer.set_focus()
@@ -1620,17 +1680,40 @@ class CodexDesktopAutomation:
             pass
         time.sleep(self.click_delay / 2)
 
-        if value:
-            try:
-                existing_button = self._composer_send_button(composer.rectangle())
-                if _looks_like_send_button(existing_button) and _looks_enabled(existing_button):
-                    raise RuntimeError("Codex composer already contains unsent text; refusing to append a new message.")
-            except RuntimeError:
-                raise
-            except Exception:
-                pass
+    def _composer_has_enabled_send_button(self, composer: Any) -> bool:
+        try:
+            button = self._composer_send_button(composer.rectangle())
+            return _looks_like_send_button(button) and _looks_enabled(button)
+        except Exception:
+            return False
 
-            self._post_text(value)
+    def _clear_composer_text(self, composer: Any) -> None:
+        self._focus_composer(composer)
+        for vk in (win32con.VK_BACK, win32con.VK_DELETE):
+            _tap_key_combo((win32con.VK_CONTROL,), ord("A"))
+            time.sleep(0.05)
+            _tap_key(vk)
+            time.sleep(max(0.2, self.click_delay))
+            if not self._composer_has_enabled_send_button(composer):
+                return
+
+    def _set_composer_text_via_messages(self, composer: Any, value: str) -> None:
+        self._clear_composer_text(composer)
+
+        if value:
+            if self._composer_has_enabled_send_button(composer):
+                raise RuntimeError("Codex composer still contains unsent text after clearing; refusing to append a new message.")
+
+            sent_with_input = self._send_text_input(value)
+            time.sleep(max(0.35, self.click_delay))
+            try:
+                self._wait_for_send_button(composer.rectangle(), timeout=2.0, enabled=True)
+                return
+            except RuntimeError:
+                if not sent_with_input:
+                    raise
+                self._clear_composer_text(composer)
+                self._post_text(value)
 
         time.sleep(max(0.35, self.click_delay))
 
