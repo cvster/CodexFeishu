@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { MutableRefObject } from 'react';
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import { api, authenticatedFetch } from '../../../utils/api';
 import { IS_CODEX_ONLY_HARDENED } from '../../../constants/config';
 import type { ChatMessage, Provider } from '../types/types';
@@ -321,6 +321,55 @@ const applyPendingUserMessage = (
   ];
 };
 
+const getSessionViewKey = (projectName: string, sessionId: string, provider: Provider | string) =>
+  JSON.stringify([projectName, sessionId, provider]);
+
+const parseSessionViewKey = (viewKey: string | null) => {
+  if (!viewKey) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(viewKey) as unknown;
+    if (
+      !Array.isArray(parsed) ||
+      typeof parsed[0] !== 'string' ||
+      typeof parsed[1] !== 'string' ||
+      typeof parsed[2] !== 'string'
+    ) {
+      return null;
+    }
+
+    return { projectName: parsed[0], sessionId: parsed[1], provider: parsed[2] };
+  } catch {
+    return null;
+  }
+};
+
+const sanitizePendingMessagesForView = (
+  messages: ChatMessage[],
+  viewKey: string | null,
+) => {
+  const viewInfo = parseSessionViewKey(viewKey);
+  const viewPendingMessage = viewInfo
+    ? loadPendingUserMessage(viewInfo.projectName, viewInfo.sessionId, viewInfo.provider)
+    : null;
+
+  return messages.filter((message) => {
+    const isOptimisticPendingMessage =
+      message.type === 'user' &&
+      (message.__pendingSync ||
+        message.__deliveryStatus === 'sending' ||
+        message.__deliveryStatus === 'failed');
+
+    if (!isOptimisticPendingMessage) {
+      return true;
+    }
+
+    return matchesPendingUserMessage(message, viewPendingMessage);
+  });
+};
+
 export function useChatSessionState({
   selectedProject,
   selectedSession,
@@ -332,7 +381,9 @@ export function useChatSessionState({
   resetStreamingState,
   pendingViewSessionRef,
 }: UseChatSessionStateArgs) {
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
+  const visibleSessionKeyRef = useRef<string | null>(null);
+  const chatMessagesViewKeyRef = useRef<string | null>(null);
+  const [rawChatMessages, setRawChatMessages] = useState<ChatMessage[]>(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       const saved = safeLocalStorage.getItem(`chat_messages_${selectedProject.name}`);
       if (saved) {
@@ -354,6 +405,7 @@ export function useChatSessionState({
     }
     return [];
   });
+  const [chatMessagesViewKey, setChatMessagesViewKey] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [sessionMessages, setSessionMessages] = useState<any[]>([]);
@@ -372,7 +424,7 @@ export function useChatSessionState({
   const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
   const [showLoadAllOverlay, setShowLoadAllOverlay] = useState(false);
   const [isRefreshingLatest, setIsRefreshingLatest] = useState(false);
-  const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessageRecord | null>(null);
+  const [rawPendingUserMessage, setRawPendingUserMessage] = useState<PendingUserMessageRecord | null>(null);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
@@ -388,6 +440,8 @@ export function useChatSessionState({
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
+  const skipConvertedSyncForViewKeyRef = useRef<string | null>(null);
+  const prevConvertedMessagesSignatureRef = useRef('');
   const sessionMessagesRef = useRef<any[]>([]);
   const lastLatestRefreshAtRef = useRef(0);
   const lastBackgroundRefreshIndicatorAtRef = useRef(0);
@@ -494,6 +548,72 @@ export function useChatSessionState({
       (selectedSession?.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude')) as Provider,
     [selectedSession?.__provider],
   );
+  const selectedProjectName = selectedProject?.name || null;
+  const selectedSessionId = selectedSession?.id || null;
+  const selectedSessionViewKey = useMemo(() => {
+    if (!selectedProjectName || !selectedSessionId) {
+      return null;
+    }
+
+    return getSessionViewKey(selectedProjectName, selectedSessionId, resolvedSessionProvider);
+  }, [resolvedSessionProvider, selectedProjectName, selectedSessionId]);
+  const chatMessages = useMemo(
+    () => (chatMessagesViewKey === selectedSessionViewKey ? rawChatMessages : []),
+    [chatMessagesViewKey, rawChatMessages, selectedSessionViewKey],
+  );
+  const pendingUserMessage = useMemo(
+    () =>
+      rawPendingUserMessage &&
+      rawPendingUserMessage.sessionId === selectedSessionId &&
+      rawPendingUserMessage.provider === resolvedSessionProvider
+        ? rawPendingUserMessage
+        : null,
+    [rawPendingUserMessage, resolvedSessionProvider, selectedSessionId],
+  );
+  const setChatMessages = useCallback<Dispatch<SetStateAction<ChatMessage[]>>>((update) => {
+    const nextViewKey = visibleSessionKeyRef.current;
+    const previousViewKey = chatMessagesViewKeyRef.current;
+
+    chatMessagesViewKeyRef.current = nextViewKey;
+    setChatMessagesViewKey(nextViewKey);
+    setRawChatMessages((previousMessages) => {
+      const scopedPreviousMessages = previousViewKey === nextViewKey ? previousMessages : [];
+      const nextMessages = typeof update === 'function'
+        ? (update as (previous: ChatMessage[]) => ChatMessage[])(scopedPreviousMessages)
+        : update;
+      return sanitizePendingMessagesForView(nextMessages, nextViewKey);
+    });
+  }, []);
+  const setPendingUserMessage = useCallback<Dispatch<SetStateAction<PendingUserMessageRecord | null>>>((update) => {
+    setRawPendingUserMessage((previousPendingMessage) => {
+      const viewInfo = parseSessionViewKey(visibleSessionKeyRef.current);
+      const scopedPreviousPendingMessage =
+        viewInfo &&
+        previousPendingMessage?.sessionId === viewInfo.sessionId &&
+        previousPendingMessage.provider === viewInfo.provider
+          ? previousPendingMessage
+          : null;
+      const nextPendingMessage = typeof update === 'function'
+        ? (update as (
+            previous: PendingUserMessageRecord | null,
+          ) => PendingUserMessageRecord | null)(scopedPreviousPendingMessage)
+        : update;
+
+      if (!nextPendingMessage) {
+        return null;
+      }
+
+      if (
+        !viewInfo ||
+        nextPendingMessage.sessionId !== viewInfo.sessionId ||
+        nextPendingMessage.provider !== viewInfo.provider
+      ) {
+        return null;
+      }
+
+      return nextPendingMessage;
+    });
+  }, []);
 
   const resolvePendingUserMessageDelivery = useCallback(
     async (
@@ -549,15 +669,59 @@ export function useChatSessionState({
   );
 
   useEffect(() => {
-    if (!selectedProject || !selectedSession?.id) {
+    if (!selectedProjectName || !selectedSessionId) {
       setPendingUserMessage(null);
       return;
     }
 
     setPendingUserMessage(
-      loadPendingUserMessage(selectedProject.name, selectedSession.id, resolvedSessionProvider),
+      loadPendingUserMessage(selectedProjectName, selectedSessionId, resolvedSessionProvider),
     );
-  }, [resolvedSessionProvider, selectedProject?.name, selectedSession?.id]);
+  }, [resolvedSessionProvider, selectedProjectName, selectedSessionId, setPendingUserMessage]);
+
+  useLayoutEffect(() => {
+    if (visibleSessionKeyRef.current === selectedSessionViewKey) {
+      return;
+    }
+
+    visibleSessionKeyRef.current = selectedSessionViewKey;
+    skipConvertedSyncForViewKeyRef.current = selectedSessionViewKey || '__no-session__';
+    const nextPendingUserMessage =
+      selectedProject && selectedSession?.id
+        ? loadPendingUserMessage(selectedProject.name, selectedSession.id, resolvedSessionProvider)
+        : null;
+    const nextMessages = applyPendingUserMessage([], nextPendingUserMessage);
+
+    resetStreamingState();
+    setPendingUserMessage(nextPendingUserMessage);
+    setSessionMessages([]);
+    sessionMessagesRef.current = [];
+    setChatMessages(nextMessages);
+    prevConvertedMessagesSignatureRef.current = buildChatMessagesSignature(nextMessages);
+    messagesOffsetRef.current = 0;
+    setHasMoreMessages(false);
+    setTotalMessages(0);
+    setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
+    setAllMessagesLoaded(false);
+    allMessagesLoadedRef.current = false;
+    setIsLoadingAllMessages(false);
+    setLoadAllJustFinished(false);
+    setShowLoadAllOverlay(false);
+    if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
+    if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
+    setTokenBudget(null);
+    setClaudeStatus(null);
+    setCanAbortSession(false);
+    setIsLoading(false);
+  }, [
+    resetStreamingState,
+    resolvedSessionProvider,
+    selectedProject,
+    selectedSession?.id,
+    selectedSessionViewKey,
+    setChatMessages,
+    setPendingUserMessage,
+  ]);
 
   const baseConvertedMessages = useMemo(() => {
     return convertSessionMessages(sessionMessages);
@@ -612,6 +776,7 @@ export function useChatSessionState({
         return false;
       }
 
+      const loadOlderSessionKey = selectedSessionViewKey;
       isLoadingMoreRef.current = true;
       const previousScrollHeight = container.scrollHeight;
       const previousScrollTop = container.scrollTop;
@@ -628,6 +793,10 @@ export function useChatSessionState({
           return false;
         }
 
+        if (visibleSessionKeyRef.current !== loadOlderSessionKey) {
+          return false;
+        }
+
         pendingScrollRestoreRef.current = {
           height: previousScrollHeight,
           top: previousScrollTop,
@@ -641,7 +810,14 @@ export function useChatSessionState({
         isLoadingMoreRef.current = false;
       }
     },
-    [hasMoreMessages, isLoadingMoreMessages, loadSessionMessages, selectedProject, selectedSession],
+    [
+      hasMoreMessages,
+      isLoadingMoreMessages,
+      loadSessionMessages,
+      selectedProject,
+      selectedSession,
+      selectedSessionViewKey,
+    ],
   );
 
   const refreshLatestMessages = useCallback(
@@ -654,6 +830,12 @@ export function useChatSessionState({
       }
 
       const sessionProvider = (selectedSession.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude')) as Provider;
+      const refreshSessionKey = selectedSessionViewKey;
+      const refreshPendingUserMessage = loadPendingUserMessage(
+        selectedProject.name,
+        selectedSession.id,
+        sessionProvider,
+      );
       const refreshStartedAt = Date.now();
 
       if (showIndicator) {
@@ -663,6 +845,9 @@ export function useChatSessionState({
         if (sessionProvider === 'cursor') {
           const projectPath = selectedProject.fullPath || selectedProject.path || '';
           const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
+          if (visibleSessionKeyRef.current !== refreshSessionKey) {
+            return false;
+          }
           setSessionMessages([]);
           setChatMessages(converted);
           sendMessage({
@@ -687,6 +872,10 @@ export function useChatSessionState({
         }
 
         const data = await response.json();
+        if (visibleSessionKeyRef.current !== refreshSessionKey) {
+          return false;
+        }
+
         const latestMessages = data.messages || [];
         const { messages: mergedMessages, addedCount } = mergeLatestSessionMessages(
           sessionMessagesRef.current,
@@ -695,9 +884,12 @@ export function useChatSessionState({
         const total = Number(data.total || mergedMessages.length);
         const convertedMergedMessages = convertSessionMessages(mergedMessages);
         const nextPendingUserMessage = await resolvePendingUserMessageDelivery(
-          pendingUserMessage,
+          refreshPendingUserMessage,
           sessionProvider,
         );
+        if (visibleSessionKeyRef.current !== refreshSessionKey) {
+          return false;
+        }
         const renderedMessages = applyPendingUserMessage(convertedMergedMessages, nextPendingUserMessage);
 
         if (preserveScroll && container) {
@@ -709,7 +901,7 @@ export function useChatSessionState({
         }
 
         setSessionMessages(mergedMessages);
-        if (nextPendingUserMessage !== pendingUserMessage) {
+        if (nextPendingUserMessage !== refreshPendingUserMessage) {
           setPendingUserMessage(nextPendingUserMessage);
         }
         setChatMessages(renderedMessages);
@@ -744,12 +936,13 @@ export function useChatSessionState({
     },
     [
       loadCursorSessionMessages,
-      pendingUserMessage,
       resolvePendingUserMessageDelivery,
       selectedProject,
       selectedSession,
+      selectedSessionViewKey,
       sendMessage,
       setChatMessages,
+      setPendingUserMessage,
     ],
   );
 
@@ -862,8 +1055,6 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
   }, [chatMessages.length]);
 
-  const prevConvertedMessagesSignatureRef = useRef('');
-
   useEffect(() => {
     if (!searchScrollActiveRef.current) {
       pendingInitialScrollRef.current = true;
@@ -952,7 +1143,12 @@ export function useChatSessionState({
         }
 
         // Skip loading if session+project+provider hasn't changed
-        const sessionKey = `${selectedSession.id}:${selectedProject.name}:${provider}`;
+        const sessionKey = getSessionViewKey(selectedProject.name, selectedSession.id, provider);
+        const sessionPendingUserMessage = loadPendingUserMessage(
+          selectedProject.name,
+          selectedSession.id,
+          provider,
+        );
         if (lastLoadedSessionKeyRef.current === sessionKey) {
           setTimeout(() => {
             isLoadingSessionRef.current = false;
@@ -967,7 +1163,10 @@ export function useChatSessionState({
           if (!isSystemSessionChange) {
             const projectPath = selectedProject.fullPath || selectedProject.path || '';
             const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
-            if (pendingUserMessage && hasSyncedPendingUserMessage(converted, pendingUserMessage)) {
+            if (visibleSessionKeyRef.current !== sessionKey) {
+              return;
+            }
+            if (sessionPendingUserMessage && hasSyncedPendingUserMessage(converted, sessionPendingUserMessage)) {
               setPendingUserMessage(
                 markPendingUserMessageSent(
                   selectedProject.name,
@@ -977,7 +1176,7 @@ export function useChatSessionState({
               );
             }
             setSessionMessages([]);
-            setChatMessages(applyPendingUserMessage(converted, pendingUserMessage));
+            setChatMessages(applyPendingUserMessage(converted, sessionPendingUserMessage));
           } else {
             setIsSystemSessionChange(false);
           }
@@ -992,11 +1191,17 @@ export function useChatSessionState({
               false,
               provider,
             );
+            if (visibleSessionKeyRef.current !== sessionKey) {
+              return;
+            }
             const nextPendingUserMessage = await resolvePendingUserMessageDelivery(
-              pendingUserMessage,
+              sessionPendingUserMessage,
               provider,
             );
-            if (nextPendingUserMessage !== pendingUserMessage) {
+            if (visibleSessionKeyRef.current !== sessionKey) {
+              return;
+            }
+            if (nextPendingUserMessage !== sessionPendingUserMessage) {
               setPendingUserMessage(nextPendingUserMessage);
             }
             setSessionMessages(messages);
@@ -1046,6 +1251,8 @@ export function useChatSessionState({
     selectedProject,
     selectedSession?.id, // Only depend on session ID, not the entire object
     sendMessage,
+    setChatMessages,
+    setPendingUserMessage,
     ws,
   ]);
 
@@ -1085,9 +1292,18 @@ export function useChatSessionState({
         const provider = (selectedSession.__provider || (IS_CODEX_ONLY_HARDENED ? 'codex' : 'claude')) as Provider;
 
         if (provider === 'cursor') {
+          const reloadSessionKey = selectedSessionViewKey;
+          const reloadPendingUserMessage = loadPendingUserMessage(
+            selectedProject.name,
+            selectedSession.id,
+            provider,
+          );
           const projectPath = selectedProject.fullPath || selectedProject.path || '';
           const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
-          if (pendingUserMessage && hasSyncedPendingUserMessage(converted, pendingUserMessage)) {
+          if (visibleSessionKeyRef.current !== reloadSessionKey) {
+            return;
+          }
+          if (reloadPendingUserMessage && hasSyncedPendingUserMessage(converted, reloadPendingUserMessage)) {
             setPendingUserMessage(
               markPendingUserMessageSent(
                 selectedProject.name,
@@ -1097,7 +1313,7 @@ export function useChatSessionState({
             );
           }
           setSessionMessages([]);
-          setChatMessages(applyPendingUserMessage(converted, pendingUserMessage));
+          setChatMessages(applyPendingUserMessage(converted, reloadPendingUserMessage));
           return;
         }
 
@@ -1129,12 +1345,14 @@ export function useChatSessionState({
     isNearBottom,
     isUserScrolledUp,
     loadCursorSessionMessages,
-    pendingUserMessage,
     refreshLatestMessages,
     resolvedSessionProvider,
     scrollToBottom,
     selectedProject,
     selectedSession,
+    selectedSessionViewKey,
+    setChatMessages,
+    setPendingUserMessage,
   ]);
 
   // Detect search navigation target from selectedSession object reference change
@@ -1164,6 +1382,8 @@ export function useChatSessionState({
       !selectedProject ||
       !selectedSession?.id ||
       !pendingUserMessage ||
+      pendingUserMessage.sessionId !== selectedSession.id ||
+      pendingUserMessage.provider !== resolvedSessionProvider ||
       pendingUserMessage.status === 'sent' ||
       resolvedSessionProvider === 'codex'
     ) {
@@ -1183,11 +1403,22 @@ export function useChatSessionState({
     resolvedSessionProvider,
     selectedProject,
     selectedSession?.id,
+    setPendingUserMessage,
   ]);
 
   useEffect(() => {
     // Keep the rendered chat in sync with sessionMessages whenever the actual content changes.
     // This allows Codex replies that grow in-place to repaint even if the message count is unchanged.
+    if (visibleSessionKeyRef.current !== selectedSessionViewKey) {
+      return;
+    }
+
+    const currentViewKey = selectedSessionViewKey || '__no-session__';
+    if (skipConvertedSyncForViewKeyRef.current === currentViewKey) {
+      skipConvertedSyncForViewKeyRef.current = null;
+      return;
+    }
+
     if (
       isLoading &&
       chatMessages.length > 0 &&
@@ -1202,7 +1433,14 @@ export function useChatSessionState({
 
     setChatMessages(convertedMessages);
     prevConvertedMessagesSignatureRef.current = convertedMessagesSignature;
-  }, [chatMessages.length, convertedMessages, convertedMessagesSignature, isLoading, setChatMessages]);
+  }, [
+    chatMessages.length,
+    convertedMessages,
+    convertedMessagesSignature,
+    isLoading,
+    selectedSessionViewKey,
+    setChatMessages,
+  ]);
 
   useEffect(() => {
     if (selectedProject && chatMessages.length > 0) {
@@ -1456,6 +1694,7 @@ export function useChatSessionState({
     }
 
     const requestSessionId = selectedSession.id;
+    const requestSessionKey = selectedSessionViewKey;
 
     allMessagesLoadedRef.current = true;
     isLoadingMoreRef.current = true;
@@ -1475,10 +1714,12 @@ export function useChatSessionState({
         sessionProvider,
       );
 
-      if (currentSessionId !== requestSessionId) return;
+      if (visibleSessionKeyRef.current !== requestSessionKey) return;
 
       if (response.ok) {
         const data = await response.json();
+        if (visibleSessionKeyRef.current !== requestSessionKey) return;
+
         const allMessages = data.messages || data;
 
         if (container) {
@@ -1515,7 +1756,7 @@ export function useChatSessionState({
       isLoadingMoreRef.current = false;
       setIsLoadingAllMessages(false);
     }
-  }, [selectedSession, selectedProject, isLoadingAllMessages, currentSessionId]);
+  }, [selectedSession, selectedProject, isLoadingAllMessages, selectedSessionViewKey]);
 
   const loadEarlierMessages = useCallback(() => {
     setVisibleMessageCount((previousCount) => previousCount + 100);

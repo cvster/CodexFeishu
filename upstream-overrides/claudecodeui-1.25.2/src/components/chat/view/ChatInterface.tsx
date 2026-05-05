@@ -382,6 +382,11 @@ function ChatInterface({
     <>
       <div className="flex h-full flex-col">
         <ChatMessagesPane
+          key={JSON.stringify([
+            selectedProject.name,
+            selectedSession?.id || null,
+            provider,
+          ])}
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
           onTouchMove={handleScroll}

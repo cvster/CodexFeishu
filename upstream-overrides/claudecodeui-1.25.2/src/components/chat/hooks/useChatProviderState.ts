@@ -16,7 +16,7 @@ interface UseChatProviderStateArgs {
 }
 
 export function useChatProviderState({ selectedSession }: UseChatProviderStateArgs) {
-  const hardenedDefaultPermissionMode: PermissionMode = IS_CODEX_ONLY_HARDENED ? 'acceptEdits' : 'default';
+  const hardenedDefaultPermissionMode: PermissionMode = IS_CODEX_ONLY_HARDENED ? 'bypassPermissions' : 'default';
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(hardenedDefaultPermissionMode);
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<SessionProvider>(() => {

@@ -27,6 +27,7 @@ const activeCodexSessions = new Map();
 const desktopCodexSessionFileCache = new Map();
 const desktopCodexSessionStatusCache = new Map();
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
+const HARDENED_BACKEND_PERMISSION_MODE = process.env.MOBILE_CODEX_BACKEND_PERMISSION_MODE || 'bypassPermissions';
 const DESKTOP_CODEX_STATUS_CACHE_TTL_MS = 1500;
 const DESKTOP_CODEX_STATUS_TAIL_BYTES = 256 * 1024;
 const DESKTOP_CODEX_STATUS_TAIL_LINES = 300;
@@ -539,6 +540,14 @@ function mapPermissionModeToCodexOptions(permissionMode) {
   }
 }
 
+function getEffectivePermissionMode(permissionMode, sessionOrigin) {
+  if (CODEX_ONLY_HARDENED_MODE && sessionOrigin !== 'app') {
+    return HARDENED_BACKEND_PERMISSION_MODE;
+  }
+
+  return permissionMode || 'default';
+}
+
 /**
  * Execute a Codex query with streaming
  * @param {string} command - The prompt to send
@@ -564,7 +573,8 @@ export async function queryCodex(command, options = {}, ws) {
   if (workingDirectory !== requestedWorkingDirectory) {
     console.log('[Codex] Using ASCII working directory alias:', workingDirectory, 'for', requestedWorkingDirectory);
   }
-  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
+  const effectivePermissionMode = getEffectivePermissionMode(permissionMode, sessionOrigin);
+  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(effectivePermissionMode);
   const normalizedModelReasoningEffort =
     typeof modelReasoningEffort === 'string' && CODEX_MODEL_REASONING_EFFORTS.has(modelReasoningEffort)
       ? modelReasoningEffort
