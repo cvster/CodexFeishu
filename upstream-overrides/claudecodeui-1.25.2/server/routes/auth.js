@@ -1,6 +1,5 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
-import crypto from 'crypto';
 import { userDb, db, trustedDevicesDb } from '../database/db.js';
 import {
   authenticateToken,
@@ -41,15 +40,6 @@ const getDeviceMetadataFromRequest = (req) => ({
   appType: normalizeTextField(req.body?.appType, 80),
   ip: getRequestIp(req),
   userAgent: normalizeTextField(req.headers['user-agent'], 512),
-});
-
-const buildApprovalPayload = (request, message = '新设备需要在电脑端批准后才能登录。') => ({
-  success: false,
-  approvalRequired: true,
-  requestToken: request.request_token,
-  approvalStatus: request.status,
-  message,
-  deviceName: request.device_name || request.device_id,
 });
 
 const issueAuthSession = (req, res, user, deviceMetadata = null) => {
@@ -177,10 +167,6 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: '请输入用户名和密码' });
     }
 
-    if (!deviceMetadata.deviceId) {
-      return res.status(400).json({ error: '当前客户端没有发送设备标识，请刷新后重试。' });
-    }
-    
     // Get user from database
     const user = userDb.getUserByUsername(username);
     if (!user) {
@@ -193,22 +179,14 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: '用户名或密码错误' });
     }
 
-    const approvedDevice = trustedDevicesDb.getApprovedDevice(user.id, deviceMetadata.deviceId);
-    if (!approvedDevice) {
-      const requestToken = crypto.randomBytes(24).toString('hex');
-      const request = trustedDevicesDb.createOrRefreshPendingApproval(user.id, deviceMetadata.deviceId, requestToken, deviceMetadata);
-      return res.status(202).json(buildApprovalPayload(request));
+    if (deviceMetadata.deviceId) {
+      trustedDevicesDb.approveDevice(user.id, deviceMetadata.deviceId, deviceMetadata);
     }
-
-    trustedDevicesDb.touchApprovedDevice(user.id, deviceMetadata.deviceId, {
-      ...deviceMetadata,
-      updateLogin: true,
-    });
     
     // Update last login
     userDb.updateLastLogin(user.id);
     
-    res.json(issueAuthSession(req, res, user, deviceMetadata));
+    res.json(issueAuthSession(req, res, user, deviceMetadata.deviceId ? deviceMetadata : null));
     
   } catch (error) {
     console.error('Login error:', error);
