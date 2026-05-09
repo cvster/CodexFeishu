@@ -12,6 +12,37 @@ const TasksSettingsContext = createContext({
   isCheckingInstallation: true
 });
 
+const getStoredTasksEnabled = () => {
+  try {
+    const saved = localStorage.getItem('tasks-enabled');
+    if (saved === null) {
+      return true;
+    }
+
+    const parsed = JSON.parse(saved);
+    return typeof parsed === 'boolean' ? parsed : true;
+  } catch (error) {
+    console.warn('Ignoring invalid tasks-enabled preference:', error);
+    return true;
+  }
+};
+
+const setStoredTasksEnabled = (value) => {
+  try {
+    localStorage.setItem('tasks-enabled', JSON.stringify(value));
+  } catch (error) {
+    console.warn('Failed to save tasks-enabled preference:', error);
+  }
+};
+
+const hasStoredTasksEnabledPreference = () => {
+  try {
+    return localStorage.getItem('tasks-enabled') !== null;
+  } catch {
+    return false;
+  }
+};
+
 export const useTasksSettings = () => {
   const context = useContext(TasksSettingsContext);
   if (!context) {
@@ -25,9 +56,7 @@ export const TasksSettingsProvider = ({ children }) => {
     if (IS_CODEX_ONLY_HARDENED) {
       return false;
     }
-    // Load from localStorage on initialization
-    const saved = localStorage.getItem('tasks-enabled');
-    return saved !== null ? JSON.parse(saved) : true; // Default to true
+    return getStoredTasksEnabled();
   });
   
   const [isTaskMasterInstalled, setIsTaskMasterInstalled] = useState(null);
@@ -37,7 +66,7 @@ export const TasksSettingsProvider = ({ children }) => {
 
   // Save to localStorage whenever tasksEnabled changes
   useEffect(() => {
-    localStorage.setItem('tasks-enabled', JSON.stringify(tasksEnabled));
+    setStoredTasksEnabled(tasksEnabled);
   }, [tasksEnabled]);
 
   // Check TaskMaster installation status asynchronously on component mount
@@ -61,8 +90,7 @@ export const TasksSettingsProvider = ({ children }) => {
           
           // If TaskMaster is not installed and user hasn't explicitly enabled tasks,
           // disable tasks automatically
-          const userEnabledTasks = localStorage.getItem('tasks-enabled');
-          if (!data.installation?.isInstalled && !userEnabledTasks) {
+          if (!data.installation?.isInstalled && !hasStoredTasksEnabledPreference()) {
             setTasksEnabled(false);
           }
         } else {

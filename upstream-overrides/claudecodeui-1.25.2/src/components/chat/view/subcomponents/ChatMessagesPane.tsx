@@ -118,6 +118,7 @@ export default function ChatMessagesPane({
   const allocatedKeysRef = useRef<Set<string>>(new Set());
   const generatedMessageKeyCounterRef = useRef(0);
   const touchGestureRef = useRef({
+    touchId: null as number | null,
     startY: 0,
     currentY: 0,
     startedAt: 0,
@@ -185,12 +186,34 @@ export default function ChatMessagesPane({
       return;
     }
 
+    const getTrackedTouch = (touches: TouchList) => {
+      const { touchId } = touchGestureRef.current;
+      if (touchId === null) {
+        return null;
+      }
+
+      for (let index = 0; index < touches.length; index += 1) {
+        const touch = touches.item(index);
+        if (touch?.identifier === touchId) {
+          return touch;
+        }
+      }
+
+      return null;
+    };
+
     const handleNativeTouchStart = (event: TouchEvent) => {
       const touch = event.touches[0];
+      if (!touch) {
+        return;
+      }
+
       const bottomGap = Math.max(container.scrollHeight - container.scrollTop - container.clientHeight, 0);
-      const atBottom = bottomGap <= 12;
+      const contentFits = container.scrollHeight <= container.clientHeight + 1;
+      const atBottom = contentFits || bottomGap <= 12;
 
       touchGestureRef.current = {
+        touchId: touch.identifier,
         startY: touch.clientY,
         currentY: touch.clientY,
         startedAt: Date.now(),
@@ -201,28 +224,40 @@ export default function ChatMessagesPane({
     };
 
     const handleNativeTouchMove = (event: TouchEvent) => {
-      const touch = event.touches[0];
+      const touch = getTrackedTouch(event.touches);
+      if (!touch) {
+        return;
+      }
+
       touchGestureRef.current.currentY = touch.clientY;
       onTouchMove();
       tryTriggerSwipeRefresh();
     };
 
-    const handleNativeTouchEnd = () => {
+    const handleNativeTouchEnd = (event: TouchEvent) => {
+      if (touchGestureRef.current.touchId === null || !getTrackedTouch(event.changedTouches)) {
+        return;
+      }
+
       tryTriggerSwipeRefresh();
       touchGestureRef.current.armed = false;
       touchGestureRef.current.triggered = false;
+      touchGestureRef.current.touchId = null;
     };
 
-    container.addEventListener('touchstart', handleNativeTouchStart as EventListener, { passive: true });
-    container.addEventListener('touchmove', handleNativeTouchMove as EventListener, { passive: true });
-    container.addEventListener('touchend', handleNativeTouchEnd as EventListener, { passive: true });
-    container.addEventListener('touchcancel', handleNativeTouchEnd as EventListener, { passive: true });
+    const touchStartOptions: AddEventListenerOptions = { passive: true, capture: true };
+    const touchOptions: AddEventListenerOptions = { passive: true };
+
+    container.addEventListener('touchstart', handleNativeTouchStart as EventListener, touchStartOptions);
+    window.addEventListener('touchmove', handleNativeTouchMove as EventListener, touchOptions);
+    window.addEventListener('touchend', handleNativeTouchEnd as EventListener, touchOptions);
+    window.addEventListener('touchcancel', handleNativeTouchEnd as EventListener, touchOptions);
 
     return () => {
-      container.removeEventListener('touchstart', handleNativeTouchStart as EventListener);
-      container.removeEventListener('touchmove', handleNativeTouchMove as EventListener);
-      container.removeEventListener('touchend', handleNativeTouchEnd as EventListener);
-      container.removeEventListener('touchcancel', handleNativeTouchEnd as EventListener);
+      container.removeEventListener('touchstart', handleNativeTouchStart as EventListener, touchStartOptions);
+      window.removeEventListener('touchmove', handleNativeTouchMove as EventListener, touchOptions);
+      window.removeEventListener('touchend', handleNativeTouchEnd as EventListener, touchOptions);
+      window.removeEventListener('touchcancel', handleNativeTouchEnd as EventListener, touchOptions);
     };
   }, [onTouchMove, scrollContainerRef, tryTriggerSwipeRefresh]);
 
