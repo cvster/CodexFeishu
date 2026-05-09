@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { api } from '../utils/api';
 import { IS_CODEX_ONLY_HARDENED } from '../constants/config';
 
@@ -52,6 +52,7 @@ export const useTasksSettings = () => {
 };
 
 export const TasksSettingsProvider = ({ children }) => {
+  const hasUserTasksPreferenceRef = useRef(hasStoredTasksEnabledPreference());
   const [tasksEnabled, setTasksEnabled] = useState(() => {
     if (IS_CODEX_ONLY_HARDENED) {
       return false;
@@ -66,8 +67,17 @@ export const TasksSettingsProvider = ({ children }) => {
 
   // Save to localStorage whenever tasksEnabled changes
   useEffect(() => {
+    if (!hasUserTasksPreferenceRef.current) {
+      return;
+    }
+
     setStoredTasksEnabled(tasksEnabled);
   }, [tasksEnabled]);
+
+  const setUserTasksEnabled = (value) => {
+    hasUserTasksPreferenceRef.current = true;
+    setTasksEnabled(value);
+  };
 
   // Check TaskMaster installation status asynchronously on component mount
   useEffect(() => {
@@ -90,7 +100,7 @@ export const TasksSettingsProvider = ({ children }) => {
           
           // If TaskMaster is not installed and user hasn't explicitly enabled tasks,
           // disable tasks automatically
-          if (!data.installation?.isInstalled && !hasStoredTasksEnabledPreference()) {
+          if (!data.installation?.isInstalled && !hasUserTasksPreferenceRef.current) {
             setTasksEnabled(false);
           }
         } else {
@@ -112,12 +122,12 @@ export const TasksSettingsProvider = ({ children }) => {
   }, []);
 
   const toggleTasksEnabled = () => {
-    setTasksEnabled(prev => !prev);
+    setUserTasksEnabled(prev => !prev);
   };
 
   const contextValue = {
     tasksEnabled,
-    setTasksEnabled,
+    setTasksEnabled: setUserTasksEnabled,
     toggleTasksEnabled,
     isTaskMasterInstalled,
     isTaskMasterReady,
