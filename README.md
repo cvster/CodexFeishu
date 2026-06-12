@@ -1,5 +1,21 @@
 # mobileCodexHelper Local Deployment Notes
 
+## 一键启动
+
+在项目根目录双击 `start-mobile-codex-oneclick.cmd` 即可启动整套服务。脚本会自动优先使用 Codex 自带 Python 运行时，调用 `mobile_codex_control.py --action start --json`，并输出当前状态。
+
+也可以在 PowerShell 中运行：
+
+```powershell
+.\start-mobile-codex-oneclick.cmd
+```
+
+启动成功后可访问：
+
+- 本地控制台：`http://127.0.0.1:3001`
+- 本地 nginx 代理：`http://127.0.0.1:8080`
+- Tailscale 远程地址：`https://ps5000.tail995824.ts.net`
+
 这份 README 是当前这台电脑上 `mobileCodexHelper` 的本地部署总入口，给后续继续工作的会话快速接手用。
 
 ## 项目来源与会话类型

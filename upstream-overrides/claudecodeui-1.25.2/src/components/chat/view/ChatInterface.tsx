@@ -16,6 +16,14 @@ import ChatComposer from './subcomponents/ChatComposer';
 type PendingViewSession = {
   sessionId: string | null;
   startedAt: number;
+  provider?: string;
+  projectName?: string;
+  pendingUserMessage?: {
+    displayContent: string;
+    sentContent: string;
+    timestamp: string;
+    status: 'sending' | 'sent' | 'failed';
+  };
 };
 
 function ChatInterface({
@@ -454,9 +462,21 @@ function ChatInterface({
             (!pendingUserMessage || pendingUserMessage.status === 'sent')
           }
           provider={provider}
+          claudeModel={claudeModel}
+          setClaudeModel={setClaudeModel}
+          cursorModel={cursorModel}
+          setCursorModel={setCursorModel}
+          codexModel={codexModel}
+          setCodexModel={setCodexModel}
+          codexReasoningEffort={codexReasoningEffort}
+          setCodexReasoningEffort={setCodexReasoningEffort}
+          geminiModel={geminiModel}
+          setGeminiModel={setGeminiModel}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
           isSessionProcessing={isSessionProcessing}
+          canAbortSession={canAbortSession}
+          onAbortSession={handleAbortSession}
           thinkingMode={thinkingMode}
           setThinkingMode={setThinkingMode}
           tokenBudget={tokenBudget}

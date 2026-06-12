@@ -77,6 +77,15 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
   }, [provider]);
 
   useEffect(() => {
+    if (CODEX_REASONING_EFFORTS.OPTIONS.some(({ value }) => value === codexReasoningEffort)) {
+      return;
+    }
+
+    setCodexReasoningEffort(CODEX_REASONING_EFFORTS.DEFAULT);
+    localStorage.setItem('codex-reasoning-effort', CODEX_REASONING_EFFORTS.DEFAULT);
+  }, [codexReasoningEffort]);
+
+  useEffect(() => {
     setPendingPermissionRequests((previous) =>
       previous.filter((request) => !request.sessionId || request.sessionId === selectedSession?.id),
     );

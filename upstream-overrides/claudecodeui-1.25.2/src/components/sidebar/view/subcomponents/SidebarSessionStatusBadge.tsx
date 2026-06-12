@@ -85,7 +85,7 @@ export default function SidebarSessionStatusBadge({
     }
 
     const pendingMessage = loadPendingUserMessage(projectName, sessionId, provider);
-    if (!pendingMessage || pendingMessage.status !== 'sending') {
+    if (!pendingMessage || pendingMessage.status === 'sent') {
       return;
     }
 
@@ -154,6 +154,14 @@ export default function SidebarSessionStatusBadge({
     return () => {
       window.clearInterval(intervalId);
     };
+  }, [checkPendingDelivery, pendingStatus]);
+
+  useEffect(() => {
+    if (pendingStatus !== 'failed') {
+      return;
+    }
+
+    void checkPendingDelivery();
   }, [checkPendingDelivery, pendingStatus]);
 
   const status = getSidebarStatus(pendingStatus, isProcessing, showCompleted);

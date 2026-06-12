@@ -206,7 +206,7 @@ export default function ProviderSelectionEmptyState({
               </span>
               <div className="relative">
                 <select
-                  value={codexReasoningEffort}
+                  value={codexReasoningEffort || CODEX_REASONING_EFFORTS.DEFAULT}
                   onChange={(e) => handleCodexReasoningEffortChange(e.target.value)}
                   className="cursor-pointer appearance-none rounded-lg border border-border/60 bg-muted/50 py-1.5 pl-3 pr-7 text-sm font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/20"
                 >
@@ -324,7 +324,7 @@ export default function ProviderSelectionEmptyState({
                 </span>
                 <div className="relative">
                   <select
-                    value={codexReasoningEffort}
+                    value={codexReasoningEffort || CODEX_REASONING_EFFORTS.DEFAULT}
                     onChange={(e) => handleCodexReasoningEffortChange(e.target.value)}
                     tabIndex={-1}
                     className="cursor-pointer appearance-none rounded-lg border border-border/60 bg-muted/50 py-1.5 pl-3 pr-7 text-sm font-medium text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/20"

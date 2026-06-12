@@ -1,13 +1,17 @@
 import { useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import { decodeHtmlEntities, formatUsageLimitText } from '../utils/chatFormatting';
-import { safeLocalStorage } from '../utils/chatStorage';
+import { safeLocalStorage, savePendingUserMessage } from '../utils/chatStorage';
+import type { PendingUserMessageRecord } from '../utils/chatStorage';
 import type { ChatMessage, PendingPermissionRequest } from '../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 
 type PendingViewSession = {
   sessionId: string | null;
   startedAt: number;
+  provider?: string;
+  projectName?: string;
+  pendingUserMessage?: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'>;
 };
 
 type LatestChatMessage = {
@@ -358,7 +362,17 @@ export function useChatRealtimeHandlers({
         if (latestMessage.sessionId && !currentSessionId) {
           sessionStorage.setItem('pendingSessionId', latestMessage.sessionId);
           if (pendingViewSessionRef.current && !pendingViewSessionRef.current.sessionId) {
+            const pendingViewSession = pendingViewSessionRef.current;
             pendingViewSessionRef.current.sessionId = latestMessage.sessionId;
+            const pendingProjectName = pendingViewSession.projectName || selectedProject?.name || null;
+            if (pendingProjectName && pendingViewSession.pendingUserMessage) {
+              savePendingUserMessage(
+                pendingProjectName,
+                latestMessage.sessionId,
+                pendingViewSession.provider || latestMessage.provider || provider,
+                pendingViewSession.pendingUserMessage,
+              );
+            }
           }
 
           setIsSystemSessionChange(true);

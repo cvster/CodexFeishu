@@ -4,7 +4,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getCodexSessions } from './projects.js';
+import { getCodexPendingDeliveryStatus, getCodexSessions } from './projects.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +26,8 @@ const MAX_METADATA_ATTEMPTS = 6;
 const METADATA_RETRY_DELAY_MS = 750;
 const AUTOMATION_TIMEOUT_MS = 90000;
 const AUTOMATION_WORKER_READY_TIMEOUT_MS = 45000;
+const MESSAGE_DELIVERY_CONFIRM_TIMEOUT_MS = 25_000;
+const MESSAGE_DELIVERY_CONFIRM_INTERVAL_MS = 750;
 const DESKTOP_AUTOMATION_WORKER_ENABLED =
   process.env.MOBILE_CODEX_DESKTOP_AUTOMATION_WORKER !== 'false';
 const CODEX_PROJECTLESS_PROJECT_PATH = 'codex://projectless';
@@ -593,6 +595,28 @@ async function waitForNewCodexSessionId(projectPath, previousSessionIds) {
   return null;
 }
 
+async function waitForCodexMessageDelivery(sessionId, messageText, timestamp) {
+  const deadline = Date.now() + MESSAGE_DELIVERY_CONFIRM_TIMEOUT_MS;
+  let lastStatus = null;
+
+  while (Date.now() < deadline) {
+    lastStatus = await getCodexPendingDeliveryStatus(sessionId, {
+      displayContent: messageText,
+      sentContent: messageText,
+      timestamp,
+    });
+
+    if (lastStatus?.status === 'sent') {
+      return lastStatus;
+    }
+
+    await sleep(MESSAGE_DELIVERY_CONFIRM_INTERVAL_MS);
+  }
+
+  const reason = lastStatus?.reason || 'not-confirmed';
+  throw new Error(`Codex desktop automation did not confirm delivery for session ${sessionId}: ${reason}`);
+}
+
 async function executeDesktopSync({
   sessionId,
   projectPath,
@@ -856,6 +880,7 @@ export function enqueueCodexDesktopMessageBridge(payload) {
       }
 
       return withDesktopMessageFile(messageText, async (messagePath) => {
+        const deliveryTimestamp = new Date().toISOString();
         const runSendAutomation = async (resolvedTarget) => {
           const projectlessTarget = isCodexProjectlessProjectPath(bridgePayload.projectPath);
           const automationArgs = [
@@ -938,11 +963,17 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         const newSessionId = bridgePayload.newSession
           ? await waitForNewCodexSessionId(bridgePayload.projectPath, previousSessionIds)
           : null;
+        const deliveredSessionId = newSessionId || bridgePayload.sessionId || null;
+        const delivery =
+          deliveredSessionId && !isCodexProjectlessProjectPath(bridgePayload.projectPath)
+            ? await waitForCodexMessageDelivery(deliveredSessionId, messageText, deliveryTimestamp)
+            : null;
 
         return {
           skipped: false,
           target,
           sessionId: newSessionId,
+          delivery,
           output: result.stdout,
           sourceContext: normalizedContext,
         };

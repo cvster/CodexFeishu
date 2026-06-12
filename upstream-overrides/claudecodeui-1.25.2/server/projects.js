@@ -2111,6 +2111,7 @@ function getTimestampMs(value) {
 }
 
 const CODEX_PENDING_DELIVERY_TIMEOUT_MS = 60_000;
+const CODEX_PENDING_DELIVERY_BACKDATE_TOLERANCE_MS = 5 * 60_000;
 
 function getCodexMessageText(message) {
   if (typeof message?.message?.content === 'string') {
@@ -2147,7 +2148,7 @@ function matchesPendingCodexUserMessage(message, pendingMessage) {
   }
 
   const delta = messageTimestamp - pendingTimestamp;
-  return delta >= -15_000;
+  return delta >= -CODEX_PENDING_DELIVERY_BACKDATE_TOLERANCE_MS;
 }
 
 function getCodexPendingDeliveryFromMessages(messages, pendingMessage) {

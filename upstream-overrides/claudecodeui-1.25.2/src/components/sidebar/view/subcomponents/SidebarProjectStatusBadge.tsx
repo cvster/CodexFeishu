@@ -78,7 +78,7 @@ export default function SidebarProjectStatusBadge({
   const checkPendingDelivery = useCallback(async () => {
     await Promise.all(
       pendingMessages
-        .filter((pendingMessage) => pendingMessage.status === 'sending' && pendingMessage.provider === 'codex')
+        .filter((pendingMessage) => pendingMessage.status !== 'sent' && pendingMessage.provider === 'codex')
         .map(async (pendingMessage) => {
           try {
             const response = await (api.codexPendingDelivery as any)(
@@ -120,6 +120,14 @@ export default function SidebarProjectStatusBadge({
     return () => {
       window.clearInterval(intervalId);
     };
+  }, [checkPendingDelivery, pendingMessages]);
+
+  useEffect(() => {
+    if (!pendingMessages.some((pendingMessage) => pendingMessage.status === 'failed')) {
+      return;
+    }
+
+    void checkPendingDelivery();
   }, [checkPendingDelivery, pendingMessages]);
 
   const status: ProjectSidebarStatus | null = pendingMessages.some((pendingMessage) => pendingMessage.status === 'failed')

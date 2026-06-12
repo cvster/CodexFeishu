@@ -15,6 +15,13 @@ import type {
 } from 'react';
 import MicButton from '../../../mic-button/view/MicButton';
 import type { PendingPermissionRequest, PermissionMode, Provider } from '../../types/types';
+import {
+  CLAUDE_MODELS,
+  CODEX_MODELS,
+  CODEX_REASONING_EFFORTS,
+  CURSOR_MODELS,
+  GEMINI_MODELS,
+} from '../../../../../shared/modelConstants';
 import CommandMenu from './CommandMenu';
 import ImageAttachment from './ImageAttachment';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
@@ -48,9 +55,21 @@ interface ChatComposerProps {
   isPendingUserMessageFailed: boolean;
   isPendingUserMessageReplying: boolean;
   provider: Provider | string;
+  claudeModel: string;
+  setClaudeModel: (model: string) => void;
+  cursorModel: string;
+  setCursorModel: (model: string) => void;
+  codexModel: string;
+  setCodexModel: (model: string) => void;
+  codexReasoningEffort: string;
+  setCodexReasoningEffort: (effort: string) => void;
+  geminiModel: string;
+  setGeminiModel: (model: string) => void;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
   isSessionProcessing: boolean;
+  canAbortSession: boolean;
+  onAbortSession: () => void;
   thinkingMode: string;
   setThinkingMode: Dispatch<SetStateAction<string>>;
   tokenBudget: { used?: number; total?: number } | null;
@@ -109,9 +128,21 @@ export default function ChatComposer({
   isPendingUserMessageFailed,
   isPendingUserMessageReplying,
   provider,
+  claudeModel,
+  setClaudeModel,
+  cursorModel,
+  setCursorModel,
+  codexModel,
+  setCodexModel,
+  codexReasoningEffort,
+  setCodexReasoningEffort,
+  geminiModel,
+  setGeminiModel,
   permissionMode,
   onModeSwitch,
   isSessionProcessing,
+  canAbortSession,
+  onAbortSession,
   thinkingMode,
   setThinkingMode,
   tokenBudget,
@@ -180,6 +211,43 @@ export default function ChatComposer({
   const inputLeftPaddingClass = IS_CODEX_ONLY_HARDENED ? 'pl-14' : 'pl-24';
   const isSessionBusy = isSessionProcessing || isLoading;
   const isStatusBusy = isRefreshingLatest || isPendingUserMessageSending || isPendingUserMessageReplying || isSessionBusy;
+  const modelConfig =
+    provider === 'claude'
+      ? CLAUDE_MODELS
+      : provider === 'cursor'
+        ? CURSOR_MODELS
+        : provider === 'gemini'
+          ? GEMINI_MODELS
+          : CODEX_MODELS;
+  const currentModel =
+    provider === 'claude'
+      ? claudeModel
+      : provider === 'cursor'
+        ? cursorModel
+        : provider === 'gemini'
+          ? geminiModel
+          : codexModel;
+  const currentModelLabel =
+    modelConfig.OPTIONS.find(({ value }: { value: string; label: string }) => value === currentModel)?.label || currentModel;
+  const selectedReasoningEffort =
+    CODEX_REASONING_EFFORTS.OPTIONS.some(({ value }) => value === codexReasoningEffort)
+      ? codexReasoningEffort
+      : CODEX_REASONING_EFFORTS.DEFAULT;
+  const reasoningLabel =
+    CODEX_REASONING_EFFORTS.OPTIONS.find(({ value }) => value === selectedReasoningEffort)?.label || selectedReasoningEffort;
+  const contextUsed = Number(tokenBudget?.used ?? 0);
+  const contextTotal = Number(tokenBudget?.total ?? 0);
+  const contextPercent =
+    Number.isFinite(contextUsed) && Number.isFinite(contextTotal) && contextTotal > 0
+      ? Math.min(100, Math.max(0, Math.round((contextUsed / contextTotal) * 100)))
+      : null;
+  const contextLabel =
+    contextPercent === null
+      ? '--'
+      : t('input.contextUsagePercent', {
+          defaultValue: '{{percent}}%',
+          percent: contextPercent,
+        });
   const sessionStatusLabel = isRefreshingLatest
     ? t('common:buttons.refresh')
     : isPendingUserMessageSending
@@ -191,6 +259,34 @@ export default function ChatComposer({
     : isSessionBusy
       ? t('thinking.title')
       : t('common:status.completed');
+
+  const handleModelChange = (nextModel: string) => {
+    if (provider === 'claude') {
+      setClaudeModel(nextModel);
+      localStorage.setItem('claude-model', nextModel);
+      return;
+    }
+
+    if (provider === 'cursor') {
+      setCursorModel(nextModel);
+      localStorage.setItem('cursor-model', nextModel);
+      return;
+    }
+
+    if (provider === 'gemini') {
+      setGeminiModel(nextModel);
+      localStorage.setItem('gemini-model', nextModel);
+      return;
+    }
+
+    setCodexModel(nextModel);
+    localStorage.setItem('codex-model', nextModel);
+  };
+
+  const handleReasoningChange = (nextReasoningEffort: string) => {
+    setCodexReasoningEffort(nextReasoningEffort);
+    localStorage.setItem('codex-reasoning-effort', nextReasoningEffort);
+  };
 
   useEffect(() => {
     if (!onMobileInsetChange || typeof window === 'undefined') {
@@ -475,6 +571,89 @@ export default function ChatComposer({
             >
               {sendByCtrlEnter ? t('input.hintText.ctrlEnter') : t('input.hintText.enter')}
             </div>
+          </div>
+        </div>
+        <div className="mt-2 flex flex-nowrap items-center justify-between gap-2 overflow-hidden px-6">
+          <div className="flex min-w-0 shrink-0 flex-nowrap items-center gap-2">
+            <label
+              className="relative flex h-8 w-16 shrink-0 items-center rounded-lg border border-border/50 bg-card/70 px-1 text-xs text-muted-foreground shadow-sm sm:w-20"
+              title={t('providerSelection.selectModel', { defaultValue: '选择模型' })}
+            >
+              <span className="pointer-events-none block min-w-0 flex-1 truncate text-center text-xs font-semibold text-foreground">
+                {currentModelLabel}
+              </span>
+              <select
+                value={currentModel}
+                onChange={(event) => handleModelChange(event.target.value)}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label={t('providerSelection.selectModel', { defaultValue: '选择模型' })}
+              >
+                {modelConfig.OPTIONS.map(({ value, label }: { value: string; label: string }) => (
+                  <option key={value + label} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label
+              className="relative flex h-8 w-12 shrink-0 items-center rounded-lg border border-border/50 bg-card/70 px-1 text-xs text-muted-foreground shadow-sm sm:w-14"
+              title={t('input.reasoningTitle', {
+                defaultValue: '选择推理程度：{{reasoning}}',
+                reasoning: reasoningLabel,
+              })}
+            >
+              <span className="pointer-events-none block min-w-0 flex-1 truncate text-center text-xs font-semibold text-foreground">
+                {reasoningLabel}
+              </span>
+              <select
+                value={selectedReasoningEffort}
+                onChange={(event) => handleReasoningChange(event.target.value)}
+                disabled={provider !== 'codex'}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+                aria-label={t('providerSelection.selectReasoning', { defaultValue: '选择推理程度' })}
+              >
+                {CODEX_REASONING_EFFORTS.OPTIONS.map(({ value, label }) => (
+                  <option key={value + label} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <div
+              className="flex h-8 w-12 shrink-0 items-center justify-center gap-1 rounded-lg border border-border/50 bg-card/70 px-1 text-xs font-semibold text-muted-foreground shadow-sm sm:w-14"
+              title={
+                contextPercent === null
+                  ? t('input.contextUsageUnknownTitle', { defaultValue: '暂无上下文窗口占用量' })
+                  : t('input.contextUsageTitle', {
+                      defaultValue: '上下文窗口占用量：{{used}} / {{total}} tokens',
+                      used: contextUsed.toLocaleString(),
+                      total: contextTotal.toLocaleString(),
+                  })
+              }
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M4 19V5" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M9 19v-7" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M14 19V9" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M19 19V3" />
+              </svg>
+              <span>{contextLabel}</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={onAbortSession}
+              disabled={!canAbortSession}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-red-500/30 bg-red-500/10 text-red-600 shadow-sm transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:border-border/50 disabled:bg-card/70 disabled:text-muted-foreground"
+              title={t('input.stopThinking', { defaultValue: '停止思考' })}
+              aria-label={t('input.stopThinking', { defaultValue: '停止思考' })}
+            >
+              <span className="h-2.5 w-2.5 rounded-[2px] bg-current" aria-hidden="true" />
+            </button>
           </div>
         </div>
       </form>}

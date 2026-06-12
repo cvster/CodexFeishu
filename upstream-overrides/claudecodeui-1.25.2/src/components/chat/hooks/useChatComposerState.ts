@@ -32,6 +32,9 @@ import { type SlashCommand, useSlashCommands } from './useSlashCommands';
 type PendingViewSession = {
   sessionId: string | null;
   startedAt: number;
+  provider?: string;
+  projectName?: string;
+  pendingUserMessage?: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'>;
 };
 
 interface UseChatComposerStateArgs {
@@ -575,7 +578,7 @@ export function useChatComposerState({
         (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null);
       const codexSessionOrigin = provider === 'codex' ? getCodexSessionOrigin(selectedSession) : null;
       const shouldBridgeCodexToApp = provider === 'codex' && codexSessionOrigin === 'app';
-      const shouldConfirmPendingDelivery = provider === 'codex' && shouldBridgeCodexToApp;
+      const shouldConfirmPendingDelivery = provider === 'codex';
       const codexSessionTitleHint =
         provider === 'codex' && selectedSession
           ? selectedSession.summary || selectedSession.title || selectedSession.name || null
@@ -682,13 +685,28 @@ export function useChatComposerState({
       setTimeout(() => scrollToBottom(), 100);
       const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
       const pendingMessageSessionId = selectedSessionId || effectiveSessionId;
+      const nextPendingUserMessage: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'> | null =
+        shouldConfirmPendingDelivery
+          ? {
+              displayContent: currentInput,
+              sentContent: messageContent,
+              timestamp: userMessageTimestamp.toISOString(),
+              status: 'sending',
+            }
+          : null;
 
       if (!effectiveSessionId && !selectedSessionId) {
         if (typeof window !== 'undefined') {
           // Reset stale pending IDs from previous interrupted runs before creating a new one.
           sessionStorage.removeItem('pendingSessionId');
         }
-        pendingViewSessionRef.current = { sessionId: null, startedAt: Date.now() };
+        pendingViewSessionRef.current = {
+          sessionId: null,
+          startedAt: Date.now(),
+          provider,
+          projectName: selectedProject.name,
+          pendingUserMessage: nextPendingUserMessage || undefined,
+        };
       }
 
       if (!shouldBridgeCodexToApp) {
@@ -733,15 +751,9 @@ export function useChatComposerState({
             ? selectedSessionCwd || ''
             : selectedProject.fullPath || selectedProject.path || '';
 
-      if (shouldConfirmPendingDelivery && pendingMessageSessionId) {
+      if (nextPendingUserMessage && pendingMessageSessionId) {
         // By design, mobile only tracks the latest pending bubble per session.
-        // Earlier sends remain in the desktop automation queue even if this marker is replaced.
-        const nextPendingUserMessage: Omit<PendingUserMessageRecord, 'sessionId' | 'provider'> = {
-          displayContent: currentInput,
-          sentContent: messageContent,
-          timestamp: userMessageTimestamp.toISOString(),
-          status: 'sending',
-        };
+        // Earlier sends remain in the provider queue even if this marker is replaced.
 
         savePendingUserMessage(
           selectedProject.name,

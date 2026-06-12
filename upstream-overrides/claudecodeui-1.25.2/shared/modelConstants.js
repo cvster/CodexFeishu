@@ -72,7 +72,6 @@ export const CODEX_MODELS = {
 
 export const CODEX_REASONING_EFFORTS = {
   OPTIONS: [
-    { value: "", label: "Default" },
     { value: "minimal", label: "Minimal" },
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
@@ -80,7 +79,7 @@ export const CODEX_REASONING_EFFORTS = {
     { value: "xhigh", label: "X-High" },
   ],
 
-  DEFAULT: "",
+  DEFAULT: "medium",
 };
 
 /**

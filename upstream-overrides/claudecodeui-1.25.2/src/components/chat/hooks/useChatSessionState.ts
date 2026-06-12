@@ -208,6 +208,8 @@ const getTimestampMs = (value: unknown) => {
   return null;
 };
 
+const PENDING_USER_MESSAGE_BACKDATE_TOLERANCE_MS = 5 * 60_000;
+
 const matchesPendingUserMessage = (
   message: ChatMessage,
   pendingMessage: PendingUserMessageRecord | null,
@@ -236,7 +238,7 @@ const matchesPendingUserMessage = (
   }
 
   const delta = messageTimestamp - pendingTimestamp;
-  return delta >= -15_000;
+  return delta >= -PENDING_USER_MESSAGE_BACKDATE_TOLERANCE_MS;
 };
 
 const hasSyncedPendingUserMessage = (
