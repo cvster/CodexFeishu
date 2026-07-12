@@ -65,6 +65,7 @@ import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quo
 import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
+import { isSoloUserBotChat } from './group';
 import type { AppPaths } from '../config/app-paths';
 import {
   consumeCotEvents,
@@ -650,8 +651,20 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     getRequireMentionInGroup(controls.cfg) &&
     !msg.mentionedBot
   ) {
-    log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
-    return;
+    let soloUserBotChat = false;
+    try {
+      soloUserBotChat = await isSoloUserBotChat(channel, msg.chatId);
+    } catch (err) {
+      log.warn('intake', 'solo-chat-check-failed', {
+        scope,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (!soloUserBotChat) {
+      log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
+      return;
+    }
+    log.info('intake', 'solo-chat-no-mention-allowed', { scope, chatType: msg.chatType });
   }
 
   const handled = await tryHandleCommand({

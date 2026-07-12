@@ -24,7 +24,14 @@ import {
 import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
+import {
+  helpCard,
+  newChatCreationCard,
+  newChatWorkspaceCard,
+  resumeCard,
+  statusCard,
+  workspacesCard,
+} from '../card/templates';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -78,7 +85,7 @@ import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
-import { createBoundChat, defaultChatName } from '../bot/group';
+import { createBoundChat, defaultChatName, isDefaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
@@ -180,6 +187,14 @@ const handlers: Record<string, Handler> = {
   '/remove': handleRemove,
 };
 
+const DM_TEXT_COMMANDS: Record<string, string> = {
+  新建会话: '/new chat setup',
+  创建会话: '/new chat setup',
+  创建工作群: '/new chat setup',
+  新建工作群: '/new chat setup',
+  新建群会话: '/new chat setup',
+};
+
 /**
  * Commands that can mutate credentials, lifecycle, filesystem reach, or
  * surface sensitive runtime state. Gated by unified access policy; runtime
@@ -203,7 +218,8 @@ function isAdminCommand(cmd: string): boolean {
 }
 
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
-  const trimmed = ctx.msg.content.trim();
+  const raw = ctx.msg.content.trim();
+  const trimmed = ctx.chatMode === 'p2p' ? (DM_TEXT_COMMANDS[raw] ?? raw) : raw;
   if (!trimmed.startsWith('/')) return false;
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
@@ -314,6 +330,22 @@ function isAbsoluteOrTilde(p: string): boolean {
 async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   const trimmed = args.trim();
 
+  if (trimmed === 'chat setup') {
+    const knownChats = await refreshKnownChatsForNaming(ctx);
+    const card = newChatCreationCard(
+      defaultChatName(knownChats.map((chat) => chat.name)),
+      effectiveWorkspaceCwd(ctx),
+    );
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
+    return;
+  }
+
+  if (trimmed === 'chat form') {
+    const groupName = String(ctx.formValue?.group_name ?? '').trim();
+    const cwd = String(ctx.formValue?.cwd ?? '').trim();
+    return handleNewChat(groupName, ctx, cwd);
+  }
+
   // /new chat [name]  — spin up a fresh group chat bound to a fresh session
   if (trimmed === 'chat' || trimmed.startsWith('chat ')) {
     const rawName = trimmed === 'chat' ? '' : trimmed.slice(5).trim();
@@ -331,9 +363,31 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
 
-async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
-  const sourceCwd = effectiveWorkspaceCwd(ctx);
-  const name = rawName || defaultChatName(ctx.agent.displayName);
+async function handleNewChat(
+  rawName: string,
+  ctx: CommandContext,
+  requestedCwd?: string,
+): Promise<void> {
+  let sourceCwd = effectiveWorkspaceCwd(ctx);
+  if (requestedCwd !== undefined) {
+    if (!requestedCwd || !isAbsoluteOrTilde(requestedCwd)) {
+      await reply(ctx, '❌ 工作目录必须是绝对路径，或使用 `~/xxx`。');
+      return;
+    }
+    const workspace = await resolveWorkingDirectory(expandTilde(requestedCwd));
+    if (!workspace.ok) {
+      await reply(ctx, workspace.userVisible);
+      return;
+    }
+    sourceCwd = workspace.cwdRealpath;
+  }
+  const sourceWorkspaces = listScopedWorkspaces(ctx);
+  let name = rawName;
+  if (!name || isDefaultChatName(name)) {
+    const knownChats = await refreshKnownChatsForNaming(ctx);
+    const existingNames = knownChats.map((chat) => chat.name);
+    if (!name || existingNames.includes(name)) name = defaultChatName(existingNames);
+  }
 
   let created;
   try {
@@ -354,14 +408,27 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
     ctx.workspaces.setCwd(created.chatId, sourceCwd);
   }
 
-  // Welcome the user inside the new group with a hint about how to start.
-  const welcome = sourceCwd
-    ? `🎉 群已建好，cwd 继承自原群：\`${sourceCwd}\`\n\n@我 + 任意消息开始对话。`
-    : '🎉 群已建好。\n\n@我 + 任意消息开始对话。';
+  await saveAccessConfig(ctx, (current) => ({
+    ...current,
+    allowedChats: [...new Set([...current.allowedChats, created.chatId])],
+  }));
+  ctx.controls.knownChats = [
+    ...(ctx.controls.knownChats ?? []).filter((chat) => chat.id !== created.chatId),
+    { id: created.chatId, name: created.name },
+  ];
+
+  const setupCard = newChatWorkspaceCard(created.name, sourceCwd, sourceWorkspaces);
   try {
-    await ctx.channel.send(created.chatId, { markdown: welcome });
+    await sendManagedCard(ctx.channel, created.chatId, setupCard);
   } catch (err) {
-    console.warn('[new-chat] welcome message failed:', err);
+    console.warn('[new-chat] setup card failed:', err);
+    const usage = '当前只有你和机器人时可直接发任务；邀请其他同事后，请使用 `@机器人 + 任务内容`。';
+    const welcome = sourceCwd
+      ? `🎉 群已建好，cwd 继承自原群：\`${sourceCwd}\`\n\n${usage}\n\n发送 \`/cd <绝对路径>\` 可调整目录。`
+      : `🎉 群已建好。${usage}\n\n发送 \`/cd <绝对路径>\` 设置工作目录。`;
+    await ctx.channel.send(created.chatId, { markdown: welcome }).catch((fallbackErr) =>
+      console.warn('[new-chat] welcome fallback failed:', fallbackErr),
+    );
   }
 
   await reply(
@@ -370,8 +437,24 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
   );
 }
 
+async function refreshKnownChatsForNaming(ctx: CommandContext): Promise<KnownChat[]> {
+  const cached = ctx.controls.knownChats ?? [];
+  const fetched = await fetchKnownChats(ctx.channel);
+  if (fetched.length > 0) {
+    ctx.controls.knownChats = fetched;
+    return fetched;
+  }
+  return cached;
+}
+
 async function handleCd(args: string, ctx: CommandContext): Promise<void> {
-  const input = args.trim();
+  const rawInput = args.trim();
+  const input =
+    rawInput === 'form'
+      ? String(ctx.formValue?.cwd ?? '').trim()
+      : rawInput.startsWith('apply ')
+        ? rawInput.slice('apply '.length).trim()
+        : rawInput;
   if (!input) {
     await reply(ctx, '用法：`/cd <绝对路径>` 或 `/cd ~/xxx`');
     return;

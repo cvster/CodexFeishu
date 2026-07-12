@@ -34,6 +34,7 @@ export function canUseDm(
   senderId: string,
 ): AccessDecision {
   if (isCreator(controls, senderId)) return allow('owner');
+  if (profile.access.allowedUsers.includes('*')) return allow('allowed-user');
   if (profile.access.allowedUsers.includes(senderId)) return allow('allowed-user');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
   return deny('denied-user');
@@ -47,6 +48,7 @@ export function canUseGroup(
 ): AccessDecision {
   if (isCreator(controls, senderId)) return allow('owner');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
+  if (profile.access.allowedChats.includes('*')) return allow('allowed-chat');
   if (profile.access.allowedChats.includes(chatId)) return allow('allowed-chat');
   return deny('denied-chat');
 }

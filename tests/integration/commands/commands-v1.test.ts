@@ -18,6 +18,7 @@ interface RunOverrides {
   chatId?: string;
   chatMode?: CommandContext['chatMode'];
   mentions?: NormalizedMessage['mentions'];
+  formValue?: Record<string, unknown>;
 }
 
 interface Harness {
@@ -59,6 +60,91 @@ describe('Bridge command contracts', () => {
     await expect(h.run(`/cd ${h.tmp.workspace}`)).resolves.toBe(true);
     expect(lastMarkdown(h.channel)).toContain('已切换 cwd');
     await expect(realpath(h.tmp.workspace)).resolves.toBe(h.workspaces.cwdFor('chat-1'));
+  });
+
+  it('applies a working directory submitted from a setup card', async () => {
+    const h = await createHarness();
+    const target = join(h.tmp.root, 'card-workdir');
+    await mkdir(target, { recursive: true });
+
+    await expect(h.run('/cd form', { formValue: { cwd: target } })).resolves.toBe(true);
+
+    expect(h.workspaces.cwdFor('chat-1')).toBe(await realpath(target));
+    expect(lastMarkdown(h.channel)).toContain('已切换 cwd');
+  });
+
+  it('creates an allowed group and proactively sends a workspace setup card', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/new chat Payment Debug')).resolves.toBe(true);
+
+    expect(h.channel.createdChats).toHaveLength(1);
+    expect(h.channel.createdChats[0]?.options).toMatchObject({
+      name: 'Payment Debug',
+      inviteUserIds: ['ou-admin'],
+    });
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc_fake_1');
+    expect(h.workspaces.cwdFor('oc_fake_1')).toBe(await realpath(h.tmp.workspace));
+    const proactive = h.channel.sent.find((message) => message.chatId === 'oc_fake_1');
+    expect(JSON.stringify(proactive?.content)).toContain('workspace_setup_form');
+    expect(JSON.stringify(proactive?.content)).toContain('cd.form');
+    expect(JSON.stringify(proactive?.content)).toContain('@机器人 + 任务内容');
+  });
+
+  it('opens the creation form from a friendly DM phrase', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('新建会话')).resolves.toBe(true);
+
+    expect(h.channel.createdChats).toHaveLength(0);
+    expect(JSON.stringify(lastContent(h.channel))).toContain('new_chat_form');
+    expect(JSON.stringify(lastContent(h.channel))).toContain('new.chat.form');
+  });
+
+  it('opens the creation form from the configured bot menu text', async () => {
+    const h = await createHarness();
+    h.controls.knownChats = [
+      { id: 'oc-existing-1', name: 'Codex任务1' },
+      { id: 'oc-existing-2', name: 'Codex任务2' },
+    ];
+
+    await expect(h.run('新建群会话')).resolves.toBe(true);
+
+    const content = JSON.stringify(lastContent(h.channel));
+    expect(content).toContain('new_chat_form');
+    expect(content).toContain('Codex任务3');
+  });
+
+  it('increments a submitted default name if that group already exists', async () => {
+    const h = await createHarness();
+    h.controls.knownChats = [
+      { id: 'oc-existing-1', name: 'Codex任务1' },
+      { id: 'oc-existing-2', name: 'Codex任务2' },
+    ];
+
+    await expect(
+      h.run('/new chat form', {
+        formValue: { group_name: 'Codex任务2', cwd: h.tmp.workspace },
+      }),
+    ).resolves.toBe(true);
+
+    expect(h.channel.createdChats[0]?.options).toMatchObject({ name: 'Codex任务3' });
+  });
+
+  it('creates a group from the creation card values', async () => {
+    const h = await createHarness();
+    const target = join(h.tmp.root, 'selected-project');
+    await mkdir(target, { recursive: true });
+
+    await expect(
+      h.run('/new chat form', {
+        formValue: { group_name: 'Selected Project', cwd: target },
+      }),
+    ).resolves.toBe(true);
+
+    expect(h.channel.createdChats[0]?.options).toMatchObject({ name: 'Selected Project' });
+    expect(h.workspaces.cwdFor('oc_fake_1')).toBe(await realpath(target));
   });
 
   it('scopes named workspaces by profile, scope, and owner', async () => {
@@ -357,6 +443,7 @@ async function createHarness(): Promise<Harness> {
       agent,
       activeRuns,
       controls,
+      formValue: overrides.formValue,
     });
   };
 

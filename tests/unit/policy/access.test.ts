@@ -72,6 +72,23 @@ describe('access policy', () => {
     expect(canUseDm(byAdmin, ownerControls, 'ou_other').ok).toBe(true);
   });
 
+  it('supports wildcard DM and group access without granting admin commands', () => {
+    const profile = profileWithAccess({
+      allowedUsers: ['*'],
+      allowedChats: ['*'],
+    });
+
+    expect(canUseDm(profile, ownerControls, 'ou_colleague')).toEqual({
+      ok: true,
+      reason: 'allowed-user',
+    });
+    expect(canUseGroup(profile, ownerControls, 'chat_any', 'ou_colleague')).toEqual({
+      ok: true,
+      reason: 'allowed-chat',
+    });
+    expect(canRunAdminCommand(profile, ownerControls, 'ou_colleague').ok).toBe(false);
+  });
+
   it('fails closed for groups unless owner, admin, or allowedChats includes the chat', () => {
     const closed = profileWithAccess();
     expect(canUseGroup(closed, ownerControls, 'chat_allowed', 'ou_other').ok).toBe(false);

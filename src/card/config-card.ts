@@ -46,11 +46,13 @@ function collapsedAccessPanel(title: string, elements: object[]): object {
 
 function atMentionLine(openIds: string[]): string {
   if (openIds.length === 0) return '_（暂无）_';
+  if (openIds.includes('*')) return '**所有在应用可用范围内的用户**';
   return openIds.map((id) => `<at id="${id}"></at>`).join('  ');
 }
 
 function chatList(chatIds: string[], knownChats: KnownChat[]): string {
   if (chatIds.length === 0) return '_（暂无）_';
+  if (chatIds.includes('*')) return '**机器人所在的所有群**';
   const nameMap = new Map(knownChats.map((chat) => [chat.id, chat.name]));
   return chatIds
     .map((id) => `- **${nameMap.get(id) ?? '(未知群)'}**（...${id.slice(-6)}）`)

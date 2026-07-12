@@ -61,6 +61,132 @@ export function workspacesCard(current: string | undefined, named: Record<string
   return shell('📂 工作目录', elements);
 }
 
+/** First-run card sent proactively into a newly created workspace group. */
+export function newChatWorkspaceCard(
+  chatName: string,
+  current: string | undefined,
+  named: Record<string, string>,
+): object {
+  const quickSwitches = Object.entries(named).slice(0, 5);
+  const elements: object[] = [
+    {
+      tag: 'markdown',
+      content:
+        `🎉 **${escapeMd(chatName)} 已创建**\n\n` +
+        '这个群已绑定独立 Codex 会话。可以在下面修改工作目录。\n\n' +
+        '**使用方法**\n' +
+        '- 当前只有你和机器人时，直接发送任务即可，无需 @。\n' +
+        '- 邀请其他同事后，请使用 `@机器人 + 任务内容`，例如：`@机器人 帮我检查这个项目`。',
+    },
+    { tag: 'hr' },
+    {
+      tag: 'form',
+      name: 'workspace_setup_form',
+      elements: [
+        {
+          tag: 'input',
+          name: 'cwd',
+          label: { tag: 'plain_text', content: '工作目录（绝对路径）' },
+          placeholder: { tag: 'plain_text', content: 'C:\\path\\to\\project' },
+          ...(current ? { default_value: current } : {}),
+          required: true,
+        },
+        {
+          tag: 'button',
+          name: 'workspace_submit',
+          text: { tag: 'plain_text', content: '保存目录并开启新会话' },
+          type: 'primary',
+          form_action_type: 'submit',
+          behaviors: [{ type: 'callback', value: { cmd: 'cd.form' } }],
+        },
+      ],
+    },
+  ];
+
+  if (quickSwitches.length > 0) {
+    elements.push({ tag: 'hr' });
+    elements.push({ tag: 'markdown', content: '**快捷工作目录**' });
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'flow',
+      horizontal_spacing: 'small',
+      columns: quickSwitches.map(([name, path]) => ({
+        tag: 'column',
+        width: 'auto',
+        elements: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: name },
+            type: path === current ? 'primary' : 'default',
+            behaviors: [{ type: 'callback', value: { cmd: 'cd.apply', arg: path } }],
+          },
+        ],
+      })),
+    });
+  }
+
+  elements.push({ tag: 'hr' });
+  elements.push({
+    tag: 'markdown',
+    content: '💡 之后可随时发送 `/cd <绝对路径>` 或 `/ws list` 调整工作目录。',
+  });
+
+  return {
+    schema: '2.0',
+    config: { summary: { content: '新群工作目录设置' } },
+    body: { elements },
+  };
+}
+
+/** Creation form shown in DM before a workspace group exists. */
+export function newChatCreationCard(defaultName: string, defaultCwd?: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '创建 Codex 工作群' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            '🚀 **创建 Codex 工作群**\n\n' +
+            '每个群拥有独立会话和工作目录。提交后会自动建群、拉你入群并发送工作区卡片。',
+        },
+        { tag: 'hr' },
+        {
+          tag: 'form',
+          name: 'new_chat_form',
+          elements: [
+            {
+              tag: 'input',
+              name: 'group_name',
+              label: { tag: 'plain_text', content: '群名称' },
+              default_value: defaultName,
+              placeholder: { tag: 'plain_text', content: '例如：支付模块开发' },
+              required: true,
+            },
+            {
+              tag: 'input',
+              name: 'cwd',
+              label: { tag: 'plain_text', content: '工作目录（绝对路径）' },
+              ...(defaultCwd ? { default_value: defaultCwd } : {}),
+              placeholder: { tag: 'plain_text', content: 'C:\\path\\to\\project' },
+              required: true,
+            },
+            {
+              tag: 'button',
+              name: 'create_chat_submit',
+              text: { tag: 'plain_text', content: '创建并开启会话' },
+              type: 'primary',
+              form_action_type: 'submit',
+              behaviors: [{ type: 'callback', value: { cmd: 'new.chat.form' } }],
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 export interface StatusInfo {
   profileName: string;
   cwd?: string;
@@ -124,6 +250,7 @@ export function statusCard(info: StatusInfo): object {
     divMd(lines.join('\n')),
     HR,
     actions([
+      { text: '🚀 新建工作群', value: { cmd: 'new.chat.setup' }, style: 'primary' },
       { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
@@ -186,6 +313,7 @@ export function helpCard(agentName = 'Agent'): object {
         '',
         '- `/new` `/reset` — 清空当前 chat 的会话',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
+        '- 私聊发送“新建会话” — 打开傻瓜式建群卡片',
         '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
         '- `/cd <path>` — 切换工作目录（会重置 session）',
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
