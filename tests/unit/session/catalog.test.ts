@@ -137,6 +137,31 @@ describe('agent-aware session catalog', () => {
     await catalog.flush();
   });
 
+  it('migrates the newest legacy fingerprint once without weakening future policy changes', async () => {
+    const catalog = new SessionCatalog(await path());
+    await catalog.replaceForTest([
+      entry('chat-1', 'sess-old', 1000, 'legacy-fp-1'),
+      entry('chat-1', 'sess-newest', 2000, 'legacy-fp-2'),
+    ]);
+
+    const migratedIdentity = {
+      scopeId: 'chat-1',
+      agentId: 'claude' as const,
+      cwdRealpath: '/repo',
+      policyFingerprint: 'v3-fp',
+    };
+    expect(catalog.activeFor(migratedIdentity)).toMatchObject({
+      sessionId: 'sess-newest',
+      fingerprintVersion: 3,
+      policyFingerprint: 'v3-fp',
+    });
+    expect(catalog.entries().filter((item) => item.status === 'archived')).toHaveLength(2);
+    expect(
+      catalog.activeFor({ ...migratedIdentity, policyFingerprint: 'future-policy-change' }),
+    ).toBeUndefined();
+    await catalog.flush();
+  });
+
   it('garbage-collects old archived entries, per-scope overflow, and profile overflow', async () => {
     const catalog = new SessionCatalog(await path());
     await catalog.replaceForTest([

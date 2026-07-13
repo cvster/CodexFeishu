@@ -17,6 +17,7 @@ export interface SessionCatalogIdentity {
 
 export interface SessionCatalogEntry extends SessionCatalogIdentity {
   key: string;
+  fingerprintVersion?: number;
   status: SessionCatalogStatus;
   updatedAt: number;
   sessionId?: string;
@@ -46,6 +47,7 @@ const DEFAULT_MAX_ARCHIVED_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_ENTRIES_PER_SCOPE = 20;
 const DEFAULT_MAX_ENTRIES_PER_PROFILE = 1000;
 const KEY_SEPARATOR = '\x1f';
+const CURRENT_FINGERPRINT_VERSION = 3;
 
 export function sessionCatalogKey(input: SessionCatalogIdentity): string {
   return [
@@ -86,7 +88,8 @@ export class SessionCatalog {
   }
 
   activeFor(input: SessionCatalogIdentity): SessionCatalogEntry | undefined {
-    const entry = this.data.get(sessionCatalogKey(input));
+    const key = sessionCatalogKey(input);
+    const entry = this.data.get(key) ?? this.migrateLegacyActive(input);
     if (!entry || entry.status !== 'active') return undefined;
     if (!matchesIdentity(entry, input)) return undefined;
     if (!isValidAgentEntry(entry)) {
@@ -104,6 +107,7 @@ export class SessionCatalog {
     const key = sessionCatalogKey(input);
     const entry: SessionCatalogEntry = {
       key,
+      fingerprintVersion: CURRENT_FINGERPRINT_VERSION,
       scopeId: input.scopeId,
       agentId: input.agentId,
       cwdRealpath: input.cwdRealpath,
@@ -175,6 +179,46 @@ export class SessionCatalog {
     await this.persist();
   }
 
+  private migrateLegacyActive(input: SessionCatalogIdentity): SessionCatalogEntry | undefined {
+    const candidates = [...this.data.values()]
+      .filter(
+        (entry) =>
+          entry.status === 'active' &&
+          (entry.fingerprintVersion ?? 2) < CURRENT_FINGERPRINT_VERSION &&
+          entry.scopeId === input.scopeId &&
+          entry.agentId === input.agentId &&
+          entry.cwdRealpath === input.cwdRealpath &&
+          isValidAgentEntry(entry),
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const selected = candidates[0];
+    if (!selected) return undefined;
+
+    for (const legacy of candidates) {
+      this.data.set(legacy.key, {
+        ...legacy,
+        status: 'archived',
+      });
+    }
+
+    const key = sessionCatalogKey(input);
+    const migrated: SessionCatalogEntry = {
+      ...selected,
+      ...input,
+      key,
+      fingerprintVersion: CURRENT_FINGERPRINT_VERSION,
+      status: 'active',
+    };
+    this.data.set(key, migrated);
+    this.schedulePersist();
+    log.info('session-catalog', 'fingerprint-migrated', {
+      scopeId: input.scopeId,
+      agentId: input.agentId,
+      legacyEntries: candidates.length,
+    });
+    return migrated;
+  }
+
   private schedulePersist(): void {
     this.saving = this.saving
       .then(() => this.persist())
@@ -224,6 +268,8 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
   }
   return {
     key: raw.key,
+    fingerprintVersion:
+      typeof raw.fingerprintVersion === 'number' ? raw.fingerprintVersion : 2,
     scopeId: raw.scopeId,
     agentId: raw.agentId,
     cwdRealpath: raw.cwdRealpath,

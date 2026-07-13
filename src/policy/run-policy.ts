@@ -10,7 +10,6 @@ import {
 import type { ProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from './access';
 import {
-  accessPolicyDigest,
   attachmentPolicyConfigDigest,
   policyFingerprint,
   resourceScopeDigest,
@@ -122,11 +121,6 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     resourceBindings: input.scope.resourceBindings?.map((binding) => binding.id),
   });
   const attachmentDigest = attachmentPolicyConfigDigest(input.profileConfig.attachments);
-  const accessDigest =
-    input.scope.source === 'comment' && input.access.reason === 'comment-mention'
-      ? 'comment-mention'
-      : accessPolicyDigest(input.profileConfig.access);
-
   return {
     ok: true,
     prompt: input.prompt,
@@ -141,7 +135,6 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     policyFingerprint: policyFingerprint({
       cwdRealpath: input.cwdRealpath,
       sandbox,
-      accessPolicyDigest: accessDigest,
       resourceScopeDigest: resourceDigest,
       attachmentPolicyShapeDigest: attachmentDigest,
       codexHome: input.codexHome,

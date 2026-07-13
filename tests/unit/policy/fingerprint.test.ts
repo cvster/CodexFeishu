@@ -37,7 +37,6 @@ describe('policy fingerprint', () => {
     for (const changed of [
       { cwdRealpath: '/repo/other' },
       { sandbox: 'workspace-write' as const },
-      { accessPolicyDigest: digestOf('access-other') },
       { resourceScopeDigest: digestOf('scope-other') },
       { attachmentPolicyShapeDigest: digestOf('attachments-other') },
       { codexHome: '/state/other-codex-home' },
@@ -136,7 +135,6 @@ function baseInput(): FingerprintInputV2 {
   return {
     cwdRealpath: '/repo/project',
     sandbox: 'read-only',
-    accessPolicyDigest: digestOf('access'),
     resourceScopeDigest: digestOf('scope'),
     attachmentPolicyShapeDigest: digestOf('attachments'),
     codexHome: '/state/codex-home',

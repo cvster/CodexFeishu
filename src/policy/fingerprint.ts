@@ -5,7 +5,6 @@ import { canonicalizeJcs } from '../session/jcs';
 export interface FingerprintInputV2 {
   cwdRealpath: string;
   sandbox: SandboxMode;
-  accessPolicyDigest: string;
   resourceScopeDigest: string;
   attachmentPolicyShapeDigest: string;
   codexHome?: string;
@@ -33,10 +32,9 @@ export interface AttachmentPolicyShapeInput {
 
 export function policyFingerprint(input: FingerprintInputV2): string {
   return digestCanonical({
-    version: 2,
+    version: 3,
     cwdRealpath: input.cwdRealpath,
     sandbox: input.sandbox,
-    accessPolicyDigest: input.accessPolicyDigest,
     resourceScopeDigest: input.resourceScopeDigest,
     attachmentPolicyShapeDigest: input.attachmentPolicyShapeDigest,
     codexHome: input.codexHome ?? null,

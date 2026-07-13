@@ -99,6 +99,26 @@ describe('run policy', () => {
     });
   });
 
+  it('does not bind sessions to mutable access allowlists', () => {
+    const baseline = profile();
+    const changedAccess = {
+      ...baseline,
+      access: {
+        ...baseline.access,
+        allowedChats: [...baseline.access.allowedChats, 'oc_unrelated'],
+        allowedUsers: [...baseline.access.allowedUsers, 'ou_unrelated'],
+        admins: [...baseline.access.admins, 'ou_unrelated_admin'],
+      },
+    };
+    const first = evaluateRunPolicy(baseInput({ profileConfig: baseline }));
+    const second = evaluateRunPolicy(baseInput({ profileConfig: changedAccess }));
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) throw new Error('expected run policy to allow');
+    expect(second.policyFingerprint).toBe(first.policyFingerprint);
+  });
+
   it('fingerprints the attachment policy shape instead of concrete run attachments', () => {
     const noAttachment = evaluateRunPolicy(baseInput());
     const withAcceptedImage = evaluateRunPolicy({
