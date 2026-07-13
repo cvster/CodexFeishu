@@ -11,6 +11,7 @@ if (-not (Test-Path $repo)) {
 }
 
 $node = Resolve-MobileCodexNodePath
+$requiredCodexSdkVersion = '0.144.3'
 
 $logDir = Join-Path $workspace 'tmp\logs'
 $stdoutLog = Join-Path $logDir 'mobile-codex-app.stdout.log'
@@ -76,6 +77,45 @@ Append-MobileCodexLogMarker -Path $stderrLog -Value ("`n==== START {0} ====`n" -
 $applyOverridesScript = Join-Path $PSScriptRoot 'apply-upstream-overrides.ps1'
 if (Test-Path $applyOverridesScript) {
   powershell -NoProfile -ExecutionPolicy Bypass -File $applyOverridesScript | Write-Output
+}
+
+$codexSdkPackage = Join-Path $repo 'node_modules\@openai\codex-sdk\package.json'
+$installedCodexSdkVersion = if (Test-Path $codexSdkPackage) {
+  try {
+    (Get-Content -Raw -LiteralPath $codexSdkPackage | ConvertFrom-Json).version
+  } catch {
+    $null
+  }
+} else {
+  $null
+}
+
+if ($installedCodexSdkVersion -ne $requiredCodexSdkVersion) {
+  $npm = Join-Path (Split-Path -Parent $node) 'npm.cmd'
+  if (-not (Test-Path $npm)) {
+    $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    $npm = if ($npmCommand) { $npmCommand.Source } else { $null }
+  }
+
+  if (-not $npm) {
+    throw "Codex SDK $requiredCodexSdkVersion is required, but npm.cmd was not found."
+  }
+
+  $installedCodexSdkDisplay = if ($installedCodexSdkVersion) {
+    $installedCodexSdkVersion
+  } else {
+    '<missing>'
+  }
+  Write-Output "Updating Codex SDK from $installedCodexSdkDisplay to $requiredCodexSdkVersion..."
+  Push-Location $repo
+  try {
+    & $npm install --save-exact "@openai/codex-sdk@$requiredCodexSdkVersion" --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm install exited with code $LASTEXITCODE"
+    }
+  } finally {
+    Pop-Location
+  }
 }
 
 $overrideRoot = Join-Path $workspace 'upstream-overrides\claudecodeui-1.25.2'

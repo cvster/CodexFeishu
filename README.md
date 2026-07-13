@@ -90,6 +90,10 @@
   - 用途：运行上游 `claudecodeui` 后端、安装 npm 依赖、构建前端
   - 安装来源：`winget`
   - 实际路径：`C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microsoft.Winget.Source_8wekyb3d8bbwe\node-v22.22.2-win-x64\node.exe`
+- Codex SDK
+  - 桥接后端要求版本：`0.144.3`
+  - 用途：支持 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 等新版模型
+  - 启动脚本会校验已安装版本，并在 vendor 目录仍是旧版时自动升级
 - nginx
   - 实际安装版本：`nginx 1.29.8`
   - 用途：监听 `127.0.0.1:8080`，给 `127.0.0.1:3001` 做本机反向代理，并提供额外安全头和登录限流
