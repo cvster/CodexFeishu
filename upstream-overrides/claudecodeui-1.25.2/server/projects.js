@@ -357,6 +357,10 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
 
   const sessionsByProject = codexSessionsIndexRef?.sessionsByProject || await buildCodexSessionsIndex();
   const metadataByPath = await buildCodexProjectMetadataLookup(config);
+  const { workspaceRoots: desktopWorkspaceRoots } = await loadCodexDesktopWorkspaceState();
+  const desktopWorkspaceRootByComparablePath = new Map(
+    desktopWorkspaceRoots.map(workspaceRoot => [normalizeComparablePath(workspaceRoot), workspaceRoot])
+  );
   const projectEntries = Array.from(sessionsByProject.entries());
   const projects = [];
   const totalProjects = projectEntries.length;
@@ -368,9 +372,13 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
     applyCustomSessionNames(codexSessions, 'codex');
 
     const isProjectlessProject = normalizedProjectPath === CODEX_PROJECTLESS_PROJECT_PATH;
+    const desktopWorkspaceRoot = desktopWorkspaceRootByComparablePath.get(normalizedProjectPath);
+    if (!isProjectlessProject && !desktopWorkspaceRoot) {
+      continue;
+    }
     const actualProjectDir = isProjectlessProject
       ? CODEX_PROJECTLESS_PROJECT_PATH
-      : resolveProjectPath(codexSessions[0]?.cwd) || codexSessions[0]?.cwd || '';
+      : desktopWorkspaceRoot;
     const matchedMetadata = metadataByPath.get(normalizedProjectPath);
     const projectName = isProjectlessProject
       ? CODEX_PROJECTLESS_PROJECT_NAME
@@ -416,6 +424,42 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
       },
       taskmaster: null
     });
+  }
+
+  // Codex App can keep a project in the sidebar before it has any active
+  // thread. Include those roots so the web project list mirrors the app rather
+  // than being limited to projects discoverable from rollout history.
+  const discoveredProjectPaths = new Set(projects.map(project => normalizeComparablePath(project.path)));
+  for (const workspaceRoot of desktopWorkspaceRoots) {
+    const normalizedWorkspaceRoot = normalizeComparablePath(workspaceRoot);
+    if (!normalizedWorkspaceRoot || discoveredProjectPaths.has(normalizedWorkspaceRoot)) {
+      continue;
+    }
+
+    const actualProjectDir = resolveProjectPath(workspaceRoot) || workspaceRoot;
+    if (!doesProjectPathExist(actualProjectDir)) {
+      continue;
+    }
+
+    const matchedMetadata = metadataByPath.get(normalizedWorkspaceRoot);
+    const projectName = matchedMetadata?.name || encodeProjectNameFromPath(actualProjectDir);
+    const customName = matchedMetadata?.displayName || '';
+    projects.push({
+      name: projectName,
+      path: actualProjectDir,
+      displayName: customName || await generateDisplayName(projectName, actualProjectDir),
+      fullPath: actualProjectDir,
+      isCustomName: Boolean(customName),
+      isManuallyAdded: Boolean(matchedMetadata?.isManuallyAdded),
+      isProjectless: false,
+      sessions: [],
+      cursorSessions: [],
+      codexSessions: [],
+      geminiSessions: [],
+      sessionMeta: { hasMore: false, total: 0 },
+      taskmaster: null
+    });
+    discoveredProjectPaths.add(normalizedWorkspaceRoot);
   }
 
   projects.sort((leftProject, rightProject) => {
@@ -1732,6 +1776,7 @@ async function findCodexStateDatabasePath() {
 
 async function loadCodexDesktopWorkspaceState() {
   const visibleWorkspaceRoots = new Set();
+  const workspaceRoots = [];
   const projectlessSessionIds = new Set();
   const globalStatePath = path.join(os.homedir(), '.codex', '.codex-global-state.json');
 
@@ -1739,6 +1784,9 @@ async function loadCodexDesktopWorkspaceState() {
     const normalizedWorkspaceRoot = normalizeComparablePath(workspaceRoot);
     if (normalizedWorkspaceRoot) {
       visibleWorkspaceRoots.add(normalizedWorkspaceRoot);
+      if (!workspaceRoots.some(root => normalizeComparablePath(root) === normalizedWorkspaceRoot)) {
+        workspaceRoots.push(workspaceRoot);
+      }
     }
   };
 
@@ -1771,6 +1819,7 @@ async function loadCodexDesktopWorkspaceState() {
 
   return {
     visibleWorkspaceRoots,
+    workspaceRoots,
     projectlessSessionIds,
   };
 }
@@ -1940,7 +1989,6 @@ async function buildCodexSessionsIndex() {
 
       if (
         hasDesktopState &&
-        !isBackendSession &&
         !activeSessionIds.has(sessionData.id) &&
         !(normalizedFilePath && activeRolloutPaths.has(normalizedFilePath))
       ) {
@@ -1957,7 +2005,6 @@ async function buildCodexSessionsIndex() {
 
       if (
         shouldFilterWorkspaceRoots &&
-        !isBackendSession &&
         !visibleWorkspaceRoots.has(normalizedProjectPath) &&
         !isProjectlessSession
       ) {
