@@ -2221,6 +2221,7 @@ function getTimestampMs(value) {
 
 const CODEX_PENDING_DELIVERY_TIMEOUT_MS = 60_000;
 const CODEX_PENDING_DELIVERY_BACKDATE_TOLERANCE_MS = 5 * 60_000;
+const CODEX_PENDING_DELIVERY_TAIL_READ_LIMIT = 4 * 1024 * 1024;
 
 function getCodexMessageText(message) {
   if (typeof message?.message?.content === 'string') {
@@ -2301,9 +2302,82 @@ function getCodexPendingDeliveryFromMessages(messages, pendingMessage) {
   };
 }
 
+async function getCodexPendingDeliveryMessagesFromTail(sessionId) {
+  const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+
+  const findSessionFile = async (dir) => {
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          const found = await findSessionFile(fullPath);
+          if (found) return found;
+        } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
+          return fullPath;
+        }
+      }
+    } catch (error) {
+      // Skip directories we cannot read.
+    }
+    return null;
+  };
+
+  const sessionFilePath = await findSessionFile(codexSessionsDir);
+  if (!sessionFilePath) {
+    return [];
+  }
+
+  const fileHandle = await fs.open(sessionFilePath, 'r');
+  try {
+    const stats = await fileHandle.stat();
+    const bytesToRead = Math.min(stats.size, CODEX_PENDING_DELIVERY_TAIL_READ_LIMIT);
+    if (bytesToRead <= 0) {
+      return [];
+    }
+
+    const start = Math.max(0, stats.size - bytesToRead);
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, start);
+    let content = buffer.toString('utf8', 0, bytesRead);
+
+    // A tail read can begin inside a JSONL record. Discard that partial record.
+    if (start > 0) {
+      const firstLineBreak = content.indexOf('\n');
+      content = firstLineBreak >= 0 ? content.slice(firstLineBreak + 1) : '';
+    }
+
+    const messages = [];
+    for (const line of content.split(/\r?\n/)) {
+      if (!line.includes('"user_message"')) {
+        continue;
+      }
+
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
+          messages.push({
+            type: 'user',
+            timestamp: entry.timestamp,
+            message: {
+              role: 'user',
+              content: normalizeCodexUserMessageForDisplay(entry.payload.message)
+            }
+          });
+        }
+      } catch (error) {
+        // Ignore an incomplete final record while Codex is still writing it.
+      }
+    }
+
+    return messages;
+  } finally {
+    await fileHandle.close();
+  }
+}
+
 async function getCodexPendingDeliveryStatus(sessionId, pendingMessage) {
-  const result = await getCodexSessionMessages(sessionId, null, 0);
-  const messages = Array.isArray(result?.messages) ? result.messages : [];
+  const messages = await getCodexPendingDeliveryMessagesFromTail(sessionId);
   return getCodexPendingDeliveryFromMessages(messages, pendingMessage);
 }
 

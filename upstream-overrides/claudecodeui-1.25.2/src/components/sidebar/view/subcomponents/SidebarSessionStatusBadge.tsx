@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { cn } from '../../../../lib/utils';
 import { api } from '../../../../utils/api';
@@ -74,6 +74,7 @@ export default function SidebarSessionStatusBadge({
   const [pendingStatus, setPendingStatus] = useState<PendingUserMessageRecord['status'] | null>(() =>
     getPendingStatus(projectName, sessionId, provider),
   );
+  const pendingDeliveryInFlightRef = useRef(false);
 
   const refreshPendingStatus = useCallback(() => {
     setPendingStatus(getPendingStatus(projectName, sessionId, provider));
@@ -88,6 +89,12 @@ export default function SidebarSessionStatusBadge({
     if (!pendingMessage || pendingMessage.status === 'sent') {
       return;
     }
+
+    if (pendingDeliveryInFlightRef.current) {
+      return;
+    }
+
+    pendingDeliveryInFlightRef.current = true;
 
     try {
       const response = await (api.codexPendingDelivery as any)(
@@ -111,6 +118,8 @@ export default function SidebarSessionStatusBadge({
       }
     } catch (error) {
       console.error('Error checking sidebar Codex pending delivery:', error);
+    } finally {
+      pendingDeliveryInFlightRef.current = false;
     }
   }, [projectName, provider, sessionId]);
 

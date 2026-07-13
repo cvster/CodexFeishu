@@ -9,6 +9,13 @@ if (-not (Test-Path $asciiAlias)) {
 $nginxCmd = Resolve-MobileCodexNginxPath
 $env:MOBILE_CODEX_NGINX = $nginxCmd
 
+# Starting the stack repeatedly must not accumulate Windows nginx masters and
+# orphaned workers that keep serving an older configuration.
+$stopScript = Join-Path $PSScriptRoot 'stop-mobile-codex-nginx.ps1'
+if (Test-Path $stopScript) {
+  powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript | Out-Null
+}
+
 $nginxRoot = Join-Path $asciiAlias '.runtime\nginx'
 $confRoot = Join-Path $nginxRoot 'conf'
 $logsRoot = Join-Path $nginxRoot 'logs'

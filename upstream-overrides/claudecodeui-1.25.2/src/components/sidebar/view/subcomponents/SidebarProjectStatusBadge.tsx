@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { cn } from '../../../../lib/utils';
 import { api } from '../../../../utils/api';
@@ -44,6 +44,7 @@ export default function SidebarProjectStatusBadge({
   className,
   t,
 }: SidebarProjectStatusBadgeProps) {
+  const pendingDeliveryInFlightRef = useRef(false);
   const [statusVersion, setStatusVersion] = useState(0);
 
   const refreshStatus = useCallback(() => {
@@ -74,12 +75,27 @@ export default function SidebarProjectStatusBadge({
         .filter(isPendingUserMessageRecord),
     [projectName, sessions, statusVersion],
   );
+  const pendingMessagesRef = useRef<PendingUserMessageRecord[]>(pendingMessages);
+  pendingMessagesRef.current = pendingMessages;
+  const hasSendingPendingMessage = pendingMessages.some(
+    (pendingMessage) => pendingMessage.status === 'sending',
+  );
+  const hasFailedPendingMessage = pendingMessages.some(
+    (pendingMessage) => pendingMessage.status === 'failed',
+  );
 
   const checkPendingDelivery = useCallback(async () => {
-    await Promise.all(
-      pendingMessages
-        .filter((pendingMessage) => pendingMessage.status !== 'sent' && pendingMessage.provider === 'codex')
-        .map(async (pendingMessage) => {
+    const messagesToCheck = pendingMessagesRef.current.filter(
+      (pendingMessage) => pendingMessage.status !== 'sent' && pendingMessage.provider === 'codex',
+    );
+    if (messagesToCheck.length === 0 || pendingDeliveryInFlightRef.current) {
+      return;
+    }
+
+    pendingDeliveryInFlightRef.current = true;
+    try {
+      await Promise.all(
+        messagesToCheck.map(async (pendingMessage) => {
           try {
             const response = await (api.codexPendingDelivery as any)(
               pendingMessage.sessionId,
@@ -104,11 +120,14 @@ export default function SidebarProjectStatusBadge({
             console.error('Error checking project sidebar Codex pending delivery:', error);
           }
         }),
-    );
-  }, [pendingMessages, projectName]);
+      );
+    } finally {
+      pendingDeliveryInFlightRef.current = false;
+    }
+  }, [projectName]);
 
   useEffect(() => {
-    if (!pendingMessages.some((pendingMessage) => pendingMessage.status === 'sending')) {
+    if (!hasSendingPendingMessage) {
       return;
     }
 
@@ -120,15 +139,15 @@ export default function SidebarProjectStatusBadge({
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [checkPendingDelivery, pendingMessages]);
+  }, [checkPendingDelivery, hasSendingPendingMessage]);
 
   useEffect(() => {
-    if (!pendingMessages.some((pendingMessage) => pendingMessage.status === 'failed')) {
+    if (!hasFailedPendingMessage) {
       return;
     }
 
     void checkPendingDelivery();
-  }, [checkPendingDelivery, pendingMessages]);
+  }, [checkPendingDelivery, hasFailedPendingMessage]);
 
   const status: ProjectSidebarStatus | null = pendingMessages.some((pendingMessage) => pendingMessage.status === 'failed')
     ? 'failed'
