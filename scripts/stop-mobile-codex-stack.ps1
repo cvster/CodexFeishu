@@ -1,4 +1,11 @@
 $workspace = Split-Path -Parent $PSScriptRoot
+$backendTaskName = 'MobileCodexHelper-Backend'
+
+if (Get-ScheduledTask -TaskName $backendTaskName -ErrorAction SilentlyContinue) {
+  Stop-ScheduledTask -TaskName $backendTaskName -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $backendTaskName -Confirm:$false -ErrorAction SilentlyContinue
+}
+
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $workspace 'scripts\stop-mobile-codex-nginx.ps1') | Out-Null
 
 $workspacePattern = [regex]::Escape($workspace)
