@@ -72,6 +72,8 @@ const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false
 const CODEX_PROJECTLESS_PROJECT_NAME = '__codex_projectless__';
 const CODEX_PROJECTLESS_PROJECT_PATH = 'codex://projectless';
 const CODEX_PROJECTLESS_PROJECT_DISPLAY_NAME = '无项目会话';
+const CODEX_SESSION_METADATA_READ_LIMIT = 1024 * 1024;
+const codexSessionMetadataCache = new Map();
 
 // Import TaskMaster detection functions
 async function detectTaskMasterFolder(projectPath) {
@@ -1910,7 +1912,7 @@ async function buildCodexSessionsIndex() {
         continue;
       }
 
-      const sessionData = await parseCodexSessionFile(filePath);
+      const sessionData = await parseCodexSessionMetadataFast(filePath);
       if (!sessionData || !sessionData.id) {
         continue;
       }
@@ -2005,6 +2007,66 @@ async function buildCodexSessionsIndex() {
   }
 
   return sessionsByProject;
+}
+
+// Project discovery only needs enough data to identify and sort a session. Reading
+// every line made /api/projects scan gigabytes of rollout history on each reload.
+async function parseCodexSessionMetadataFast(filePath) {
+  try {
+    const stats = await fs.stat(filePath);
+    const cacheKey = `${stats.size}:${stats.mtimeMs}`;
+    const cached = codexSessionMetadataCache.get(filePath);
+    if (cached?.key === cacheKey) {
+      return cached.value;
+    }
+
+    const fileStream = fsSync.createReadStream(filePath, {
+      start: 0,
+      end: Math.min(Math.max(stats.size - 1, 0), CODEX_SESSION_METADATA_READ_LIMIT - 1)
+    });
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+    let sessionMeta = null;
+    let firstUserMessage = null;
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'session_meta' && entry.payload) {
+          sessionMeta = {
+            id: entry.payload.id,
+            cwd: entry.payload.cwd,
+            model: entry.payload.model || entry.payload.model_provider,
+            source: entry.payload.source || null,
+            originator: entry.payload.originator || null,
+            timestamp: entry.timestamp,
+            git: entry.payload.git
+          };
+        } else if (!firstUserMessage && entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload)) {
+          firstUserMessage = normalizeCodexUserMessageForDisplay(entry.payload.message || '');
+        }
+
+        if (sessionMeta && firstUserMessage) break;
+      } catch {
+        // The final line can be partial because this is a bounded prefix read.
+      }
+    }
+
+    const value = sessionMeta ? {
+      ...sessionMeta,
+      timestamp: stats.mtime.toISOString(),
+      firstUserMessage,
+      summary: firstUserMessage
+        ? (firstUserMessage.length > 50 ? `${firstUserMessage.substring(0, 50)}...` : firstUserMessage)
+        : 'Codex Session',
+      messageCount: 0
+    } : null;
+    codexSessionMetadataCache.set(filePath, { key: cacheKey, value });
+    return value;
+  } catch (error) {
+    console.warn(`Could not read Codex session metadata ${filePath}:`, error.message);
+    return null;
+  }
 }
 
 // Fetch Codex sessions for a given project path
