@@ -1,9 +1,10 @@
 (function () {
   var CODEX_MODEL_STORAGE_KEY = "codex-model";
   var CODEX_REASONING_STORAGE_KEY = "codex-reasoning-effort";
-  var CODEX_MODEL_MIGRATION_KEY = "codex-model-default-migrated-to-5.5";
-  var DEFAULT_CODEX_MODEL = "gpt-5.5";
-  var VALID_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+  var CODEX_MODEL_MIGRATION_KEY = "codex-model-default-migrated-to-5.6-sol";
+  var DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+  var CODEX_5_6_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+  var VALID_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
   function migrateDefaultCodexModel() {
     try {
@@ -12,7 +13,7 @@
       }
 
       var storedModel = localStorage.getItem(CODEX_MODEL_STORAGE_KEY);
-      if (!storedModel || storedModel === "gpt-5.4") {
+      if (!storedModel || storedModel === "gpt-5.4" || storedModel === "gpt-5.5") {
         localStorage.setItem(CODEX_MODEL_STORAGE_KEY, DEFAULT_CODEX_MODEL);
       }
 
@@ -51,15 +52,21 @@
     return optionValues.indexOf("gpt-5.4") >= 0 && optionValues.indexOf("gpt-5.3-codex") >= 0;
   }
 
-  function ensureCodexModelOption(select) {
-    if (select.querySelector('option[value="gpt-5.5"]')) {
-      return;
-    }
+  function ensureCodexModelOptions(select) {
+    var labels = {
+      "gpt-5.6-sol": "GPT-5.6 Sol",
+      "gpt-5.6-terra": "GPT-5.6 Terra",
+      "gpt-5.6-luna": "GPT-5.6 Luna",
+    };
 
-    var option = document.createElement("option");
-    option.value = "gpt-5.5";
-    option.textContent = "GPT-5.5";
-    select.insertBefore(option, select.firstChild);
+    CODEX_5_6_MODELS.slice().reverse().forEach(function (model) {
+      if (!select.querySelector('option[value="' + model + '"]')) {
+        var option = document.createElement("option");
+        option.value = model;
+        option.textContent = labels[model];
+        select.insertBefore(option, select.firstChild);
+      }
+    });
   }
 
   function syncCodexModelSelection(select) {
@@ -85,7 +92,7 @@
         return;
       }
 
-      ensureCodexModelOption(select);
+      ensureCodexModelOptions(select);
       syncCodexModelSelection(select);
     });
   }
@@ -104,7 +111,7 @@
             payload.options = payload.options || {};
 
             var storedModel = getStoredCodexModel();
-            if (!payload.options.model || payload.options.model === "gpt-5.4") {
+            if (!payload.options.model || payload.options.model === "gpt-5.4" || payload.options.model === "gpt-5.5") {
               payload.options.model = storedModel;
             }
 
