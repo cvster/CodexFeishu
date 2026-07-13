@@ -5,7 +5,7 @@ import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
-import { prefixBridgeSystemPrompt } from '../bridge-system-prompt';
+import { prefixBridgeSystemPrompt, prefixBridgeTurnPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import { buildCodexArgs } from './argv';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
+import { archiveCodexThread, setCodexThreadName } from '../../session/codex-history';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -88,6 +89,27 @@ export class CodexAdapter implements AgentAdapter {
     }
   }
 
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    await setCodexThreadName({
+      binary: this.binary,
+      threadId,
+      name,
+      profileStateDir: this.profileStateDir,
+      ...(this.codexHome ? { codexHome: this.codexHome } : {}),
+      inheritCodexHome: this.inheritCodexHome,
+    });
+  }
+
+  async archiveThread(threadId: string): Promise<void> {
+    await archiveCodexThread({
+      binary: this.binary,
+      threadId,
+      profileStateDir: this.profileStateDir,
+      ...(this.codexHome ? { codexHome: this.codexHome } : {}),
+      inheritCodexHome: this.inheritCodexHome,
+    });
+  }
+
   run(opts: AgentRunOptions): AgentRun {
     if (!opts.cwd) {
       throw new Error('cwd is required for CodexAdapter.run');
@@ -101,6 +123,7 @@ export class CodexAdapter implements AgentAdapter {
       ignoreUserConfig: this.ignoreUserConfig,
       ignoreRules: this.ignoreRules,
       model: opts.model,
+      reasoningEffort: opts.reasoningEffort,
     });
     const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
     if (this.codexHome) {
@@ -121,6 +144,7 @@ export class CodexAdapter implements AgentAdapter {
       promptChars: opts.prompt.length,
       images: opts.images?.length ?? 0,
       model: opts.model,
+      reasoningEffort: opts.reasoningEffort,
     });
 
     const stderrChunks: Buffer[] = [];
@@ -153,7 +177,12 @@ export class CodexAdapter implements AgentAdapter {
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
     });
-    child.stdin.end(prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
+    child.stdin.end(
+      opts.threadId
+        ? prefixBridgeTurnPrompt(opts.prompt)
+        : prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
+      'utf8',
+    );
 
     const stopGraceMs = opts.stopGraceMs ?? this.defaultStopGraceMs;
 

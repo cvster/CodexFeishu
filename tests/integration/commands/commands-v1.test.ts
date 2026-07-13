@@ -7,6 +7,7 @@ import { tryHandleCommand, type CommandContext, type Controls } from '../../../s
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { SessionStore } from '../../../src/session/store.js';
+import { SessionCatalog, type SessionCatalogIdentity } from '../../../src/session/catalog.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
@@ -19,12 +20,15 @@ interface RunOverrides {
   chatMode?: CommandContext['chatMode'];
   mentions?: NormalizedMessage['mentions'];
   formValue?: Record<string, unknown>;
+  sessionCatalogIdentity?: SessionCatalogIdentity;
+  dmGroupCreationOnly?: boolean;
 }
 
 interface Harness {
   tmp: TmpProfile;
   channel: FakeChannel;
   sessions: SessionStore;
+  sessionCatalog: SessionCatalog;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   agent: ReturnType<typeof createFakeAgent>;
@@ -73,7 +77,7 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).toContain('已切换 cwd');
   });
 
-  it('creates an allowed group and proactively sends a workspace setup card', async () => {
+  it('creates an allowed group and proactively sends a concise welcome card', async () => {
     const h = await createHarness();
 
     await expect(h.run('/new chat Payment Debug')).resolves.toBe(true);
@@ -87,9 +91,13 @@ describe('Bridge command contracts', () => {
     expect(root?.profiles.claude?.access.allowedChats).toContain('oc_fake_1');
     expect(h.workspaces.cwdFor('oc_fake_1')).toBe(await realpath(h.tmp.workspace));
     const proactive = h.channel.sent.find((message) => message.chatId === 'oc_fake_1');
-    expect(JSON.stringify(proactive?.content)).toContain('workspace_setup_form');
-    expect(JSON.stringify(proactive?.content)).toContain('cd.form');
-    expect(JSON.stringify(proactive?.content)).toContain('@机器人 + 任务内容');
+    const welcomeCard = JSON.stringify(proactive?.content);
+    expect(welcomeCard).not.toContain('workspace_setup_form');
+    expect(welcomeCard).not.toContain('保存目录并开启新会话');
+    expect(welcomeCard).toContain('发送第一条任务时会自动创建会话');
+    expect(welcomeCard).toContain('@机器人 + 任务内容');
+    expect(welcomeCard).toContain('finish');
+    expect(welcomeCard).toContain('panel');
   });
 
   it('opens the creation form from a friendly DM phrase', async () => {
@@ -100,6 +108,8 @@ describe('Bridge command contracts', () => {
     expect(h.channel.createdChats).toHaveLength(0);
     expect(JSON.stringify(lastContent(h.channel))).toContain('new_chat_form');
     expect(JSON.stringify(lastContent(h.channel))).toContain('new.chat.form');
+    expect(JSON.stringify(lastContent(h.channel))).toContain('reasoning_effort');
+    expect(JSON.stringify(lastContent(h.channel))).toContain('gpt-5.6-sol');
   });
 
   it('opens the creation form from the configured bot menu text', async () => {
@@ -114,6 +124,55 @@ describe('Bridge command contracts', () => {
     const content = JSON.stringify(lastContent(h.channel));
     expect(content).toContain('new_chat_form');
     expect(content).toContain('Codex任务3');
+  });
+
+  it('opens a click-first task panel from friendly menu text', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('打开控制台')).resolves.toBe(true);
+
+    const panel = JSON.stringify(lastContent(h.channel));
+    expect(panel).toContain('Codex 任务控制台');
+    expect(panel).toContain('panel.new');
+    expect(panel).toContain('config');
+    expect(panel).toContain('ws.list');
+    expect(panel).toContain('new.chat.setup');
+  });
+
+  it('restricts production private chat to workspace-group creation', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('帮我检查项目', { dmGroupCreationOnly: true }),
+    ).resolves.toBe(true);
+    let content = JSON.stringify(lastContent(h.channel));
+    expect(content).toContain('new_chat_form');
+    expect(content).toContain('私聊仅用于创建工作群');
+
+    await expect(
+      h.run('/status', { dmGroupCreationOnly: true }),
+    ).resolves.toBe(true);
+    content = JSON.stringify(lastContent(h.channel));
+    expect(content).toContain('new_chat_form');
+    expect(content).not.toContain('当前状态');
+
+    await expect(
+      h.run('/new chat setup', { dmGroupCreationOnly: true }),
+    ).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).toContain('new.chat.form');
+  });
+
+  it('asks for confirmation before starting a new session from the panel', async () => {
+    const h = await createHarness();
+    h.sessions.set('chat-1', 'session-old', await realpath(h.tmp.workspace));
+
+    await expect(h.run('/panel new')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).toContain('panel.new-confirm');
+
+    await expect(h.run('/panel new-confirm')).resolves.toBe(true);
+    expect(h.sessions.getRaw('chat-1')).toBeUndefined();
+    expect(h.workspaces.cwdFor('chat-1')).toBe(await realpath(h.tmp.workspace));
+    expect(JSON.stringify(lastContent(h.channel))).toContain('Codex 任务控制台');
   });
 
   it('increments a submitted default name if that group already exists', async () => {
@@ -145,6 +204,68 @@ describe('Bridge command contracts', () => {
 
     expect(h.channel.createdChats[0]?.options).toMatchObject({ name: 'Selected Project' });
     expect(h.workspaces.cwdFor('oc_fake_1')).toBe(await realpath(target));
+  });
+
+  it('confirms before archiving the Codex thread and dissolving the group', async () => {
+    const h = await createHarness();
+    h.controls.profileConfig.agentKind = 'codex';
+    const cwd = await realpath(h.tmp.workspace);
+    const identity: SessionCatalogIdentity = {
+      scopeId: 'chat-1',
+      agentId: 'codex',
+      cwdRealpath: cwd,
+      policyFingerprint: 'policy-1',
+    };
+    h.sessionCatalog.upsertActive({ ...identity, threadId: 'thread-1' });
+    h.sessions.set('chat-1', 'legacy-session', cwd);
+
+    await expect(h.run('终止任务', { chatMode: 'group' })).resolves.toBe(true);
+    const confirmationCard = JSON.stringify(lastContent(h.channel));
+    expect(confirmationCard).toContain('finish.archive');
+    expect(confirmationCard).toContain('finish.confirm');
+    expect(h.channel.rawClient.requests).not.toContainEqual(
+      expect.objectContaining({ method: 'im.v1.chat.delete' }),
+    );
+
+    await expect(
+      h.run('/finish confirm', { chatMode: 'group', sessionCatalogIdentity: identity }),
+    ).resolves.toBe(true);
+
+    expect(h.agent.archivedThreads).toEqual(['thread-1']);
+    expect(h.sessionCatalog.activeFor(identity)).toBeUndefined();
+    expect(h.sessions.getRaw('chat-1')).toBeUndefined();
+    expect(h.workspaces.cwdFor('chat-1')).toBeUndefined();
+    expect(h.channel.rawClient.requests).toContainEqual({
+      method: 'im.v1.chat.delete',
+      params: { path: { chat_id: 'chat-1' } },
+    });
+  });
+
+  it('can archive the Codex thread while retaining the group and workspace', async () => {
+    const h = await createHarness();
+    h.controls.profileConfig.agentKind = 'codex';
+    const cwd = await realpath(h.tmp.workspace);
+    const identity: SessionCatalogIdentity = {
+      scopeId: 'chat-1',
+      agentId: 'codex',
+      cwdRealpath: cwd,
+      policyFingerprint: 'policy-1',
+    };
+    h.sessionCatalog.upsertActive({ ...identity, threadId: 'thread-keep-group' });
+    h.sessions.set('chat-1', 'legacy-session', cwd);
+
+    await expect(
+      h.run('/finish archive', { chatMode: 'group', sessionCatalogIdentity: identity }),
+    ).resolves.toBe(true);
+
+    expect(h.agent.archivedThreads).toEqual(['thread-keep-group']);
+    expect(h.sessionCatalog.activeFor(identity)).toBeUndefined();
+    expect(h.sessions.getRaw('chat-1')).toBeUndefined();
+    expect(h.workspaces.cwdFor('chat-1')).toBe(cwd);
+    expect(h.channel.rawClient.requests).not.toContainEqual(
+      expect.objectContaining({ method: 'im.v1.chat.delete' }),
+    );
+    expect(lastMarkdown(h.channel)).toContain('群和工作目录已保留');
   });
 
   it('scopes named workspaces by profile, scope, and owner', async () => {
@@ -403,6 +524,7 @@ async function createHarness(): Promise<Harness> {
   const tmp = await createTmpProfile('commands-v1-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
+  const sessionCatalog = new SessionCatalog(join(tmp.profile, 'sessions.catalog.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const activeRuns = new ActiveRuns();
   const agent = createFakeAgent();
@@ -439,20 +561,23 @@ async function createHarness(): Promise<Harness> {
       scope,
       chatMode: overrides.chatMode ?? 'p2p',
       sessions,
+      sessionCatalog,
+      sessionCatalogIdentity: overrides.sessionCatalogIdentity,
       workspaces,
       agent,
       activeRuns,
       controls,
       formValue: overrides.formValue,
+      dmGroupCreationOnly: overrides.dmGroupCreationOnly,
     });
   };
 
   cleanups.push(async () => {
-    await Promise.all([sessions.flush(), workspaces.flush()]);
+    await Promise.all([sessions.flush(), sessionCatalog.flush(), workspaces.flush()]);
     await tmp.cleanup();
   });
 
-  return { tmp, channel, sessions, workspaces, activeRuns, agent, controls, run };
+  return { tmp, channel, sessions, sessionCatalog, workspaces, activeRuns, agent, controls, run };
 }
 
 function appConfig(defaultWorkspace: string): ProfileConfig {

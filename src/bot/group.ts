@@ -38,6 +38,18 @@ export async function createBoundChat(opts: CreateBoundChatOptions): Promise<Cre
   return { chatId, name };
 }
 
+/**
+ * Permanently dissolve a group created by this app. Feishu only permits an
+ * app-identity call when the bot is the owner, or when the bot created the
+ * group and has the corresponding chat-management permission.
+ */
+export async function dissolveChat(channel: LarkChannel, chatId: string): Promise<void> {
+  const response = await channel.rawClient.im.v1.chat.delete({ path: { chat_id: chatId } });
+  if (response.code && response.code !== 0) {
+    throw new Error(`Feishu rejected chat deletion (${response.code}): ${response.msg ?? 'unknown error'}`);
+  }
+}
+
 const DEFAULT_CHAT_PREFIX = 'Codex任务';
 
 export function defaultChatName(existingNames: Iterable<string> = []): string {

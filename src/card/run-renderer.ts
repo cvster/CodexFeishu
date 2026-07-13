@@ -49,6 +49,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   if (state.terminal === 'running') {
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
+  } else {
+    elements.push(taskPanelButton());
   }
 
   return {
@@ -188,6 +190,15 @@ function stopButton(options: RunCardRenderOptions): object {
     text: { tag: 'plain_text', content: '⏹ 终止' },
     type: 'danger',
     behaviors: [{ type: 'callback', value }],
+  };
+}
+
+function taskPanelButton(): object {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: '任务控制台' },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { cmd: 'panel' } }],
   };
 }
 

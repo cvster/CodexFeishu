@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  archiveCodexThread,
   CodexHistoryError,
   listCodexThreadHistory,
+  setCodexThreadName,
 } from '../../../src/session/codex-history.js';
 import { buildAgentPrompt } from '../../../src/agent/prompt.js';
 
@@ -109,6 +111,47 @@ describe('Codex thread history provider', () => {
       env: Record<string, string | undefined>;
     };
     expect(record.env.CODEX_HOME).toBe(join(fake.dir, 'codex-home'));
+  });
+
+  it('sets a Codex thread name through app-server', async () => {
+    const fake = await createFakeCodex();
+    cleanup.push(fake.dir);
+
+    await setCodexThreadName({
+      binary: fake.path,
+      threadId: 'thread-new',
+      name: 'Codex任务3',
+      profileStateDir: fake.dir,
+      timeoutMs: 5000,
+    });
+
+    const record = JSON.parse(await readFile(fake.recordPath, 'utf8')) as {
+      requests: Array<{ method: string; params?: unknown }>;
+    };
+    expect(record.requests).toMatchObject([
+      { method: 'initialize' },
+      { method: 'thread/name/set', params: { threadId: 'thread-new', name: 'Codex任务3' } },
+    ]);
+  });
+
+  it('archives a Codex thread through app-server', async () => {
+    const fake = await createFakeCodex();
+    cleanup.push(fake.dir);
+
+    await archiveCodexThread({
+      binary: fake.path,
+      threadId: 'thread-new',
+      profileStateDir: fake.dir,
+      timeoutMs: 5000,
+    });
+
+    const record = JSON.parse(await readFile(fake.recordPath, 'utf8')) as {
+      requests: Array<{ method: string; params?: unknown }>;
+    };
+    expect(record.requests).toMatchObject([
+      { method: 'initialize' },
+      { method: 'thread/archive', params: { threadId: 'thread-new' } },
+    ]);
   });
 
   it('throws a typed error when app-server rejects the history request', async () => {
@@ -272,6 +315,9 @@ rl.on('line', (line) => {
         }) + '\\n');
       }
     }, 25);
+  } else if (req.method === 'thread/name/set' || req.method === 'thread/archive') {
+    persist();
+    process.stdout.write(JSON.stringify({ id: req.id, result: {} }) + '\\n');
   }
 });
 `;

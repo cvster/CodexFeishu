@@ -8,6 +8,7 @@ export interface ConfigFormOpts {
   agentKind: AgentKind;
   /** Current model selection (a value from {@link supportedModels}). */
   model: string;
+  reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh';
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -126,6 +127,23 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 value: m.value,
               })),
             },
+            ...(opts.agentKind === 'codex'
+              ? [
+                  {
+                    tag: 'markdown',
+                    content: '**推理程度**\n_Codex 模型的 reasoning effort_',
+                  },
+                  {
+                    tag: 'select_static',
+                    name: 'reasoning_effort',
+                    initial_option: opts.reasoningEffort,
+                    options: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
+                      text: { tag: 'plain_text', content: value },
+                      value,
+                    })),
+                  },
+                ]
+              : []),
             { tag: 'hr' },
             {
               tag: 'markdown',
@@ -269,6 +287,18 @@ export function configFormCard(opts: ConfigFormOpts): object {
                   elements: [
                     {
                       tag: 'button',
+                      name: 'panel_btn',
+                      text: { tag: 'plain_text', content: '返回控制台' },
+                      behaviors: [{ type: 'callback', value: { cmd: 'panel' } }],
+                    },
+                  ],
+                },
+                {
+                  tag: 'column',
+                  width: 'auto',
+                  elements: [
+                    {
+                      tag: 'button',
                       name: 'cancel_btn',
                       text: { tag: 'plain_text', content: '取消' },
                       behaviors: [{ type: 'callback', value: { cmd: 'config.cancel' } }],
@@ -304,6 +334,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           content:
             '✅ **偏好已保存**\n\n' +
             `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
+            (opts.agentKind === 'codex' ? `**推理程度**:\`${opts.reasoningEffort}\`\n` : '') +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**COT 过程消息**:\`${cotLabel}\`\n` +
@@ -316,6 +347,11 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +
             `**管理员**:${summarize(opts.admins)}\n\n` +
             '下条消息开始生效。',
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '返回任务控制台' },
+          behaviors: [{ type: 'callback', value: { cmd: 'panel' } }],
         },
       ],
     },
@@ -380,7 +416,14 @@ export function configCancelledCard(): object {
     schema: '2.0',
     config: { summary: { content: '已取消' } },
     body: {
-      elements: [{ tag: 'markdown', content: '已取消,未做任何修改。' }],
+      elements: [
+        { tag: 'markdown', content: '已取消,未做任何修改。' },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '返回任务控制台' },
+          behaviors: [{ type: 'callback', value: { cmd: 'panel' } }],
+        },
+      ],
     },
   };
 }
@@ -390,7 +433,14 @@ export function configFailedCard(reason: string): object {
     schema: '2.0',
     config: { summary: { content: '保存失败' } },
     body: {
-      elements: [{ tag: 'markdown', content: `保存失败：${reason}` }],
+      elements: [
+        { tag: 'markdown', content: `保存失败：${reason}` },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '返回任务控制台' },
+          behaviors: [{ type: 'callback', value: { cmd: 'panel' } }],
+        },
+      ],
     },
   };
 }

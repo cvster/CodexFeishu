@@ -41,6 +41,9 @@ export interface FakeChannel {
     };
     readonly im: {
       readonly v1: {
+        readonly chat: {
+          delete(params: unknown): Promise<unknown>;
+        };
         readonly message: {
           create(params: unknown): Promise<unknown>;
           reply(params: unknown): Promise<unknown>;
@@ -110,6 +113,12 @@ export function createFakeChannel(): FakeChannel {
       },
       im: {
         v1: {
+          chat: {
+            async delete(params: unknown): Promise<unknown> {
+              requests.push({ method: 'im.v1.chat.delete', params });
+              return { code: 0, data: {} };
+            },
+          },
           message: {
             async create(params: unknown): Promise<unknown> {
               return { data: pushManagedCardMessage(params, '') };

@@ -66,6 +66,7 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import { isSoloUserBotChat } from './group';
+import { syncCodexThreadNameFromChat } from './thread-name';
 import type { AppPaths } from '../config/app-paths';
 import {
   consumeCotEvents,
@@ -77,13 +78,6 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
-
-const BRIDGE_AGENT_INSTRUCTIONS = [
-  '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
-  '不要 unset LARK_CHANNEL / LARK_CHANNEL_HOME / LARK_CHANNEL_PROFILE / LARKSUITE_CLI_CONFIG_DIR，也不要用 env -u LARK_CHANNEL 绕回本机普通配置。',
-  'Codex bridge 默认使用 danger-full-access 对齐 Claude bridge 的 bypassPermissions 行为，因此 lark-cli 应能像用户本机终端一样访问 keychain。',
-  '如果提示 lark-channel context detected but not bound，停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight；不要改用普通 profile，不要自行 bind，也不要直接读取 config.json 里的账号或密钥。',
-];
 
 // Lark SDK logs API errors at error level even when the caller catches them.
 // These specific codes are EXPECTED in our flow (wiki-node lookup that
@@ -211,6 +205,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
   const lastRunModelByScope = new Map<string, string>();
+  const syncedCodexThreadNames = new Map<string, string>();
   const cotClient = new CotClient({
     tenant: cfg.accounts.app.tenant,
     appId: cfg.accounts.app.id,
@@ -264,8 +259,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // Per-request REST timeout — without a cap a slow API can hang the
     // event-handling thread.
     httpTimeoutMs: 30_000,
-    // Route WS + REST through HTTPS_PROXY / HTTP_PROXY when set (no-op otherwise).
-    respectProxyEnv: true,
+    // Feishu is directly reachable on this host. Do not route its REST/WS
+    // traffic through the local proxy: that proxy intermittently returns 502
+    // for tenant-token requests. Agent subprocesses still inherit proxy env.
+    respectProxyEnv: false,
   };
 
   const channel = createLarkChannel(opts);
@@ -316,6 +313,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
+          syncedCodexThreadNames,
+          agent,
           scope,
           mode,
         });
@@ -688,6 +687,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     runExecutor: executor,
     processPool: pool,
     controls,
+    dmGroupCreationOnly: true,
   });
   if (handled) {
     const dropped = pending.cancel(scope);
@@ -701,6 +701,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
 interface RunBatchDeps {
   channel: LarkChannel;
+  agent: AgentAdapter;
   executor: RunExecutor;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
@@ -712,6 +713,7 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
+  syncedCodexThreadNames: Map<string, string>;
   scope: string;
   mode: ChatMode;
 }
@@ -719,6 +721,7 @@ interface RunBatchDeps {
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const {
     channel,
+    agent,
     executor,
     sessions,
     sessionCatalog,
@@ -730,6 +733,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
+    syncedCodexThreadNames,
     scope,
     mode,
   } = deps;
@@ -936,6 +940,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
     if (evt.type === 'system' && evt.threadId) {
       log.info('session', 'set-thread', { threadId: evt.threadId });
+      if (firstMsg.chatType !== 'p2p') {
+        void syncCodexThreadNameFromChat({
+          channel,
+          agent,
+          chatId,
+          threadId: evt.threadId,
+          knownChats: controls.knownChats ?? [],
+          syncedNames: syncedCodexThreadNames,
+        }).catch((err) =>
+          log.warn('session', 'thread-name-sync-failed', {
+            threadId: evt.threadId,
+            err: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
     }
   };
 
@@ -1533,10 +1552,9 @@ function buildPrompt(
       messageIds: batch.map((m) => m.messageId),
       source: 'im',
     },
-    instructions:
-      extraInstructions && extraInstructions.length > 0
-        ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
-        : BRIDGE_AGENT_INSTRUCTIONS,
+    ...(extraInstructions && extraInstructions.length > 0
+      ? { instructions: extraInstructions }
+      : {}),
     userInput: userPart,
     ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
     quotedMessages: quotes.map(toPromptQuote),

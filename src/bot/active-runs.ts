@@ -86,6 +86,21 @@ export class ActiveRuns {
     return true;
   }
 
+  /** Stop and await a selected set of scopes, used before destroying their carrier chat. */
+  async stopScopes(scopes: Iterable<string>): Promise<number> {
+    const runs: AgentRun[] = [];
+    for (const scope of scopes) {
+      this.reservations.delete(scope);
+      const handle = this.handles.get(scope);
+      if (!handle) continue;
+      handle.interrupted = true;
+      this.handles.delete(scope);
+      runs.push(handle.run);
+    }
+    await Promise.allSettled(runs.map((run) => run.stop()));
+    return runs.length;
+  }
+
   async stopAll(): Promise<void> {
     const all = [...this.handles.values()];
     this.handles.clear();

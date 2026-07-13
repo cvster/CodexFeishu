@@ -113,6 +113,15 @@ describe('signed card callback dispatch', () => {
     expect(activeRun.stopped).toBe(false);
     expect(h.pending.cancel('oc_group')).toHaveLength(0);
   });
+
+  it('redirects private-chat card actions to group creation', async () => {
+    const h = await createHarness({ chatMode: 'p2p' });
+
+    await h.dispatch({ cmd: 'status' });
+
+    expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('new_chat_form');
+    expect(h.agent.runs).toHaveLength(0);
+  });
 });
 
 type Harness = {
@@ -148,7 +157,7 @@ async function createHarness(
     profileConfig: createDefaultProfileConfig({
       agentKind: 'claude',
       accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
-      access: { allowedChats: ['oc_group'] },
+      access: { allowedUsers: ['ou_operator'], allowedChats: ['oc_group'] },
     }),
     botOwnerId: 'ou_owner',
     ownerRefreshState: 'ok',
@@ -159,7 +168,7 @@ async function createHarness(
     cfg: createDefaultProfileConfig({
       agentKind: 'claude',
       accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
-      access: { allowedChats: ['oc_group'] },
+      access: { allowedUsers: ['ou_operator'], allowedChats: ['oc_group'] },
     }),
     processId: 'proc-1',
   } satisfies Controls;

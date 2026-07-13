@@ -18,29 +18,44 @@ describe('managed card sending', () => {
     expect(channel.send).not.toHaveBeenCalled();
   });
 
-  it('surfaces card-id message errors instead of sending a raw card', async () => {
+  it('retries an invalid card-id reply as a new CardKit message', async () => {
     const channel = {
       createCard: vi.fn(async () => ({ cardId: 'card_1' })),
-      send: vi.fn(async () => {
-        throw new Error('cardid is invalid');
-      }),
+      send: vi.fn()
+        .mockRejectedValueOnce(new Error('ErrCode: 11310; ErrMsg: cardid is invalid'))
+        .mockResolvedValueOnce({ messageId: 'om_new_message' }),
     };
 
-    await expect(
-      sendManagedCard(
-        channel as never,
-        'oc_chat',
-        { type: 'template', data: { template_id: 'tpl' } },
-        { replyTo: 'om_parent', replyInThread: true },
-      ),
-    ).rejects.toThrow('cardid is invalid');
+    const result = await sendManagedCard(
+      channel as never,
+      'oc_chat',
+      { type: 'template', data: { template_id: 'tpl' } },
+      { replyTo: 'om_parent', replyInThread: true },
+    );
 
-    expect(channel.send).toHaveBeenCalledTimes(1);
-    expect(channel.send).toHaveBeenCalledWith(
+    expect(result).toEqual({ messageId: 'om_new_message', cardId: 'card_1' });
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    expect(channel.send).toHaveBeenNthCalledWith(
+      1,
       'oc_chat',
       { cardId: 'card_1' },
       { replyTo: 'om_parent', replyInThread: true },
     );
+    expect(channel.send).toHaveBeenNthCalledWith(2, 'oc_chat', { cardId: 'card_1' });
+  });
+
+  it('surfaces other card-id send errors without a compatibility fallback', async () => {
+    const channel = {
+      createCard: vi.fn(async () => ({ cardId: 'card_2' })),
+      send: vi.fn(async () => {
+        throw new Error('network timeout');
+      }),
+    };
+
+    await expect(
+      sendManagedCard(channel as never, 'oc_chat', { schema: '2.0' }, { replyTo: 'om_parent' }),
+    ).rejects.toThrow('network timeout');
+    expect(channel.send).toHaveBeenCalledTimes(1);
   });
 
   it('updates card-id managed messages by card id', async () => {

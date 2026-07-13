@@ -3,6 +3,7 @@ import {
   BRIDGE_SYSTEM_PROMPT,
   buildBridgeSystemPrompt,
   prefixBridgeSystemPrompt,
+  prefixBridgeTurnPrompt,
 } from '../../../src/agent/bridge-system-prompt';
 
 describe('bridge system prompt bot collaboration rules', () => {
@@ -69,5 +70,16 @@ describe('prefixBridgeSystemPrompt', () => {
     const prompt = prefixBridgeSystemPrompt('hello world', undefined);
     expect(prompt.startsWith(BRIDGE_SYSTEM_PROMPT)).toBe(true);
     expect(prompt.endsWith('hello world')).toBe(true);
+  });
+
+  it('keeps the stable first-turn prompt compact', () => {
+    expect(BRIDGE_SYSTEM_PROMPT.length).toBeLessThan(1600);
+  });
+
+  it('uses a much shorter reminder for resumed turns', () => {
+    const prompt = prefixBridgeTurnPrompt('hello world');
+    expect(prompt).toContain('user_input');
+    expect(prompt.endsWith('hello world')).toBe(true);
+    expect(prompt.length).toBeLessThan(300);
   });
 });

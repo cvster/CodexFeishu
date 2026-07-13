@@ -167,6 +167,10 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   }
 
   const preferences = normalizePreferences(raw.preferences);
+  if (raw.agentKind === 'codex') {
+    if (!preferences.model || preferences.model === '5.6 sol') preferences.model = 'gpt-5.6-sol';
+    preferences.reasoningEffort ??= 'high';
+  }
   const access = normalizeAccess(
     raw.access ?? raw.preferences?.access,
     raw.preferences?.requireMentionInGroup,

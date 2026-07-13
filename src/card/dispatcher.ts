@@ -40,6 +40,8 @@ export interface CardDispatchDeps {
   callbackAuth?: CallbackAuth;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
+  /** Production defaults to restricting private-chat actions to group creation. */
+  dmGroupCreationOnly?: boolean;
 }
 
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
@@ -113,6 +115,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       controls: deps.controls,
       formValue,
       fromCardAction: true,
+      dmGroupCreationOnly: deps.dmGroupCreationOnly ?? true,
     };
 
     const [name, ...rest] = cmd.split('.');

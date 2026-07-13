@@ -127,21 +127,24 @@ async function createLegacyCodexConfig(options: {
     mkdir(workspace, { recursive: true }),
     mkdir(binDir, { recursive: true }),
   ]);
-  const codex = join(binDir, 'codex');
+  const isWindows = process.platform === 'win32';
+  const codex = join(binDir, isWindows ? 'codex.cmd' : 'codex');
   await writeFile(
     codex,
-    [
-      '#!/bin/sh',
-      'if [ "$1" = "--version" ]; then',
-      '  echo "codex-cli 999.0.0"',
-      '  exit 0',
-      'fi',
-      'exit 0',
-      '',
-    ].join('\n'),
+    isWindows
+      ? ['@echo off', 'echo codex-cli 999.0.0', 'exit /b 0', ''].join('\r\n')
+      : [
+          '#!/bin/sh',
+          'if [ "$1" = "--version" ]; then',
+          '  echo "codex-cli 999.0.0"',
+          '  exit 0',
+          'fi',
+          'exit 0',
+          '',
+        ].join('\n'),
     'utf8',
   );
-  await chmod(codex, 0o755);
+  if (!isWindows) await chmod(codex, 0o755);
 
   const secrets = {
     providers: {

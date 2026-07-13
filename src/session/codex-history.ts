@@ -40,6 +40,18 @@ export interface ListCodexThreadHistoryOptions {
   useStateDbOnly?: boolean;
 }
 
+export interface SetCodexThreadNameOptions {
+  binary: string;
+  threadId: string;
+  name: string;
+  profileStateDir: string;
+  codexHome?: string;
+  inheritCodexHome?: boolean;
+  timeoutMs?: number;
+}
+
+export type ArchiveCodexThreadOptions = Omit<SetCodexThreadNameOptions, 'name'>;
+
 export type CodexHistoryErrorCode =
   | 'spawn-failed'
   | 'timeout'
@@ -170,7 +182,132 @@ export async function listCodexThreadHistory(
   return result;
 }
 
-function spawnCodexAppServer(options: ListCodexThreadHistoryOptions): CodexAppServerChild {
+export async function setCodexThreadName(options: SetCodexThreadNameOptions): Promise<void> {
+  await mutateCodexThread(
+    options,
+    'thread/name/set',
+    { threadId: options.threadId, name: options.name },
+    'rename',
+  );
+}
+
+export async function archiveCodexThread(options: ArchiveCodexThreadOptions): Promise<void> {
+  await mutateCodexThread(
+    options,
+    'thread/archive',
+    { threadId: options.threadId },
+    'archive',
+  );
+}
+
+async function mutateCodexThread(
+  options: ArchiveCodexThreadOptions,
+  method: 'thread/name/set' | 'thread/archive',
+  params: Record<string, unknown>,
+  operation: 'rename' | 'archive',
+): Promise<void> {
+  const child = spawnCodexAppServer(options);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_HISTORY_TIMEOUT_MS;
+  const stderrChunks: Buffer[] = [];
+  let settled = false;
+
+  await new Promise<void>((resolve, reject) => {
+    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = (kill: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      rl.close();
+      child.removeListener('error', fail);
+      child.stdin.removeListener('error', fail);
+      child.stderr.removeAllListeners('data');
+      if (kill && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    };
+    const fail = (err: unknown): void => {
+      if (settled) return;
+      reject(
+        err instanceof CodexHistoryError
+          ? err
+          : new CodexHistoryError('spawn-failed', errorMessage(err)),
+      );
+      cleanup(true);
+    };
+
+    timer = setTimeout(() => {
+      reject(new CodexHistoryError('timeout', `codex thread ${operation} timed out after ${timeoutMs}ms`));
+      cleanup(true);
+    }, timeoutMs);
+
+    child.once('error', fail);
+    child.stdin.once('error', fail);
+    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+    rl.on('line', (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let msg: unknown;
+      try {
+        msg = JSON.parse(trimmed);
+      } catch {
+        return;
+      }
+      const response = recordValue(msg);
+      if (!response || response.id !== 2) return;
+      if (response.error) {
+        const err = recordValue(response.error);
+        reject(
+          new CodexHistoryError(
+            'app-server-error',
+            typeof err?.message === 'string'
+              ? err.message
+              : `codex app-server rejected thread ${operation}`,
+          ),
+        );
+        cleanup(true);
+        return;
+      }
+      resolve();
+      cleanup(true);
+    });
+    child.once('exit', (code) => {
+      if (settled) return;
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+      reject(
+        new CodexHistoryError(
+          'spawn-failed',
+          `codex app-server exited before thread ${operation} response: ${code ?? 'signal'}${stderr ? `: ${stderr}` : ''}`,
+        ),
+      );
+      cleanup(false);
+    });
+
+    try {
+      child.stdin.write(
+        `${JSON.stringify(initializeRequest())}\n${JSON.stringify({
+          method,
+          id: 2,
+          params,
+        })}\n`,
+        'utf8',
+        (err?: Error | null) => {
+          if (err) fail(err);
+        },
+      );
+    } catch (err) {
+      fail(err);
+    }
+  });
+
+  await waitForChildExit(child, 250);
+}
+
+function spawnCodexAppServer(options: {
+  binary: string;
+  profileStateDir: string;
+  codexHome?: string;
+  inheritCodexHome?: boolean;
+}): CodexAppServerChild {
   const envOverrides: NodeJS.ProcessEnv = {};
   if (options.codexHome) {
     envOverrides.CODEX_HOME = options.codexHome;

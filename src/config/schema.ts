@@ -111,6 +111,8 @@ export interface AppPreferences {
    * CLI / account default applies. Default: unset.
    */
   model?: string;
+  /** Codex model reasoning effort. Defaults to `high` for Codex profiles. */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
   /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from

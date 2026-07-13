@@ -23,13 +23,16 @@ import {
 } from '../card/config-card';
 import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import { forgetManagedCard, isManaged, sendManagedCard, updateManagedCard } from '../card/managed';
 import {
+  finishTaskConfirmationCard,
   helpCard,
   newChatCreationCard,
   newChatWorkspaceCard,
+  newSessionConfirmationCard,
   resumeCard,
   statusCard,
+  taskPanelCard,
   workspacesCard,
 } from '../card/templates';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
@@ -85,7 +88,7 @@ import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
-import { createBoundChat, defaultChatName, isDefaultChatName } from '../bot/group';
+import { createBoundChat, defaultChatName, dissolveChat, isDefaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
@@ -147,6 +150,8 @@ export interface CommandContext {
    * text command. Determines whether to update the existing card vs send a
    * new one. */
   fromCardAction?: boolean;
+  /** Production DM policy: private chat is only a launcher for workspace groups. */
+  dmGroupCreationOnly?: boolean;
 }
 
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
@@ -177,6 +182,8 @@ const handlers: Record<string, Handler> = {
   '/account': handleAccount,
   '/config': handleConfig,
   '/stop': handleStop,
+  '/finish': handleFinish,
+  '/panel': handlePanel,
   '/timeout': handleTimeout,
   '/ps': handlePs,
   '/exit': handleExit,
@@ -193,6 +200,16 @@ const DM_TEXT_COMMANDS: Record<string, string> = {
   创建工作群: '/new chat setup',
   新建工作群: '/new chat setup',
   新建群会话: '/new chat setup',
+  打开控制台: '/panel',
+  任务控制台: '/panel',
+  控制台: '/panel',
+};
+
+const GROUP_TEXT_COMMANDS: Record<string, string> = {
+  终止任务: '/finish',
+  打开控制台: '/panel',
+  任务控制台: '/panel',
+  控制台: '/panel',
 };
 
 /**
@@ -211,6 +228,7 @@ const ADMIN_COMMANDS = new Set([
   '/ws',
   '/invite',
   '/remove',
+  '/finish',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -219,11 +237,28 @@ function isAdminCommand(cmd: string): boolean {
 
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const raw = ctx.msg.content.trim();
-  const trimmed = ctx.chatMode === 'p2p' ? (DM_TEXT_COMMANDS[raw] ?? raw) : raw;
-  if (!trimmed.startsWith('/')) return false;
+  const trimmed =
+    ctx.chatMode === 'p2p'
+      ? (DM_TEXT_COMMANDS[raw] ?? raw)
+      : (GROUP_TEXT_COMMANDS[raw] ?? raw);
+  if (!trimmed.startsWith('/')) {
+    if (ctx.chatMode === 'p2p' && ctx.dmGroupCreationOnly) {
+      await handleNew('chat setup', ctx);
+      return true;
+    }
+    return false;
+  }
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
   const args = parts.slice(1).join(' ');
+  if (
+    ctx.chatMode === 'p2p' &&
+    ctx.dmGroupCreationOnly &&
+    !isDmGroupCreationCommand(cmd, args)
+  ) {
+    await handleNew('chat setup', ctx);
+    return true;
+  }
   const h = handlers[cmd];
   if (!h) return false;
   if (
@@ -252,6 +287,14 @@ export async function runCommandHandler(
   args: string,
   ctx: CommandContext,
 ): Promise<boolean> {
+  if (
+    ctx.chatMode === 'p2p' &&
+    ctx.dmGroupCreationOnly &&
+    !isDmGroupCreationCommand(name, args)
+  ) {
+    await handleNew('chat setup', ctx);
+    return true;
+  }
   const h = handlers[`/${name}`];
   if (!h) return false;
   if (
@@ -263,9 +306,7 @@ export async function runCommandHandler(
       sender: ctx.msg.senderId.slice(-6),
       via: 'card',
     });
-    // Card actions can't reply naturally (the `msg` is synthesized); the
-    // click is silently denied. The button only renders for users who got
-    // the original admin card in the first place, so this is an edge case.
+    await reply(ctx, '❌ 此操作仅管理员可用。');
     return true;
   }
   try {
@@ -335,6 +376,11 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     const card = newChatCreationCard(
       defaultChatName(knownChats.map((chat) => chat.name)),
       effectiveWorkspaceCwd(ctx),
+      normalizeModelSelection(
+        ctx.controls.profileConfig.agentKind,
+        ctx.controls.profileConfig.preferences.model,
+      ),
+      ctx.controls.profileConfig.preferences.reasoningEffort ?? 'high',
     );
     await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
     return;
@@ -343,6 +389,27 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   if (trimmed === 'chat form') {
     const groupName = String(ctx.formValue?.group_name ?? '').trim();
     const cwd = String(ctx.formValue?.cwd ?? '').trim();
+    if (ctx.controls.profileConfig.agentKind === 'codex') {
+      const rawModel = String(ctx.formValue?.model ?? '').trim();
+      const modelSelection = supportedModels('codex').some((option) => option.value === rawModel)
+        ? rawModel
+        : normalizeModelSelection('codex', ctx.controls.profileConfig.preferences.model);
+      const rawEffort = String(ctx.formValue?.reasoning_effort ?? '').trim();
+      const reasoningEffort =
+        rawEffort === 'low' || rawEffort === 'medium' || rawEffort === 'high' || rawEffort === 'xhigh'
+          ? rawEffort
+          : ctx.controls.profileConfig.preferences.reasoningEffort ?? 'high';
+      await savePreferencesConfig(
+        ctx,
+        {
+          ...ctx.controls.cfg.preferences,
+          model: modelSelection === DEFAULT_MODEL ? undefined : modelSelection,
+          reasoningEffort,
+        },
+        ctx.controls.profileConfig.access.requireMentionInGroup,
+        ctx.controls.profileConfig.larkCli.identityPreset,
+      );
+    }
     return handleNewChat(groupName, ctx, cwd);
   }
 
@@ -363,6 +430,76 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
 
+function isDmGroupCreationCommand(name: string, args: string): boolean {
+  const normalized = name.startsWith('/') ? name : `/${name}`;
+  if (normalized === '/panel') return true;
+  return normalized === '/new' && (args === 'chat' || args.startsWith('chat '));
+}
+
+async function handlePanel(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode === 'p2p' && ctx.dmGroupCreationOnly) {
+    await handleNew('chat setup', ctx);
+    return;
+  }
+  const action = args.trim();
+  if (action === 'new') {
+    await showPanelCard(ctx, newSessionConfirmationCard());
+    return;
+  }
+  if (action === 'stop') {
+    ctx.activeRuns.interrupt(ctx.scope);
+  }
+  if (action === 'new-confirm') {
+    ctx.activeRuns.interrupt(ctx.scope);
+    if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
+      ctx.sessionCatalog.archiveActive({ ...ctx.sessionCatalogIdentity, now: Date.now() });
+      await ctx.sessionCatalog.flush();
+    }
+    ctx.sessions.clear(ctx.scope);
+    await ctx.sessions.flush();
+  }
+  await showPanelCard(ctx, buildTaskPanelCard(ctx));
+}
+
+function buildTaskPanelCard(ctx: CommandContext): object {
+  const chatName =
+    ctx.chatMode === 'p2p'
+      ? '机器人私聊'
+      : (ctx.controls.knownChats?.find((chat) => chat.id === ctx.msg.chatId)?.name ?? '当前群');
+  const catalogEntry =
+    ctx.sessionCatalog && ctx.sessionCatalogIdentity
+      ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
+      : undefined;
+  const legacyEntry = ctx.sessions.getRaw(ctx.scope);
+  return taskPanelCard({
+    agentKind: ctx.controls.profileConfig.agentKind,
+    chatName,
+    chatMode: ctx.chatMode,
+    model: normalizeModelSelection(
+      ctx.controls.profileConfig.agentKind,
+      ctx.controls.cfg.preferences?.model,
+    ),
+    reasoningEffort: ctx.controls.cfg.preferences?.reasoningEffort ?? 'high',
+    cwd: effectiveWorkspaceCwd(ctx),
+    sessionId: catalogEntry?.threadId ?? catalogEntry?.sessionId ?? legacyEntry?.sessionId,
+    activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
+  });
+}
+
+async function showPanelCard(ctx: CommandContext, card: object): Promise<void> {
+  if (ctx.fromCardAction && isManaged(ctx.msg.messageId)) {
+    try {
+      await updateManagedCard(ctx.channel, ctx.msg.messageId, card);
+      return;
+    } catch (err) {
+      log.warn('command', 'panel-card-update-fallback', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
+}
+
 async function handleNewChat(
   rawName: string,
   ctx: CommandContext,
@@ -381,7 +518,6 @@ async function handleNewChat(
     }
     sourceCwd = workspace.cwdRealpath;
   }
-  const sourceWorkspaces = listScopedWorkspaces(ctx);
   let name = rawName;
   if (!name || isDefaultChatName(name)) {
     const knownChats = await refreshKnownChatsForNaming(ctx);
@@ -417,7 +553,7 @@ async function handleNewChat(
     { id: created.chatId, name: created.name },
   ];
 
-  const setupCard = newChatWorkspaceCard(created.name, sourceCwd, sourceWorkspaces);
+  const setupCard = newChatWorkspaceCard(created.name);
   try {
     await sendManagedCard(ctx.channel, created.chatId, setupCard);
   } catch (err) {
@@ -941,6 +1077,101 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   }
   // No reply for the current IM scope: if there was a run, its in-flight
   // render loop will mark the card as interrupted and re-render.
+}
+
+async function handleFinish(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode === 'p2p') {
+    await reply(ctx, '❌ “终止任务”只能在要结束的 Codex 工作群中使用。');
+    return;
+  }
+  if (ctx.chatMode === 'topic') {
+    await reply(ctx, '❌ “终止任务”暂不支持话题模式，请在普通 Codex 工作群中操作。');
+    return;
+  }
+
+  const action = args.trim();
+  if (action !== 'archive' && action !== 'confirm') {
+    await sendManagedCard(
+      ctx.channel,
+      ctx.msg.chatId,
+      finishTaskConfirmationCard(),
+      commandReplyOptions(ctx),
+    );
+    return;
+  }
+
+  const groupScopes = ctx.activeRuns
+    .scopes()
+    .filter((scope) => scope === ctx.msg.chatId || scope.startsWith(`${ctx.msg.chatId}:`));
+  const shouldDissolve = action === 'confirm';
+  await reply(
+    ctx,
+    shouldDissolve
+      ? '⏳ 正在停止任务、归档 Codex 会话并解散本群…'
+      : '⏳ 正在停止任务并归档当前 Codex 会话…',
+  );
+  await ctx.activeRuns.stopScopes(groupScopes);
+
+  const catalogEntry =
+    ctx.sessionCatalog && ctx.sessionCatalogIdentity
+      ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
+      : undefined;
+  if (catalogEntry?.threadId && ctx.controls.profileConfig.agentKind === 'codex') {
+    if (!ctx.agent.archiveThread) {
+      await reply(ctx, '❌ 当前 Codex 适配器不支持归档会话，操作已取消。');
+      return;
+    }
+    try {
+      await ctx.agent.archiveThread(catalogEntry.threadId);
+    } catch (err) {
+      log.fail('command', err, { cmd: 'finish', step: 'archive-thread' });
+      await reply(
+        ctx,
+        `❌ Codex 会话归档失败，群保持不变：${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+  }
+
+  if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
+    ctx.sessionCatalog.archiveActive({ ...ctx.sessionCatalogIdentity, now: Date.now() });
+    await ctx.sessionCatalog.flush();
+  }
+  ctx.sessions.remove(ctx.scope);
+  await ctx.sessions.flush();
+
+  if (!shouldDissolve) {
+    log.info('command', 'finish', {
+      chatId: ctx.msg.chatId,
+      threadId: catalogEntry?.threadId,
+      stoppedRuns: groupScopes.length,
+      dissolved: false,
+    });
+    await reply(ctx, '✓ 当前 Codex 会话已归档，群和工作目录已保留。下一条消息将开启新会话。');
+    return;
+  }
+
+  ctx.workspaces.removeCwd(ctx.msg.chatId);
+  await ctx.workspaces.flush();
+  ctx.controls.knownChats = (ctx.controls.knownChats ?? []).filter(
+    (chat) => chat.id !== ctx.msg.chatId,
+  );
+
+  try {
+    await dissolveChat(ctx.channel, ctx.msg.chatId);
+    log.info('command', 'finish', {
+      chatId: ctx.msg.chatId,
+      threadId: catalogEntry?.threadId,
+      stoppedRuns: groupScopes.length,
+      dissolved: true,
+    });
+  } catch (err) {
+    log.fail('command', err, { cmd: 'finish', step: 'dissolve-chat' });
+    await reply(
+      ctx,
+      `⚠️ Codex 会话已归档，但群解散失败：${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
@@ -1850,6 +2081,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
       ctx.controls.profileConfig.agentKind,
       ctx.controls.cfg.preferences?.model,
     ),
+    reasoningEffort: ctx.controls.cfg.preferences?.reasoningEffort ?? 'high',
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     cotMessages: getCotMessages(ctx.controls.cfg),
@@ -1913,6 +2145,14 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     ? rawModel
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
+  const rawReasoningEffort = String(fv.reasoning_effort ?? '').trim();
+  const reasoningEffort =
+    rawReasoningEffort === 'low' ||
+    rawReasoningEffort === 'medium' ||
+    rawReasoningEffort === 'high' ||
+    rawReasoningEffort === 'xhigh'
+      ? rawReasoningEffort
+      : ctx.controls.cfg.preferences?.reasoningEffort ?? 'high';
   const rawCotMessages = String(fv.cot_messages ?? '').trim();
   const cotMessages =
     rawCotMessages === 'brief'
@@ -1979,6 +2219,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     const nextPreferences: AppPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       model,
+      reasoningEffort,
       messageReply,
       // Mark the messageReply value as living in the new (post-0.1.27)
       // semantic — `text` now means real plain text, not the lightweight
@@ -2047,6 +2288,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       configSavedCard({
         agentKind,
         model: modelSelection,
+        reasoningEffort,
         messageReply,
         showToolCalls,
         cotMessages,

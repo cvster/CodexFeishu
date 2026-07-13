@@ -35,9 +35,26 @@ export async function sendManagedCard(
     ? { replyTo: opts.replyTo, ...(opts.replyInThread ? { replyInThread: true } : {}) }
     : undefined;
   const { cardId } = await channel.createCard(card);
-  const { messageId } = await channel.send(recipientId, { cardId }, sendOpts);
+  let messageId: string;
+  try {
+    ({ messageId } = await channel.send(recipientId, { cardId }, sendOpts));
+  } catch (err) {
+    if (!sendOpts || !isInvalidCardIdReply(err)) throw err;
+    log.warn('card', 'managed-reply-card-id-retry-as-message', {
+      err: err instanceof Error ? err.message : String(err),
+      replyTo: opts.replyTo,
+      replyInThread: opts.replyInThread === true,
+    });
+    ({ messageId } = await channel.send(recipientId, { cardId }));
+  }
   byMessageId.set(messageId, { cardId, sequence: 0 });
   return { messageId, cardId };
+}
+
+function isInvalidCardIdReply(err: unknown): boolean {
+  return /card\s*id\s+is\s+invalid|cardid\s+is\s+invalid/i.test(
+    err instanceof Error ? err.message : String(err),
+  );
 }
 
 /**

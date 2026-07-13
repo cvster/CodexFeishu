@@ -15,6 +15,7 @@ vi.mock('../../../src/platform/spawn', async (importOriginal) => {
 import {
   buildBridgeSystemPrompt,
   prefixBridgeSystemPrompt,
+  prefixBridgeTurnPrompt,
 } from '../../../src/agent/bridge-system-prompt';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter';
 import { CodexAdapter } from '../../../src/agent/codex/adapter';
@@ -112,6 +113,19 @@ describe('CodexAdapter system prompt wiring', () => {
 
     const stdin = await readAll(child.stdin);
     expect(stdin).toBe(prefixBridgeSystemPrompt('hi', undefined));
+  });
+
+  it('uses only a compact bridge reminder when resuming a Codex thread', async () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = codexAdapter();
+    adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
+
+    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp', threadId: 'thread-1' });
+
+    const stdin = await readAll(child.stdin);
+    expect(stdin).toBe(prefixBridgeTurnPrompt('hi'));
+    expect(stdin.length).toBeLessThan(300);
   });
 });
 

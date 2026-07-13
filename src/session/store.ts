@@ -103,6 +103,14 @@ export class SessionStore {
     this.schedulePersist();
   }
 
+  /** Remove all state for a scope, including its timeout override. */
+  remove(chatId: string): boolean {
+    if (!(chatId in this.data)) return false;
+    delete this.data[chatId];
+    this.schedulePersist();
+    return true;
+  }
+
   /** Per-scope idle-timeout override. `undefined` means no override set. */
   getIdleTimeoutMinutes(chatId: string): number | undefined {
     return this.data[chatId]?.idleTimeoutMinutes;

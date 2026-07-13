@@ -336,6 +336,7 @@ async function createHarness(
       controls,
       pending,
       chatModeCache,
+      dmGroupCreationOnly: false,
     });
 
   cleanups.push(async () => {

@@ -148,6 +148,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         input.profileConfig.agentKind,
         input.profileConfig.preferences.model,
       ),
+      reasoningEffort:
+        input.profileConfig.agentKind === 'codex'
+          ? input.profileConfig.preferences.reasoningEffort ?? 'high'
+          : undefined,
       images:
         input.capability.agentId === 'codex'
           ? policy.attachments

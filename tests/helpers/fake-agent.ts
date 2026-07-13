@@ -65,6 +65,8 @@ export class FakeAgentAdapter implements AgentAdapter {
   readonly displayName: string;
   readonly runs: FakeAgentRun[] = [];
   readonly runOptions: AgentRunOptions[] = [];
+  readonly threadNames: Array<{ threadId: string; name: string }> = [];
+  readonly archivedThreads: string[] = [];
   botIdentity: AgentBotIdentity | undefined;
   #available: boolean;
   #eventRuns: AgentEvent[][];
@@ -99,6 +101,14 @@ export class FakeAgentAdapter implements AgentAdapter {
     const run = new FakeRun(opts, events, waitForExitResult);
     this.runs.push(run);
     return run;
+  }
+
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    this.threadNames.push({ threadId, name });
+  }
+
+  async archiveThread(threadId: string): Promise<void> {
+    this.archivedThreads.push(threadId);
   }
 
   enqueue(...events: AgentEvent[]): void {
