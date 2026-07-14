@@ -2015,11 +2015,12 @@ async function buildCodexSessionsIndex() {
         continue;
       }
 
+      const indexedThreadName = threadNames.get(sessionData.id) || null;
       const backendDefaultTitle = isBackendSession
-        ? getDefaultBackendSessionTitle(sessionData.firstUserMessage)
+        ? indexedThreadName || getDefaultBackendSessionTitle(sessionData.firstUserMessage)
         : null;
       const desktopTitle =
-        threadNames.get(sessionData.id) ||
+        indexedThreadName ||
         desktopTitlesBySessionId.get(sessionData.id) ||
         desktopTitlesByRolloutPath.get(normalizedFilePath) ||
         null;
