@@ -724,15 +724,22 @@ app.put('/api/sessions/:sessionId/archive', authenticateToken, async (req, res) 
             return res.status(400).json({ error: 'Invalid sessionId' });
         }
 
-        const { provider, projectPath, sessionTitle, sessionOrigin } = req.body;
+        const { provider, projectPath, sessionTitle } = req.body;
         if (!provider || !VALID_PROVIDERS.includes(provider)) {
             return res.status(400).json({ error: `Provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
         }
 
-        const resolvedSessionOrigin =
-            provider === 'codex'
-                ? sessionOrigin || sessionOriginsDb.getOrigin(safeSessionId, provider) || 'app'
-                : null;
+        let resolvedSessionOrigin = null;
+        if (provider === 'codex') {
+            const indexedSessions = projectPath
+                ? await getCodexSessions(projectPath, { limit: 0 })
+                : [];
+            const indexedSession = indexedSessions.find((session) => session.id === safeSessionId);
+            resolvedSessionOrigin =
+                indexedSession?.sessionOrigin ||
+                sessionOriginsDb.getOrigin(safeSessionId, provider) ||
+                'backend';
+        }
 
         if (provider === 'codex' && resolvedSessionOrigin === 'app') {
             const archiveResult = await enqueueCodexDesktopArchive({

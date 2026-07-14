@@ -1981,8 +1981,14 @@ async function buildCodexSessionsIndex() {
         backendFallbackTimestamps.some((fallbackTimestamp) =>
           Math.abs(sessionTimestampMs - fallbackTimestamp) <= 10 * 60 * 1000
         );
-      const isBackendSession = backendSessionIds.has(sessionData.id) || hasBackendFallbackOrigin;
-      if (isBackendSession && !backendSessionIds.has(sessionData.id)) {
+      const storedSessionOrigin = codexSessionOrigins.get(sessionData.id) || null;
+      const sessionOrigin = inferCodexSessionOrigin(
+        sessionData,
+        storedSessionOrigin,
+        hasBackendFallbackOrigin,
+      );
+      const isBackendSession = sessionOrigin === 'backend';
+      if (isBackendSession && storedSessionOrigin !== 'backend') {
         sessionOriginsDb.setOrigin(sessionData.id, 'codex', 'backend');
         codexSessionOrigins.set(sessionData.id, 'backend');
       }
@@ -2036,7 +2042,7 @@ async function buildCodexSessionsIndex() {
         model: sessionData.model,
         filePath,
         provider: 'codex',
-        sessionOrigin: codexSessionOrigins.get(sessionData.id) || (isBackendSession ? 'backend' : 'app'),
+        sessionOrigin,
         isProjectless: isProjectlessSession,
       };
 
@@ -2180,6 +2186,23 @@ function getDefaultBackendSessionTitle(message) {
   }
 
   return Array.from(normalized).slice(0, 5).join('');
+}
+
+function inferCodexSessionOrigin(sessionData, storedOrigin = null, hasBackendFallbackOrigin = false) {
+  if (storedOrigin === 'app' || storedOrigin === 'backend') {
+    return storedOrigin;
+  }
+
+  if (hasBackendFallbackOrigin) {
+    return 'backend';
+  }
+
+  const originator = typeof sessionData?.originator === 'string'
+    ? sessionData.originator.trim().toLowerCase()
+    : '';
+  const isDesktopSource = sessionData?.source === 'vscode';
+  const hasDesktopOriginator = !originator || originator === 'codex desktop';
+  return isDesktopSource && hasDesktopOriginator ? 'app' : 'backend';
 }
 
 function normalizeCodexPendingDeliveryText(value) {
@@ -3498,6 +3521,7 @@ export {
   getCodexSessions,
   getCodexSessionMessages,
   getCodexPendingDeliveryStatus,
+  inferCodexSessionOrigin,
   deleteCodexSession,
   getGeminiCliSessions,
   getGeminiCliSessionMessages,
