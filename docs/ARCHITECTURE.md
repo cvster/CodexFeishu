@@ -186,7 +186,7 @@ Current design:
 Desktop automation no longer uses a global UIA window search to find Codex.
 It now:
 
-1. finds the Codex main window with Win32 `FindWindow("Chrome_WidgetWin_1", "Codex")`
+1. keeps the legacy Win32 `FindWindow("Chrome_WidgetWin_1", "Codex")` path, and for newer `ChatGPT`-titled builds enumerates Chromium top-level windows while requiring the owning process to come from the `OpenAI.Codex_*` package
 2. connects pywinauto UIA by that window handle
 3. continues with mixed UIA / Win32 control for navigation and sending
 

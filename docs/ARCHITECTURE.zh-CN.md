@@ -185,7 +185,7 @@ Windows 下 PowerShell 会再启动 Python，Python 里又可能加载 UIA 相�
 桌面自动化不再用 UIA 全局窗口搜索来找 Codex。
 当前策略是：
 
-1. 先用 Win32 `FindWindow("Chrome_WidgetWin_1", "Codex")` 找到 Codex 主窗口句柄
+1. 先兼容旧版 `FindWindow("Chrome_WidgetWin_1", "Codex")`；新版窗口标题为 `ChatGPT` 时，则枚举 Chromium 顶层窗口并校验进程必须来自 `OpenAI.Codex_*` 安装包
 2. 再用 pywinauto UIA 按 handle 连接这个窗口
 3. 后续控件查找、会话选择和输入发送继续走 UIA / Win32 混合控制
 

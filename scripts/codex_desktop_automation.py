@@ -38,6 +38,7 @@ DESKTOP_SWITCHDESKTOP = 0x0100
 DESKTOP_WRITEOBJECTS = 0x0080
 ES_DISPLAY_REQUIRED = 0x00000002
 ES_SYSTEM_REQUIRED = 0x00000001
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
@@ -71,6 +72,8 @@ user32.SwitchDesktop.argtypes = [wintypes.HANDLE]
 user32.SwitchDesktop.restype = wintypes.BOOL
 user32.CloseDesktop.argtypes = [wintypes.HANDLE]
 user32.CloseDesktop.restype = wintypes.BOOL
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.SystemParametersInfoW.argtypes = [
     wintypes.UINT,
     wintypes.UINT,
@@ -79,6 +82,17 @@ user32.SystemParametersInfoW.argtypes = [
 ]
 user32.SystemParametersInfoW.restype = wintypes.BOOL
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
 kernel32.SetThreadExecutionState.argtypes = [wintypes.DWORD]
 kernel32.SetThreadExecutionState.restype = wintypes.DWORD
 
@@ -142,6 +156,64 @@ def _configure_stdio() -> None:
 
 def _rect_to_list(rect: Any) -> list[int]:
     return [int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)]
+
+
+def _get_window_process_path(hwnd: int) -> str:
+    process_id = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+    if not process_id.value:
+        return ""
+
+    process_handle = kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION,
+        False,
+        process_id.value,
+    )
+    if not process_handle:
+        return ""
+
+    try:
+        buffer_size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(buffer_size.value)
+        if not kernel32.QueryFullProcessImageNameW(
+            process_handle,
+            0,
+            buffer,
+            ctypes.byref(buffer_size),
+        ):
+            return ""
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(process_handle)
+
+
+def _find_codex_desktop_window() -> int:
+    legacy_hwnd = win32gui.FindWindow("Chrome_WidgetWin_1", "Codex")
+    if legacy_hwnd and win32gui.IsWindow(legacy_hwnd):
+        return int(legacy_hwnd)
+
+    candidates: list[int] = []
+
+    def visit(hwnd: int, _: Any) -> bool:
+        try:
+            if not win32gui.IsWindow(hwnd):
+                return True
+            if win32gui.GetClassName(hwnd) != "Chrome_WidgetWin_1":
+                return True
+
+            process_path = _get_window_process_path(hwnd).replace("/", "\\").casefold()
+            if "\\windowsapps\\openai.codex_" in process_path:
+                candidates.append(int(hwnd))
+        except Exception:
+            pass
+        return True
+
+    win32gui.EnumWindows(visit, None)
+    if not candidates:
+        return 0
+
+    visible_candidates = [hwnd for hwnd in candidates if win32gui.IsWindowVisible(hwnd)]
+    return visible_candidates[0] if visible_candidates else candidates[0]
 
 
 def _rect_intersects(container: Any, rect: Any) -> bool:
@@ -535,6 +607,7 @@ def _looks_like_archive_control(control: Any, *, excluded_text: str = "") -> boo
         "归档",
         "归档此会话",
         "归档对话",
+        "归档任务",
         "archive",
         "archive chat",
         "archive conversation",
@@ -600,7 +673,7 @@ class CodexDesktopAutomation:
         hwnd = 0
         deadline = time.time() + 10
         while time.time() < deadline:
-            hwnd = win32gui.FindWindow("Chrome_WidgetWin_1", "Codex")
+            hwnd = _find_codex_desktop_window()
             if hwnd and win32gui.IsWindow(hwnd):
                 break
             time.sleep(0.1)
@@ -1095,9 +1168,13 @@ class CodexDesktopAutomation:
         name = _control_name(control)
         normalized_name = name.casefold()
         normalized_project = (project_title or "").casefold()
-        if "开始新对话" in name and (not normalized_project or normalized_project in normalized_name):
+        if ("开始新对话" in name or "新建任务" in name) and (
+            not normalized_project or normalized_project in normalized_name
+        ):
             return True
-        return "new conversation" in normalized_name and (not normalized_project or normalized_project in normalized_name)
+        return (
+            "new conversation" in normalized_name or "new task" in normalized_name
+        ) and (not normalized_project or normalized_project in normalized_name)
 
     def _find_project_new_session_button(self, project: ProjectRef) -> Any | None:
         project_title = project.title
@@ -1755,16 +1832,28 @@ class CodexDesktopAutomation:
 
     def _iter_visible_desktop_controls(self, control_types: tuple[str, ...]) -> Iterable[Any]:
         desktop = Desktop(backend="uia")
-        for control_type in control_types:
-            for element_info in desktop.element_info.descendants(control_type=control_type):
-                if not getattr(element_info, "control_type", None):
-                    continue
+        for top_window in desktop.windows():
+            try:
+                root_info = top_window.element_info
+            except Exception:
+                continue
+
+            for control_type in control_types:
+                element_infos = []
+                if getattr(root_info, "control_type", None) == control_type:
+                    element_infos.append(root_info)
                 try:
-                    control = UIAWrapper(element_info)
-                    if control.is_visible():
-                        yield control
+                    element_infos.extend(root_info.descendants(control_type=control_type))
                 except Exception:
                     continue
+
+                for element_info in element_infos:
+                    try:
+                        control = UIAWrapper(element_info)
+                        if control.is_visible():
+                            yield control
+                    except Exception:
+                        continue
 
 
 def _build_parser() -> argparse.ArgumentParser:
