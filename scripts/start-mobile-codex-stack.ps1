@@ -1,10 +1,10 @@
 $workspace = Split-Path -Parent $PSScriptRoot
 $backendTaskName = 'MobileCodexHelper-Backend'
-$backendScript = Join-Path $workspace 'scripts\start-mobile-codex.ps1'
+$backendLauncher = Join-Path $workspace 'scripts\start-mobile-codex-hidden.vbs'
 
 $action = New-ScheduledTaskAction `
-  -Execute 'powershell.exe' `
-  -Argument ("-NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $backendScript)
+  -Execute 'wscript.exe' `
+  -Argument ("//B //Nologo `"{0}`"" -f $backendLauncher)
 $trigger = New-ScheduledTaskTrigger `
   -Once `
   -At ((Get-Date).AddMinutes(1)) `

@@ -11,7 +11,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $workspace 'scrip
 $workspacePattern = [regex]::Escape($workspace)
 $relatedProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
   ($_.Name -eq 'node.exe' -and $_.CommandLine -match "$workspacePattern.*server[\\/]index\.js") -or
-  ($_.Name -eq 'powershell.exe' -and $_.CommandLine -match "$workspacePattern.*scripts[\\/]start-mobile-codex\.ps1")
+  ($_.Name -eq 'powershell.exe' -and $_.CommandLine -match "$workspacePattern.*scripts[\\/]start-mobile-codex\.ps1") -or
+  ($_.Name -eq 'wscript.exe' -and $_.CommandLine -match "$workspacePattern.*scripts[\\/]start-mobile-codex-hidden\.vbs")
 }
 
 foreach ($process in $relatedProcesses) {
