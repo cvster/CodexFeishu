@@ -883,14 +883,17 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         const deliveryTimestamp = new Date().toISOString();
         const runSendAutomation = async (resolvedTarget) => {
           const projectlessTarget = isCodexProjectlessProjectPath(bridgePayload.projectPath);
+          const canNavigateDirectlyToThread =
+            projectlessTarget ||
+            (!bridgePayload.newSession && Boolean(bridgePayload.sessionId));
           const automationArgs = [
-            projectlessTarget ? 'send-message-current' : 'send-message',
+            canNavigateDirectlyToThread ? 'send-message-current' : 'send-message',
             '--message-file',
             messagePath,
             '--json',
           ];
 
-          if (projectlessTarget) {
+          if (canNavigateDirectlyToThread) {
             if (resolvedTarget.selectionMode === 'new-session') {
               automationArgs.push('--new-session');
             } else if (bridgePayload.sessionId) {
