@@ -188,10 +188,6 @@ def _get_window_process_path(hwnd: int) -> str:
 
 
 def _find_codex_desktop_window() -> int:
-    legacy_hwnd = win32gui.FindWindow("Chrome_WidgetWin_1", "Codex")
-    if legacy_hwnd and win32gui.IsWindow(legacy_hwnd):
-        return int(legacy_hwnd)
-
     candidates: list[int] = []
 
     def visit(hwnd: int, _: Any) -> bool:
@@ -213,7 +209,21 @@ def _find_codex_desktop_window() -> int:
         return 0
 
     visible_candidates = [hwnd for hwnd in candidates if win32gui.IsWindowVisible(hwnd)]
-    return visible_candidates[0] if visible_candidates else candidates[0]
+    ranked_candidates = visible_candidates or candidates
+
+    def window_area(hwnd: int) -> int:
+        try:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            return max(0, right - left) * max(0, bottom - top)
+        except Exception:
+            return 0
+
+    # Current Codex builds may expose both a small auxiliary window titled
+    # "Codex" and the real application window titled "ChatGPT".  The old
+    # exact-title shortcut selected the auxiliary window, whose UIA tree is
+    # empty.  The main window is consistently the largest visible package
+    # window and contains the sidebar/composer accessibility tree.
+    return max(ranked_candidates, key=window_area)
 
 
 def _rect_intersects(container: Any, rect: Any) -> bool:
