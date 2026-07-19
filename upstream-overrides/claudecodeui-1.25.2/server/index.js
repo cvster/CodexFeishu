@@ -50,6 +50,7 @@ import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursor
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
 import { createCodexDesktopSyncContextFromRequest, enqueueCodexDesktopArchive, enqueueCodexDesktopMessageBridge } from './codex-desktop-sync.js';
+import { executeCodexArchive, executeCodexCommand } from './codex-command-execution.mjs';
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
@@ -729,42 +730,27 @@ app.put('/api/sessions/:sessionId/archive', authenticateToken, async (req, res) 
             return res.status(400).json({ error: `Provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
         }
 
-        let resolvedSessionOrigin = null;
-        if (provider === 'codex') {
-            const indexedSessions = projectPath
-                ? await getCodexSessions(projectPath, { limit: 0 })
-                : [];
-            const indexedSession = indexedSessions.find((session) => session.id === safeSessionId);
-            resolvedSessionOrigin =
-                indexedSession?.sessionOrigin ||
-                sessionOriginsDb.getOrigin(safeSessionId, provider) ||
-                'backend';
-        }
-
-        if (provider === 'codex' && resolvedSessionOrigin === 'app') {
-            const archiveResult = await enqueueCodexDesktopArchive({
-                sessionId: safeSessionId,
-                projectPath,
-                sessionTitleHint: sessionTitle || null,
-                sourceContext: createCodexDesktopSyncContextFromRequest(req)
-            });
-
-            if (archiveResult?.skipped) {
-                return res.status(409).json({
-                    error: archiveResult.error || 'Codex desktop archive was not completed',
-                    reason: archiveResult.reason,
-                    target: archiveResult.target || null
-                });
-            }
-        }
-
-        // Keep the web/mobile list hidden even if the Codex desktop state refresh is delayed.
-        sessionArchivesDb.archive(safeSessionId, provider);
-        await broadcastProjectsUpdated({
-            changeType: 'session_archived',
+        const result = await executeCodexArchive({
+            sessionId: safeSessionId,
             provider,
-            sessionId: safeSessionId
+            projectPath,
+            sessionTitle,
+            sourceContext: createCodexDesktopSyncContextFromRequest(req)
+        }, {
+            archiveSession: (sessionIdToArchive, archiveProvider) => sessionArchivesDb.archive(sessionIdToArchive, archiveProvider),
+            broadcastProjectsUpdated,
+            enqueueCodexDesktopArchive,
+            getCodexSessions,
+            getSessionOrigin: (originSessionId, originProvider) => sessionOriginsDb.getOrigin(originSessionId, originProvider)
         });
+
+        if (!result.success) {
+            return res.status(result.status).json({
+                error: result.error,
+                reason: result.reason,
+                target: result.target
+            });
+        }
 
         res.json({ success: true });
     } catch (error) {
@@ -1752,8 +1738,6 @@ function handleChatConnection(ws, request = null) {
 
                 if (shouldBridgeToDesktopUI) {
                     const bridgedProjectPath = resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd;
-                    // Ensure we don't get skipped by the "mobile-only" sync mode even if user-agent checks fail.
-                    const bridgeSourceContext = { ...(desktopSyncContext || {}), isMobile: true };
                     console.log('[mobile-codex][bridge-request]', JSON.stringify({
                         projectPath: bridgedProjectPath,
                         sessionId: resolvedCodexOptions.sessionId || null,
@@ -1761,59 +1745,31 @@ function handleChatConnection(ws, request = null) {
                         sessionTitleHint: resolvedCodexOptions.sessionTitleHint || null,
                         executionMode: resolvedCodexOptions.executionMode || null,
                     }));
-                    writer.send({
-                        type: 'codex-desktop-command-submitted',
-                        sessionId: resolvedCodexOptions.sessionId || null,
-                        provider: 'codex'
+                    const execution = executeCodexCommand({
+                        command: data.command || '',
+                        options: resolvedCodexOptions,
+                        desktopSyncContext,
+                        writer
+                    }, {
+                        enqueueCodexDesktopMessageBridge,
+                        queryCodex,
+                        setSessionOrigin: (sessionId, originProvider, origin) => sessionOriginsDb.setOrigin(sessionId, originProvider, origin)
                     });
-
-                    void enqueueCodexDesktopMessageBridge({
-                        sessionId: resolvedCodexOptions.sessionId || null,
-                        projectPath: bridgedProjectPath,
-                        message: data.command || '',
-                        newSession: Boolean(resolvedCodexOptions.newSession),
-                        sessionTitleHint: resolvedCodexOptions.sessionTitleHint || null,
-                        sourceContext: bridgeSourceContext
-                    }).then((bridgeResult) => {
-                        if (bridgeResult?.error || bridgeResult?.skipped) {
-                            writer.send({
-                                type: 'codex-desktop-command-error',
-                                sessionId: resolvedCodexOptions.sessionId || null,
-                                error: bridgeResult?.error || 'Failed to submit the message to the desktop Codex app.',
-                                provider: 'codex'
-                            });
-                            return;
-                        }
-
-                        const bridgedSessionId = bridgeResult?.sessionId || resolvedCodexOptions.sessionId || null;
-                        if (bridgedSessionId) {
-                            if (bridgeResult?.sessionId && !resolvedCodexOptions.sessionId) {
-                                writer.setSessionId(bridgedSessionId);
-                                writer.send({
-                                    type: 'session-created',
-                                    sessionId: bridgedSessionId,
-                                    provider: 'codex'
-                                });
-                            }
-
-                            sessionOriginsDb.setOrigin(bridgedSessionId, 'codex', 'app');
-                        }
-
-                        writer.send({
-                            type: 'codex-desktop-command-delivered',
-                            sessionId: bridgedSessionId,
-                            provider: 'codex'
-                        });
-                    });
+                    void execution.completion;
                     return;
                 }
 
-                await queryCodex(data.command, {
-                    ...resolvedCodexOptions,
-                    sessionOrigin: 'backend',
-                    syncToDesktop: false,
-                    desktopSync: null
-                }, writer);
+                const execution = executeCodexCommand({
+                    command: data.command,
+                    options: resolvedCodexOptions,
+                    desktopSyncContext,
+                    writer
+                }, {
+                    enqueueCodexDesktopMessageBridge,
+                    queryCodex,
+                    setSessionOrigin: (sessionId, originProvider, origin) => sessionOriginsDb.setOrigin(sessionId, originProvider, origin)
+                });
+                await execution.completion;
             } else if (data.type === 'gemini-command') {
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');

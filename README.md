@@ -170,6 +170,14 @@ C:\Users\ps5000\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\
 powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\smoke-test-codex-reconnect.ps1
 ```
 
+### 运行单元测试
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-unit-tests.ps1
+```
+
+当前覆盖后端会话和 Codex App 会话收到命令后的新建、发送与归档流程；测试使用依赖替身，不会操作网页或创建真实会话。
+
 ### 查看 Codex 桌面窗口状态
 
 ```powershell
