@@ -176,7 +176,7 @@ powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\s
 powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-unit-tests.ps1
 ```
 
-当前覆盖后端会话和 Codex App 会话收到命令后的新建、发送与归档流程；测试使用依赖替身，不会操作网页或创建真实会话。
+当前覆盖后端会话和 Codex App 会话收到命令后的新建、发送与归档流程。测试跳过网页操作，直接向本地服务发送网页等价命令；后续 SDK、桌面自动化和归档均真实执行，并在 `D:\dorit\mytest` 下创建后归档临时会话。
 
 ### 查看 Codex 桌面窗口状态
 
