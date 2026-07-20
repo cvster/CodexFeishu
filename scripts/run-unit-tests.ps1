@@ -35,7 +35,34 @@ if ($tokenMatches.Count -eq 0) {
   throw 'No WebSocket token found in the app log. Open the web app and log in once before running live tests.'
 }
 
-$env:TEST_WS_TOKEN = $tokenMatches[$tokenMatches.Count - 1].Groups[1].Value
+$validToken = $null
+$seenTokens = [System.Collections.Generic.HashSet[string]]::new()
+for ($index = $tokenMatches.Count - 1; $index -ge 0; $index--) {
+  $candidate = $tokenMatches[$index].Groups[1].Value
+  if (-not $seenTokens.Add($candidate)) {
+    continue
+  }
+
+  try {
+    $response = Invoke-WebRequest `
+      -Uri 'http://127.0.0.1:3001/api/auth/user' `
+      -Headers @{ Authorization = "Bearer $candidate" } `
+      -UseBasicParsing `
+      -TimeoutSec 3
+    if ($response.StatusCode -eq 200) {
+      $validToken = $candidate
+      break
+    }
+  } catch {
+    continue
+  }
+}
+
+if (-not $validToken) {
+  throw 'No currently valid WebSocket token was found. Open the web app and log in once before running live tests.'
+}
+
+$env:TEST_WS_TOKEN = $validToken
 $env:TEST_PROJECT_PATH = $ProjectPath
 $env:TEST_MODEL = $Model
 $env:TEST_COMMAND_TIMEOUT_MS = ($CommandTimeoutSeconds * 1000).ToString()
