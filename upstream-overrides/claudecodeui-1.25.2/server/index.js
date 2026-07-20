@@ -49,7 +49,13 @@ import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getAct
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
-import { createCodexDesktopSyncContextFromRequest, enqueueCodexDesktopArchive, enqueueCodexDesktopMessageBridge } from './codex-desktop-sync.js';
+import {
+    createCodexDesktopSyncContextFromRequest,
+    enqueueCodexDesktopArchive,
+    enqueueCodexDesktopMessageBridge,
+    resolveCodexDesktopMessageTarget
+} from './codex-desktop-sync.js';
+import { enqueueCodexAppMessageRelay } from './codex-app-message-relay.mjs';
 import { executeCodexArchive, executeCodexCommand } from './codex-command-execution.mjs';
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
@@ -1751,6 +1757,9 @@ function handleChatConnection(ws, request = null) {
                         desktopSyncContext,
                         writer
                     }, {
+                        enqueueCodexAppMessageRelay: (payload) => enqueueCodexAppMessageRelay(payload, {
+                            resolveCodexDesktopMessageTarget
+                        }),
                         enqueueCodexDesktopMessageBridge,
                         queryCodex,
                         setSessionOrigin: (sessionId, originProvider, origin) => sessionOriginsDb.setOrigin(sessionId, originProvider, origin)
@@ -1765,6 +1774,9 @@ function handleChatConnection(ws, request = null) {
                     desktopSyncContext,
                     writer
                 }, {
+                    enqueueCodexAppMessageRelay: (payload) => enqueueCodexAppMessageRelay(payload, {
+                        resolveCodexDesktopMessageTarget
+                    }),
                     enqueueCodexDesktopMessageBridge,
                     queryCodex,
                     setSessionOrigin: (sessionId, originProvider, origin) => sessionOriginsDb.setOrigin(sessionId, originProvider, origin)

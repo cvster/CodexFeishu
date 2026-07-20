@@ -131,6 +131,16 @@
   可选。默认不需要；如果以后更换上游源码目录，可以用它覆盖默认 `vendor\claudecodeui-1.25.2`
 - `MOBILE_CODEX_ASCII_ALIAS`
   可选。用于 Windows 非 ASCII 路径兼容；当前运行时默认会落到 `C:\mobileCodexHelper_ascii`
+- `MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID`
+  已有 App 会话发送消息时使用的后端转发会话 ID；必填。App 会话的新建和归档不经过该会话
+- `MOBILE_CODEX_APP_MESSAGE_RELAY_MODEL`
+  可选。转发会话模型，默认 `gpt-5.6-luna`
+- `MOBILE_CODEX_APP_MESSAGE_RELAY_REASONING_EFFORT`
+  可选。转发会话推理程度，默认 `low`
+- `MOBILE_CODEX_APP_MESSAGE_RELAY_CWD`
+  可选。转发会话的工作目录，默认为本仓库根目录
+- `MOBILE_CODEX_APP_MESSAGE_RELAY_TIMEOUT_MS`
+  可选。转发超时时间，默认 `120000`
 
 服务启动脚本还会在运行时临时设置：
 

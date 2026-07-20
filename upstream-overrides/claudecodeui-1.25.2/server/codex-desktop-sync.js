@@ -576,6 +576,29 @@ async function resolveNavigationTarget({
   };
 }
 
+export async function resolveCodexDesktopMessageTarget(payload) {
+  const normalizedPayload = await normalizeCodexDesktopProjectPath(payload);
+  if (!normalizedPayload?.sessionId || !normalizedPayload?.projectPath) {
+    return {
+      projectDisplayName: normalizedPayload?.projectPath
+        ? getProjectDisplayName(normalizedPayload.projectPath)
+        : null,
+      sessionTitle: null,
+      selectionMode: 'unresolved',
+      resolutionSource: 'missing-session-or-project',
+    };
+  }
+
+  return resolveNavigationTarget({
+    sessionId: normalizedPayload.sessionId,
+    projectPath: normalizedPayload.projectPath,
+    sessionTitleHint: normalizedPayload.sessionTitleHint || null,
+    allowLatestFallback: false,
+    preferImmediateHint: Boolean(normalizedPayload.sessionTitleHint),
+    allowSessionTitleHintFallback: Boolean(normalizedPayload.sessionTitleHint),
+  });
+}
+
 async function waitForNewCodexSessionId(projectPath, previousSessionIds) {
   const previousIds = new Set(previousSessionIds);
   for (let attempt = 0; attempt < MAX_METADATA_ATTEMPTS; attempt += 1) {

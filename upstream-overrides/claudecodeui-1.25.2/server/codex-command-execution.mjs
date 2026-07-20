@@ -1,5 +1,6 @@
 export function executeCodexCommand({ command, options, desktopSyncContext, writer }, dependencies) {
   const {
+    enqueueCodexAppMessageRelay,
     enqueueCodexDesktopMessageBridge,
     queryCodex,
     setSessionOrigin,
@@ -32,7 +33,11 @@ export function executeCodexCommand({ command, options, desktopSyncContext, writ
     provider: 'codex',
   });
 
-  const completion = Promise.resolve(enqueueCodexDesktopMessageBridge({
+  const enqueueMessage = options.newSession
+    ? enqueueCodexDesktopMessageBridge
+    : enqueueCodexAppMessageRelay;
+
+  const completion = Promise.resolve(enqueueMessage({
     sessionId: options.sessionId || null,
     projectPath,
     message: command || '',
