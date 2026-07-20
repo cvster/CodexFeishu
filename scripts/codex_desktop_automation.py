@@ -695,6 +695,14 @@ class CodexDesktopAutomation:
         self.window_spec = self.app.window(handle=hwnd)
         self.window = self.window_spec.wrapper_object()
 
+    def _refresh_window_binding(self) -> None:
+        hwnd = _find_codex_desktop_window()
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            raise RuntimeError("Could not refresh the Codex desktop window.")
+        self.app = Application(backend="uia").connect(handle=hwnd, timeout=10)
+        self.window_spec = self.app.window(handle=hwnd)
+        self.window = self.window_spec.wrapper_object()
+
     def _ensure_interactive_desktop(self) -> None:
         _dismiss_screensaver_or_wake(timeout=4.0)
 
@@ -927,7 +935,9 @@ class CodexDesktopAutomation:
             raise RuntimeError(f"Could not find the new conversation button for project '{project_name}'.")
 
         self._activate_control(new_session_button, label=f"new conversation in project '{project.title}'")
-        self._wait_for_main_text_change(before, timeout=4.0 if wait_for_main_change else 1.5)
+        changed = self._wait_for_main_text_change(before, timeout=4.0 if wait_for_main_change else 1.5)
+        if wait_for_main_change and not changed:
+            raise RuntimeError(f"Codex did not open a new conversation for project '{project_name}'.")
         return {
             "selected_project": project.title,
             "selected_session": None,
@@ -1386,6 +1396,11 @@ class CodexDesktopAutomation:
                 if lists:
                     break
                 time.sleep(0.15)
+        if not lists:
+            self._refresh_window_binding()
+            self.activate()
+            self._show_sidebar_if_hidden()
+            lists = self._visible_sidebar_lists()
         root_lists = [element for element in lists if not element.window_text().strip()]
         candidates = root_lists or lists
         if not candidates:

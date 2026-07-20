@@ -67,6 +67,7 @@ import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames, sessionArchivesDb, sessionOriginsDb } from './database/db.js';
+import { inferCodexSessionOrigin } from './codex-session-routing.mjs';
 
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
 const CODEX_PROJECTLESS_PROJECT_NAME = '__codex_projectless__';
@@ -2186,23 +2187,6 @@ function getDefaultBackendSessionTitle(message) {
   }
 
   return Array.from(normalized).slice(0, 5).join('');
-}
-
-function inferCodexSessionOrigin(sessionData, storedOrigin = null, hasBackendFallbackOrigin = false) {
-  if (storedOrigin === 'app' || storedOrigin === 'backend') {
-    return storedOrigin;
-  }
-
-  if (hasBackendFallbackOrigin) {
-    return 'backend';
-  }
-
-  const originator = typeof sessionData?.originator === 'string'
-    ? sessionData.originator.trim().toLowerCase()
-    : '';
-  const isDesktopSource = sessionData?.source === 'vscode';
-  const hasDesktopOriginator = !originator || originator === 'codex desktop';
-  return isDesktopSource && hasDesktopOriginator ? 'app' : 'backend';
 }
 
 function normalizeCodexPendingDeliveryText(value) {

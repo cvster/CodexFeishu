@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getCodexPendingDeliveryStatus, getCodexSessions } from './projects.js';
+import { selectNewCodexAppSession } from './codex-session-routing.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -600,12 +601,9 @@ export async function resolveCodexDesktopMessageTarget(payload) {
 }
 
 async function waitForNewCodexSessionId(projectPath, previousSessionIds) {
-  const previousIds = new Set(previousSessionIds);
   for (let attempt = 0; attempt < MAX_METADATA_ATTEMPTS; attempt += 1) {
     const sessions = await getCodexSessions(projectPath, { limit: 0 });
-    const newSession = sessions.find(
-      (session) => typeof session.id === 'string' && !previousIds.has(session.id),
-    );
+    const newSession = selectNewCodexAppSession(sessions, previousSessionIds);
     if (newSession?.id) {
       return newSession.id;
     }
@@ -774,7 +772,7 @@ export function enqueueCodexDesktopArchive(payload) {
         projectPath: archivePayload.projectPath,
         sessionTitleHint: archivePayload.sessionTitleHint || null,
         allowLatestFallback: false,
-        preferImmediateHint: Boolean(archivePayload.sessionTitleHint),
+        preferImmediateHint: false,
         allowSessionTitleHintFallback: Boolean(archivePayload.sessionTitleHint),
       });
       const resolveMs = elapsedMs(resolveStartedAt);
@@ -791,6 +789,7 @@ export function enqueueCodexDesktopArchive(payload) {
       const automationArgs = ['archive-session', '--json'];
       pushDesktopAutomationTextArg(automationArgs, '--project', target.projectDisplayName);
       pushDesktopAutomationTextArg(automationArgs, '--session', target.sessionTitle);
+      automationArgs.push('--session-exact');
 
       const automationStartedAt = Date.now();
       const result = await runDesktopAutomation(automationArgs);
@@ -989,6 +988,9 @@ export function enqueueCodexDesktopMessageBridge(payload) {
         const newSessionId = bridgePayload.newSession
           ? await waitForNewCodexSessionId(bridgePayload.projectPath, previousSessionIds)
           : null;
+        if (bridgePayload.newSession && !newSessionId) {
+          throw new Error('Codex App opened the composer but no new App session ID was found.');
+        }
         const deliveredSessionId = newSessionId || bridgePayload.sessionId || null;
         const delivery =
           deliveredSessionId && !isCodexProjectlessProjectPath(bridgePayload.projectPath)
