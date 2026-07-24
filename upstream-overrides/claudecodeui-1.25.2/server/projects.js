@@ -1872,6 +1872,7 @@ async function loadCodexDesktopWorkspaceState() {
 async function loadCodexDesktopThreadMetadata() {
   const titlesBySessionId = new Map();
   const titlesByRolloutPath = new Map();
+  const threadMetadataByRolloutPath = new Map();
   const archivedSessionIds = new Set();
   const archivedRolloutPaths = new Set();
   const activeSessionIds = new Set();
@@ -1887,6 +1888,7 @@ async function loadCodexDesktopThreadMetadata() {
       hasDesktopState: false,
       titlesBySessionId,
       titlesByRolloutPath,
+      threadMetadataByRolloutPath,
       archivedSessionIds,
       archivedRolloutPaths,
       activeSessionIds,
@@ -1904,8 +1906,17 @@ async function loadCodexDesktopThreadMetadata() {
       mode: sqlite3.OPEN_READONLY,
     });
 
+    const threadColumns = new Set(
+      (await db.all('PRAGMA table_info(threads)'))
+        .map((column) => column?.name)
+        .filter(Boolean)
+    );
+    const optionalColumns = [
+      threadColumns.has('cwd') ? 'cwd' : null,
+      threadColumns.has('thread_source') ? 'thread_source' : null,
+    ].filter(Boolean);
     const rows = await db.all(`
-      SELECT id, title, rollout_path, archived
+      SELECT id, title, rollout_path, archived${optionalColumns.length ? `, ${optionalColumns.join(', ')}` : ''}
       FROM threads
     `);
 
@@ -1934,6 +1945,12 @@ async function loadCodexDesktopThreadMetadata() {
 
       if (normalizedRolloutPath) {
         activeRolloutPaths.add(normalizedRolloutPath);
+        threadMetadataByRolloutPath.set(normalizedRolloutPath, {
+          id: sessionId,
+          title,
+          cwd: typeof row.cwd === 'string' ? row.cwd.trim() : '',
+          threadSource: typeof row.thread_source === 'string' ? row.thread_source.trim() : '',
+        });
       }
 
       if (sessionId && title) {
@@ -1956,6 +1973,7 @@ async function loadCodexDesktopThreadMetadata() {
     hasDesktopState: true,
     titlesBySessionId,
     titlesByRolloutPath,
+    threadMetadataByRolloutPath,
     archivedSessionIds,
     archivedRolloutPaths,
     activeSessionIds,
@@ -1980,6 +1998,7 @@ async function buildCodexSessionsIndex() {
     hasDesktopState,
     titlesBySessionId: desktopTitlesBySessionId,
     titlesByRolloutPath: desktopTitlesByRolloutPath,
+    threadMetadataByRolloutPath: desktopThreadMetadataByRolloutPath,
     archivedSessionIds,
     archivedRolloutPaths,
     activeSessionIds,
@@ -2006,16 +2025,26 @@ async function buildCodexSessionsIndex() {
         continue;
       }
 
+      const desktopThreadMetadata = normalizedFilePath
+        ? desktopThreadMetadataByRolloutPath.get(normalizedFilePath)
+        : null;
+      if (desktopThreadMetadata?.threadSource === 'subagent') {
+        continue;
+      }
+
       const sessionData = await parseCodexSessionMetadataFast(filePath);
       if (!sessionData || !sessionData.id) {
         continue;
       }
 
-      if (archivedSessionIds.has(sessionData.id)) {
+      const sessionId = desktopThreadMetadata?.id || sessionData.id;
+      const sessionCwd = desktopThreadMetadata?.cwd || sessionData.cwd;
+
+      if (archivedSessionIds.has(sessionId)) {
         continue;
       }
 
-      if (locallyArchivedSessionIds.has(sessionData.id)) {
+      if (locallyArchivedSessionIds.has(sessionId)) {
         continue;
       }
 
@@ -2026,7 +2055,7 @@ async function buildCodexSessionsIndex() {
         backendFallbackTimestamps.some((fallbackTimestamp) =>
           Math.abs(sessionTimestampMs - fallbackTimestamp) <= 10 * 60 * 1000
         );
-      const storedSessionOrigin = codexSessionOrigins.get(sessionData.id) || null;
+      const storedSessionOrigin = codexSessionOrigins.get(sessionId) || null;
       const sessionOrigin = inferCodexSessionOrigin(
         sessionData,
         storedSessionOrigin,
@@ -2034,22 +2063,22 @@ async function buildCodexSessionsIndex() {
       );
       const isBackendSession = sessionOrigin === 'backend';
       if (isBackendSession && storedSessionOrigin !== 'backend') {
-        sessionOriginsDb.setOrigin(sessionData.id, 'codex', 'backend');
-        codexSessionOrigins.set(sessionData.id, 'backend');
+        sessionOriginsDb.setOrigin(sessionId, 'codex', 'backend');
+        codexSessionOrigins.set(sessionId, 'backend');
       }
 
       if (
         hasDesktopState &&
-        !activeSessionIds.has(sessionData.id) &&
+        !activeSessionIds.has(sessionId) &&
         !(normalizedFilePath && activeRolloutPaths.has(normalizedFilePath))
       ) {
         continue;
       }
 
-      const isProjectlessSession = projectlessSessionIds.has(sessionData.id);
+      const isProjectlessSession = projectlessSessionIds.has(sessionId);
       const normalizedProjectPath = isProjectlessSession
         ? CODEX_PROJECTLESS_PROJECT_PATH
-        : normalizeComparablePath(sessionData.cwd);
+        : normalizeComparablePath(sessionCwd);
       if (!normalizedProjectPath) {
         continue;
       }
@@ -2062,28 +2091,28 @@ async function buildCodexSessionsIndex() {
         continue;
       }
 
-      if (!isProjectlessSession && !doesProjectPathExist(sessionData.cwd)) {
+      if (!isProjectlessSession && !doesProjectPathExist(sessionCwd)) {
         continue;
       }
 
-      const indexedThreadName = threadNames.get(sessionData.id) || null;
+      const indexedThreadName = threadNames.get(sessionId) || null;
       const backendDefaultTitle = isBackendSession
         ? indexedThreadName || getDefaultBackendSessionTitle(sessionData.firstUserMessage)
         : null;
       const desktopTitle =
         indexedThreadName ||
-        desktopTitlesBySessionId.get(sessionData.id) ||
+        desktopTitlesBySessionId.get(sessionId) ||
         desktopTitlesByRolloutPath.get(normalizedFilePath) ||
         null;
       const session = {
-        id: sessionData.id,
+        id: sessionId,
         title: isBackendSession ? backendDefaultTitle || null : desktopTitle,
         summary: isBackendSession
           ? backendDefaultTitle || 'Codex Session'
           : desktopTitle || sessionData.summary || 'Codex Session',
         messageCount: sessionData.messageCount || 0,
         lastActivity: sessionData.timestamp ? new Date(sessionData.timestamp) : new Date(),
-        cwd: resolveProjectPath(sessionData.cwd) || sessionData.cwd,
+        cwd: resolveProjectPath(sessionCwd) || sessionCwd,
         model: sessionData.model,
         filePath,
         provider: 'codex',
@@ -2101,8 +2130,21 @@ async function buildCodexSessionsIndex() {
     }
   }
 
-  for (const sessions of sessionsByProject.values()) {
-    sessions.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
+  for (const [projectPath, sessions] of sessionsByProject.entries()) {
+    const sessionsById = new Map();
+    for (const session of sessions) {
+      const existingSession = sessionsById.get(session.id);
+      if (
+        !existingSession ||
+        new Date(session.lastActivity).getTime() > new Date(existingSession.lastActivity).getTime()
+      ) {
+        sessionsById.set(session.id, session);
+      }
+    }
+
+    const uniqueSessions = Array.from(sessionsById.values());
+    uniqueSessions.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
+    sessionsByProject.set(projectPath, uniqueSessions);
   }
 
   return sessionsByProject;
