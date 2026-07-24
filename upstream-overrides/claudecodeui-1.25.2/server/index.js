@@ -83,7 +83,12 @@ const VALID_PROVIDERS = CODEX_ONLY_HARDENED_MODE ? ['codex'] : ['claude', 'codex
 const CODEX_WATCH_PATHS = [
     { provider: 'codex', rootPath: path.join(os.homedir(), '.codex', 'sessions') },
     { provider: 'codex_index', rootPath: path.join(os.homedir(), '.codex', 'session_index.jsonl'), ensureParentDir: true },
-    { provider: 'codex_state', rootPath: path.join(os.homedir(), '.codex', 'state*.sqlite*'), ensureParentDir: true }
+    { provider: 'codex_state', rootPath: path.join(os.homedir(), '.codex', 'state*.sqlite*'), ensureParentDir: true },
+    {
+        provider: 'codex_workspace_state',
+        rootPath: path.join(os.homedir(), '.codex', '.codex-global-state.json'),
+        ensureParentDir: true
+    }
 ];
 
 // File system watchers for provider project/session folders

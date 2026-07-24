@@ -1795,13 +1795,57 @@ async function loadCodexDesktopWorkspaceState() {
     const rawState = await fs.readFile(globalStatePath, 'utf8');
     const state = JSON.parse(rawState);
 
-    for (const key of ['electron-saved-workspace-roots', 'project-order', 'active-workspace-roots']) {
+    const localProjects =
+      state?.['local-projects'] &&
+      typeof state['local-projects'] === 'object' &&
+      !Array.isArray(state['local-projects'])
+        ? state['local-projects']
+        : {};
+    const projectOrder = Array.isArray(state?.['project-order'])
+      ? state['project-order']
+      : [];
+
+    // Current Codex builds store project IDs in project-order and keep the
+    // actual paths in local-projects. Older builds stored paths directly.
+    // Resolve both formats so the web sidebar mirrors the desktop app.
+    for (const projectEntry of projectOrder) {
+      const project =
+        typeof projectEntry === 'string' &&
+        localProjects[projectEntry] &&
+        typeof localProjects[projectEntry] === 'object'
+          ? localProjects[projectEntry]
+          : null;
+
+      if (project && Array.isArray(project.rootPaths)) {
+        project.rootPaths.forEach(addWorkspaceRoot);
+        continue;
+      }
+
+      if (
+        typeof projectEntry === 'string' &&
+        (path.isAbsolute(projectEntry) || projectEntry === CODEX_PROJECTLESS_PROJECT_PATH)
+      ) {
+        addWorkspaceRoot(projectEntry);
+      }
+    }
+
+    for (const key of ['electron-saved-workspace-roots', 'active-workspace-roots']) {
       const roots = state?.[key];
       if (!Array.isArray(roots)) {
         continue;
       }
 
       roots.forEach(addWorkspaceRoot);
+    }
+
+    // Some transitional app builds populate local-projects before writing
+    // project-order. Use the local records only when no explicit order exists.
+    if (projectOrder.length === 0) {
+      Object.values(localProjects).forEach((project) => {
+        if (project && Array.isArray(project.rootPaths)) {
+          project.rootPaths.forEach(addWorkspaceRoot);
+        }
+      });
     }
 
     const projectlessThreads = state?.['projectless-thread-ids'];
