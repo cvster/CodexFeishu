@@ -105,14 +105,14 @@ export interface AppPreferences {
    */
   showToolCalls?: boolean;
   /**
-   * Model the underlying agent runs with, forwarded as `--model`. The catalog
+   * Model the underlying agent runs with, forwarded to the agent runtime. The catalog
    * of valid values is agent-kind specific — see `agent/models.ts`. `undefined`
    * or the `'default'` sentinel means "don't pass `--model`" so the agent
    * CLI / account default applies. Default: unset.
    */
   model?: string;
   /** Codex model reasoning effort. Defaults to `high` for Codex profiles. */
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from

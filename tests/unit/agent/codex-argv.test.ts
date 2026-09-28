@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCodexArgs } from '../../../src/agent/codex/argv.js';
+import { buildCodexArgs, buildCodexQueueArgs } from '../../../src/agent/codex/argv.js';
 
 describe('Codex argv contract', () => {
   it('builds the fresh exec argv without putting the prompt in argv', () => {
@@ -143,6 +143,40 @@ describe('Codex argv contract', () => {
         ignoreUserConfig: true,
       }),
     ).toContain('--ignore-user-config');
+  });
+
+  it('builds a native queue command for an existing Desktop-owned thread', () => {
+    expect(
+      buildCodexQueueArgs({
+        cwd: '/repo',
+        sandbox: 'workspace-write',
+        threadId: 'thread-123',
+        prompt: '晚上好',
+        images: ['/tmp/image.png'],
+        model: 'gpt-5.6-sol',
+        reasoningEffort: 'high',
+      }),
+    ).toEqual([
+      'queue',
+      '--thread',
+      'thread-123',
+      '--message',
+      '晚上好',
+      '--sandbox',
+      'workspace-write',
+      '-c',
+      'approval_policy="never"',
+      '-c',
+      'shell_environment_policy.inherit="all"',
+      '--model',
+      'gpt-5.6-sol',
+      '-c',
+      'model_reasoning_effort="high"',
+      '--image',
+      '/tmp/image.png',
+      '-C',
+      '/repo',
+    ]);
   });
 
 });

@@ -79,6 +79,39 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  it('starts one continuation stream after the SDK permanently disables the original stream', async () => {
+    const contentsByStream: string[][] = [];
+    let warned = false;
+    const h = await createHarness({
+      stream: async (_chatId, input) => {
+        const streamIndex = contentsByStream.length;
+        contentsByStream.push([]);
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        if (!producer) return;
+        await producer({
+          setContent: async (markdown) => {
+            contentsByStream[streamIndex]?.push(markdown);
+            if (streamIndex !== 0 || warned) return;
+            warned = true;
+            const options = (sdkMock.createLarkChannel.mock.calls as unknown[][])[0]?.[0] as
+              | { logger?: { warn?: (...args: unknown[]) => void } }
+              | undefined;
+            options?.logger?.warn?.('[stream] update failed', new Error('read ECONNRESET'));
+          },
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(() => contentsByStream.length === 2);
+
+    expect(contentsByStream[1]?.join('\n')).toContain('流式连接已恢复');
+    expect(contentsByStream).toHaveLength(2);
+  });
+
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {
     const h = await createHarness();
     await startTestBridge(h);

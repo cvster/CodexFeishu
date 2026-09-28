@@ -179,6 +179,18 @@ export class SessionCatalog {
     await this.persist();
   }
 
+  /** Archive every active bridge binding that points at the same Codex thread. */
+  archiveThread(threadId: string, now = Date.now()): number {
+    let archived = 0;
+    for (const [key, entry] of this.data.entries()) {
+      if (entry.status !== 'active' || entry.agentId !== 'codex' || entry.threadId !== threadId) continue;
+      this.data.set(key, { ...entry, status: 'archived', updatedAt: now });
+      archived += 1;
+    }
+    if (archived > 0) this.schedulePersist();
+    return archived;
+  }
+
   private migrateLegacyActive(input: SessionCatalogIdentity): SessionCatalogEntry | undefined {
     const candidates = [...this.data.values()]
       .filter(

@@ -539,6 +539,11 @@ export function withTrace<T>(ctx: LogContext, fn: () => Promise<T>): Promise<T> 
   return als.run({ ...ctx, traceId }, fn);
 }
 
+/** Return the logging context attached to the current async operation. */
+export function getLogContext(): Readonly<LogContext> | undefined {
+  return als.getStore();
+}
+
 export function newTraceId(): string {
   // Short, easy-to-grep, base36 random.
   return Math.random().toString(36).slice(2, 10);

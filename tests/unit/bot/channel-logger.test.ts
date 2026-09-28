@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import * as channelModule from '../../../src/bot/channel.js';
 
 describe('Lark SDK logger noise filtering', () => {
+  it('recognizes SDK stream update failures that otherwise resolve silently', () => {
+    expect(channelModule.isSdkStreamUpdateFailure(['[stream] update failed', new Error('502')]))
+      .toBe(true);
+    expect(channelModule.isSdkStreamUpdateFailure(['socket reconnected'])).toBe(false);
+  });
+
   it('suppresses optional wiki-node permission failures that fall back to the original file token', () => {
     const shouldSuppress = (
       channelModule as {

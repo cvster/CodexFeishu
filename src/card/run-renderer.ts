@@ -1,5 +1,6 @@
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
+import { renderColoredRunStatus } from './run-status-render';
 
 const REASONING_MAX = 1500;
 const COLLAPSE_TOOL_THRESHOLD = 3;
@@ -47,9 +48,13 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'running') {
-    if (state.footer) elements.push(footerStatus(state.footer));
+    const status = renderColoredRunStatus(state);
+    if (status) elements.push(noteMd(status));
+    else if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
   } else {
+    const status = renderColoredRunStatus(state);
+    if (status) elements.push(noteMd(status));
     elements.push(taskPanelButton());
   }
 

@@ -20,12 +20,19 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import {
+  renderMarkdownContinuation,
+  renderMarkdownWindowClosed,
+  type MarkdownContinuationReason,
+} from '../card/stream-recovery';
+import {
   finalizeIfRunning,
   initialState,
   markIdleTimeout,
   markInterrupted,
   reduce,
+  startRunRuntime,
   type RunState,
+  updateRunRuntime,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
@@ -40,7 +47,7 @@ import {
   getShowToolCalls,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
-import { log, reportMetric, withTrace } from '../core/logger';
+import { getLogContext, log, reportMetric, withTrace } from '../core/logger';
 import { MediaCache, type LocalAttachment } from '../media/cache';
 import {
   toPolicyAttachment,
@@ -67,7 +74,13 @@ import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import { isSoloUserBotChat } from './group';
 import { syncCodexThreadNameFromChat } from './thread-name';
+import { startAaSessionGroupSync } from './aa-session-groups';
 import type { AppPaths } from '../config/app-paths';
+import {
+  clearCardStreamProgress,
+  createDirectLarkHttpInstance,
+  getConfirmedCardStreamContent,
+} from '../platform/lark-http';
 import {
   consumeCotEvents,
   CotClient,
@@ -76,8 +89,13 @@ import {
 } from './cot';
 
 const DEBOUNCE_MS = 600;
+const RUN_STATUS_POLL_MS = 15_000;
+// Feishu automatically closes CardKit streaming mode after 10 minutes. Rotate
+// early enough that the handoff marker itself can still be flushed reliably.
+const MARKDOWN_STREAM_ROTATE_MS = 8 * 60_000;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+const LARK_HTTP_TIMEOUT_MS = 30_000;
 
 // Lark SDK logs API errors at error level even when the caller catches them.
 // These specific codes are EXPECTED in our flow (wiki-node lookup that
@@ -127,7 +145,11 @@ export function shouldSuppressSdkErrorLog(args: unknown[]): boolean {
   return args.some(isSuppressedSdkMessage);
 }
 
-function buildQuietLogger(): {
+export function isSdkStreamUpdateFailure(args: unknown[]): boolean {
+  return args.some((arg) => typeof arg === 'string' && arg.includes('[stream] update failed'));
+}
+
+function buildQuietLogger(onStreamUpdateFailure?: (args: unknown[]) => void): {
   error: (...m: unknown[]) => void;
   warn: (...m: unknown[]) => void;
   info: (...m: unknown[]) => void;
@@ -139,7 +161,10 @@ function buildQuietLogger(): {
       if (shouldSuppressSdkErrorLog(args)) return;
       log.warn('sdk', 'error', { args: stringifyArgs(args) });
     },
-    warn: (...args: unknown[]) => log.warn('sdk', 'warn', { args: stringifyArgs(args) }),
+    warn: (...args: unknown[]) => {
+      if (isSdkStreamUpdateFailure(args)) onStreamUpdateFailure?.(args);
+      log.warn('sdk', 'warn', { args: stringifyArgs(args) });
+    },
     info: (...args: unknown[]) => log.info('sdk', 'info', { args: stringifyArgs(args) }),
     debug: () => {},
     trace: () => {},
@@ -171,7 +196,7 @@ export interface StartChannelDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'profileDir'>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -206,6 +231,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // prompt. In-memory only: on restart the first run re-seeds silently.
   const lastRunModelByScope = new Map<string, string>();
   const syncedCodexThreadNames = new Map<string, string>();
+  // The channel SDK logs markdown/card update failures but can resolve the
+  // stream normally. Keep a per-message marker so we can send the complete
+  // final answer as a fresh message instead of leaving a half-rendered card.
+  const streamDeliveryFailures = new Map<string, Error>();
   const cotClient = new CotClient({
     tenant: cfg.accounts.app.tenant,
     appId: cfg.accounts.app.id,
@@ -230,7 +259,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         ? 'https://open.larksuite.com'
         : 'https://open.feishu.cn',
     source: 'lark-channel-bridge',
-    logger: buildQuietLogger(),
+    logger: buildQuietLogger((args) => {
+      const traceId = getLogContext()?.traceId;
+      if (!traceId) return;
+      streamDeliveryFailures.set(traceId, new Error(stringifyArgs(args)));
+    }),
     policy: {
       dmMode: 'open',
       requireMention: false,
@@ -256,12 +289,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
     // beats slow-fail in unstable networks.
     handshakeTimeoutMs: 8_000,
-    // Per-request REST timeout — without a cap a slow API can hang the
-    // event-handling thread.
-    httpTimeoutMs: 30_000,
-    // Feishu is directly reachable on this host. Do not route its REST/WS
-    // traffic through the local proxy: that proxy intermittently returns 502
-    // for tenant-token requests. Agent subprocesses still inherit proxy env.
+    // Feishu is directly reachable on this host. Axios honors HTTP(S)_PROXY
+    // by default even when the channel SDK does not, so use a dedicated
+    // proxy-disabled instance for every Feishu REST call. This is scoped to
+    // Feishu; agent subprocesses still inherit the process proxy environment.
+    httpInstance: createDirectLarkHttpInstance(LARK_HTTP_TIMEOUT_MS),
+    // WebSocket proxy support is opt-in in the channel SDK. Keep it disabled
+    // as the matching half of the direct Feishu route.
     respectProxyEnv: false,
   };
 
@@ -314,6 +348,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           activePolicyFingerprints,
           lastRunModelByScope,
           syncedCodexThreadNames,
+          streamDeliveryFailures,
           agent,
           scope,
           mode,
@@ -431,6 +466,16 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   });
   await ownerRefresh.start();
   const knownChatsRefresh = startKnownChatsRefreshTimer(channel, controls);
+  const aaSessionGroupSync =
+    sessionCatalog && deps.appPaths?.profileDir
+      ? startAaSessionGroupSync({
+          channel,
+          controls,
+          sessionCatalog,
+          workspaces,
+          profileStateDir: deps.appPaths.profileDir,
+        })
+      : undefined;
 
   const identity = channel.botIdentity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
@@ -470,6 +515,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       activeRuns.pauseNewRuns('bridge-disconnect');
       ownerRefresh.stop();
       knownChatsRefresh.stop();
+      aaSessionGroupSync?.stop();
       keepalive.stop();
       pending.cancelAll();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
@@ -714,6 +760,7 @@ interface RunBatchDeps {
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   syncedCodexThreadNames: Map<string, string>;
+  streamDeliveryFailures: Map<string, Error>;
   scope: string;
   mode: ChatMode;
 }
@@ -734,6 +781,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints,
     lastRunModelByScope,
     syncedCodexThreadNames,
+    streamDeliveryFailures,
     scope,
     mode,
   } = deps;
@@ -744,6 +792,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
+  const runTraceId = getLogContext()?.traceId;
 
   const resourceItems = batch.flatMap((m) =>
     m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
@@ -916,6 +965,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } else {
     log.info('session', 'fresh', { cwd });
   }
+  let runCodexThreadId: string | undefined;
   const recordSession = (evt: AgentEvent): void => {
     recordRunSessionEvent({
       scopeId: scope,
@@ -939,6 +989,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       });
     }
     if (evt.type === 'system' && evt.threadId) {
+      runCodexThreadId = evt.threadId;
       log.info('session', 'set-thread', { threadId: evt.threadId });
       if (firstMsg.chatType !== 'p2p') {
         void syncCodexThreadNameFromChat({
@@ -1094,6 +1145,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         streamDone,
         renderDone,
         producerStarted: () => producerStarted,
+        deliveryFailure: () =>
+          runTraceId ? streamDeliveryFailures.get(runTraceId) : undefined,
         fallback: async (state) => {
           await channel.send(
             chatId,
@@ -1104,9 +1157,120 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       });
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
-      let producerStarted = false;
-      let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
-      const renderDone = processAgentStream(
+      let renderDone!: Promise<RunState>;
+      type MarkdownCtrl = { setContent(markdown: string): Promise<void> };
+      type MarkdownStreamRecord = {
+        generation: number;
+        startedAtMs: number;
+        baseline?: string;
+        reason: MarkdownContinuationReason;
+        producerStarted: boolean;
+        ctrl?: MarkdownCtrl;
+        error?: Error;
+        stop(): void;
+        done: Promise<unknown>;
+      };
+      let generation = 0;
+      let activeStream!: MarkdownStreamRecord;
+      const renderedMarkdown = (state: RunState): string =>
+        renderText(filterForPrefs(state));
+      const streamMarkdown = (state: RunState, stream: MarkdownStreamRecord): string => {
+        const current = renderedMarkdown(state);
+        return stream.baseline === undefined
+          ? current
+          : renderMarkdownContinuation(stream.baseline, current, stream.reason);
+      };
+      let finalFallbackSent = false;
+      const sendFinalOnlyFallback = async (state: RunState): Promise<void> => {
+        if (finalFallbackSent) return;
+        const filtered = filterForPrefs(state);
+        const lastText = [...filtered.blocks].reverse().find((block) => block.kind === 'text');
+        const finalOnly: RunState = {
+          ...filtered,
+          blocks: lastText ? [lastText] : [],
+          reasoning: { content: '', active: false },
+          footer: null,
+        };
+        const meaningfulBody = renderText({ ...finalOnly, runtime: undefined });
+        if (!meaningfulBody.trim()) return;
+        const body = renderText(finalOnly);
+        if (body.trim()) {
+          finalFallbackSent = true;
+          await channel.send(chatId, { markdown: body }, sendOpts);
+        }
+      };
+      const startMarkdownStream = (
+        baseline: string | undefined,
+        reason: MarkdownContinuationReason,
+      ): MarkdownStreamRecord => {
+        let stop!: () => void;
+        const stopped = new Promise<void>((resolve) => {
+          stop = resolve;
+        });
+        const record: MarkdownStreamRecord = {
+          generation: ++generation,
+          startedAtMs: Date.now(),
+          baseline,
+          reason,
+          producerStarted: false,
+          stop,
+          done: Promise.resolve(),
+        };
+        record.done = channel.stream(
+          chatId,
+          {
+            markdown: async (ctrl) => {
+              record.producerStarted = true;
+              record.ctrl = ctrl;
+              await ctrl.setContent(streamMarkdown(latestState, record));
+              await Promise.race([renderDone.then(() => undefined), stopped]);
+            },
+          },
+          sendOpts,
+        );
+        void record.done.catch((err) => {
+          record.error = err instanceof Error ? err : new Error(String(err));
+        });
+        return record;
+      };
+      const rotateMarkdownStream = async (
+        state: RunState,
+        reason: MarkdownContinuationReason,
+      ): Promise<void> => {
+        const previous = activeStream;
+        const confirmed = runTraceId ? getConfirmedCardStreamContent(runTraceId) : undefined;
+        const baseline = reason === 'window_rotated' ? renderedMarkdown(state) : (confirmed ?? '');
+
+        if (reason === 'window_rotated' && previous.ctrl) {
+          await previous.ctrl
+            .setContent(renderMarkdownWindowClosed(streamMarkdown(state, previous)))
+            .catch((err) => {
+              log.warn('stream', 'window-close-marker-failed', {
+                mode: replyMode,
+                err: err instanceof Error ? err.message : String(err),
+              });
+            });
+        }
+        previous.stop();
+        await previous.done.catch((err) => {
+          log.warn('stream', 'segment-close-failed', {
+            mode: replyMode,
+            generation: previous.generation,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
+
+        if (runTraceId) streamDeliveryFailures.delete(runTraceId);
+        activeStream = startMarkdownStream(baseline, reason);
+        log.warn('stream', 'starting-continuation', {
+          mode: replyMode,
+          reason,
+          generation: activeStream.generation,
+          confirmedChars: baseline.length,
+        });
+      };
+
+      renderDone = processAgentStream(
         handle,
         eventStream,
         scope,
@@ -1114,35 +1278,63 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           latestState = state;
-          if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+          if (state.terminal === 'running') {
+            const failure = runTraceId ? streamDeliveryFailures.get(runTraceId) : undefined;
+            if (failure || activeStream.error) {
+              const detail = failure?.message ?? activeStream.error?.message ?? '';
+              await rotateMarkdownStream(
+                state,
+                detail.includes('200850') ? 'window_timeout' : 'transport',
+              );
+            } else if (Date.now() - activeStream.startedAtMs >= MARKDOWN_STREAM_ROTATE_MS) {
+              await rotateMarkdownStream(state, 'window_rotated');
+            }
+          }
+          if (activeStream.ctrl) {
+            await activeStream.ctrl.setContent(streamMarkdown(state, activeStream));
           }
         },
       );
-      const streamDone = channel.stream(
-        chatId,
-        {
-          markdown: async (ctrl) => {
-            producerStarted = true;
-            markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState)));
-            await renderDone;
-          },
-        },
-        sendOpts,
-      );
+      activeStream = startMarkdownStream(undefined, 'transport');
+      const finalState = await renderDone;
+      const terminalFailure = runTraceId ? streamDeliveryFailures.get(runTraceId) : undefined;
+      if (terminalFailure || activeStream.error) {
+        const detail = terminalFailure?.message ?? activeStream.error?.message ?? '';
+        await rotateMarkdownStream(
+          finalState,
+          detail.includes('200850') ? 'window_timeout' : 'transport',
+        );
+        if (activeStream.ctrl) {
+          await activeStream.ctrl.setContent(streamMarkdown(finalState, activeStream));
+        }
+      }
+      activeStream.stop();
       await awaitRenderAwareStream({
         mode: replyMode,
-        streamDone,
-        renderDone,
-        producerStarted: () => producerStarted,
-        fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
-          if (body.trim()) {
-            await channel.send(chatId, { markdown: body }, sendOpts);
-          }
-        },
+        streamDone: activeStream.done,
+        renderDone: Promise.resolve(finalState),
+        producerStarted: () => activeStream.producerStarted,
+        deliveryFailure: () =>
+          runTraceId ? streamDeliveryFailures.get(runTraceId) : undefined,
+        fallback: sendFinalOnlyFallback,
       });
+
+      const intendedFinal = streamMarkdown(finalState, activeStream);
+      const confirmedFinal = runTraceId ? getConfirmedCardStreamContent(runTraceId) : undefined;
+      const deliveryFailure = runTraceId ? streamDeliveryFailures.get(runTraceId) : undefined;
+      if (
+        deliveryFailure ||
+        (confirmedFinal !== undefined && confirmedFinal !== intendedFinal)
+      ) {
+        log.warn('stream', 'final-delivery-unconfirmed', {
+          mode: replyMode,
+          generation: activeStream.generation,
+          intendedChars: intendedFinal.length,
+          confirmedChars: confirmedFinal?.length,
+          err: deliveryFailure?.message,
+        });
+        await sendFinalOnlyFallback(finalState);
+      }
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1168,6 +1360,29 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    if (firstMsg.chatType !== 'p2p' && runCodexThreadId) {
+      try {
+        await syncCodexThreadNameFromChat({
+          channel,
+          agent,
+          chatId,
+          threadId: runCodexThreadId,
+          knownChats: controls.knownChats ?? [],
+          syncedNames: syncedCodexThreadNames,
+          force: true,
+        });
+      } catch (err) {
+        log.warn('session', 'thread-name-final-sync-failed', {
+          threadId: runCodexThreadId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    if (runTraceId) {
+      clearCardStreamProgress(runTraceId);
+      const cleanup = setTimeout(() => streamDeliveryFailures.delete(runTraceId), 60_000);
+      cleanup.unref?.();
+    }
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
@@ -1287,7 +1502,54 @@ async function processAgentStream(
   flush: (state: RunState) => Promise<void>,
 ): Promise<RunState> {
   const runStart = Date.now();
-  let state: RunState = initialState;
+  let state: RunState = startRunRuntime(initialState, runStart);
+  let flushTail = Promise.resolve();
+  const enqueueFlush = (snapshot: RunState): Promise<void> => {
+    const task = flushTail.then(() => flush(snapshot));
+    // Keep the serialization chain usable after an individual delivery
+    // failure; the caller still receives that failure through `task`.
+    flushTail = task.catch(() => {});
+    return task;
+  };
+
+  let statusPollRunning = false;
+  let statusPollInFlight: Promise<void> = Promise.resolve();
+  const statusPoll = setInterval(() => {
+    if (statusPollRunning || state.terminal !== 'running') return;
+    statusPollRunning = true;
+    statusPollInFlight = (async () => {
+      let processRunning = true;
+      try {
+        processRunning = !(await handle.run.waitForExit(0));
+      } catch (err) {
+        log.warn('run', 'status-poll-failed', {
+          scope,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      const nowMs = Date.now();
+      state = updateRunRuntime(state, { nowMs, processRunning });
+      log.info('run', 'status-poll', {
+        scope,
+        processRunning,
+        elapsedMs: nowMs - runStart,
+        inactiveMs: nowMs - (state.runtime?.lastActivityAtMs ?? runStart),
+      });
+      try {
+        await enqueueFlush(state);
+      } catch (err) {
+        // A heartbeat is diagnostic/UI-only. A transient Feishu failure must
+        // not stop the agent event drain.
+        log.warn('run', 'status-delivery-failed', {
+          scope,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })().finally(() => {
+      statusPollRunning = false;
+    });
+  }, RUN_STATUS_POLL_MS);
+  statusPoll.unref?.();
 
   // Idle watchdog: claude going silent for `idleTimeoutMs` is treated as
   // "presumed hung", we stop() and surface a timeout marker on the card.
@@ -1325,6 +1587,8 @@ async function processAgentStream(
   try {
     for await (const evt of events) {
       if (handle.interrupted) break;
+
+      state = updateRunRuntime(state, { nowMs: Date.now(), activity: true });
 
       // Track tool flight before re-arming the idle timer so the arm step
       // sees the correct set size. tool_use opens a window; tool_result
@@ -1366,7 +1630,7 @@ async function processAgentStream(
       if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
         log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
       }
-      await flush(state);
+      await enqueueFlush(state);
       // Stop iterating as soon as we have a terminal state. Some claude
       // versions don't close stdout immediately after the result event, which
       // would leave the for-await waiting forever otherwise.
@@ -1374,6 +1638,8 @@ async function processAgentStream(
     }
   } finally {
     if (timer) clearTimeout(timer);
+    clearInterval(statusPoll);
+    await statusPollInFlight;
   }
 
   // If state already reached a terminal event (done/error/etc.) before the
@@ -1389,9 +1655,10 @@ async function processAgentStream(
       state = finalizeIfRunning(state);
     }
   }
+  state = updateRunRuntime(state, { nowMs: Date.now(), processRunning: false });
   log.info('card', 'final', { scope, terminal: state.terminal, interrupted: handle.interrupted });
   reportMetric('run_e2e_ms', Date.now() - runStart, { terminal: state.terminal });
-  await flush(state);
+  await enqueueFlush(state);
   if (handle.interrupted) {
     await handle.run.stop();
   }
@@ -1403,8 +1670,21 @@ async function awaitRenderAwareStream(input: {
   streamDone: Promise<unknown>;
   renderDone: Promise<RunState>;
   producerStarted: () => boolean;
+  deliveryFailure?: () => Error | undefined;
   fallback: (state: RunState) => Promise<void>;
 }): Promise<void> {
+  let fallbackSent = false;
+  const fallbackForDeliveryFailure = async (state: RunState): Promise<boolean> => {
+    const failure = input.deliveryFailure?.();
+    if (!failure || fallbackSent) return false;
+    fallbackSent = true;
+    log.warn('stream', 'delivery-failed-final-fallback', {
+      mode: input.mode,
+      err: failure.message,
+    });
+    await runFallbackReply(input.mode, state, input.fallback);
+    return true;
+  };
   const streamResult = input.streamDone.then(
     () => ({ kind: 'stream' as const, ok: true as const }),
     (err) => ({ kind: 'stream' as const, ok: false as const, err }),
@@ -1428,6 +1708,7 @@ async function awaitRenderAwareStream(input: {
   if (first.kind === 'stream') {
     const rendered = await renderResult;
     if (!rendered.ok) throw rendered.err;
+    await fallbackForDeliveryFailure(rendered.state);
     return;
   }
 
@@ -1446,14 +1727,27 @@ async function awaitRenderAwareStream(input: {
       mode: input.mode,
       graceMs: STREAM_TERMINAL_GRACE_MS,
     });
-    void streamResult.then((result) => {
+    if (await fallbackForDeliveryFailure(first.state)) return;
+    void streamResult.then(async (result) => {
       if (!result.ok) {
         log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
+        if (!fallbackSent) {
+          fallbackSent = true;
+          await runFallbackReply(input.mode, first.state, input.fallback);
+        }
+        return;
       }
+      await fallbackForDeliveryFailure(first.state);
     });
     return;
   }
-  if (!terminal.ok) throw terminal.err;
+  if (!terminal.ok) {
+    log.fail('stream', terminal.err, { mode: input.mode, step: 'stream-terminal' });
+    fallbackSent = true;
+    await runFallbackReply(input.mode, first.state, input.fallback);
+    return;
+  }
+  await fallbackForDeliveryFailure(first.state);
 }
 
 async function runFallbackReply(

@@ -30,7 +30,7 @@ export interface CodexThreadHistoryEntry {
 
 export interface ListCodexThreadHistoryOptions {
   binary: string;
-  cwd: string;
+  cwd?: string;
   limit: number;
   profileStateDir: string;
   codexHome?: string;
@@ -88,6 +88,8 @@ export async function listCodexThreadHistory(
   const result = await new Promise<CodexThreadHistoryEntry[]>((resolve, reject) => {
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let requestId = 2;
+    const entries: CodexThreadHistoryEntry[] = [];
 
     const fail = (err: unknown): void => {
       if (settled) return;
@@ -131,7 +133,7 @@ export async function listCodexThreadHistory(
         return;
       }
       const response = recordValue(msg);
-      if (!response || response.id !== 2) return;
+      if (!response || response.id !== requestId) return;
       if (response.error) {
         const err = recordValue(response.error);
         reject(
@@ -149,7 +151,23 @@ export async function listCodexThreadHistory(
         cleanup({ kill: true });
         return;
       }
-      resolve(parsed.entries);
+      entries.push(...parsed.entries.slice(0, Math.max(0, options.limit - entries.length)));
+      if (parsed.nextCursor && entries.length < options.limit) {
+        requestId += 1;
+        try {
+          child.stdin.write(
+            `${JSON.stringify(listRequest(options, requestId, parsed.nextCursor, options.limit - entries.length))}\n`,
+            'utf8',
+            (err?: Error | null) => {
+              if (err) fail(err);
+            },
+          );
+        } catch (err) {
+          fail(err);
+        }
+        return;
+      }
+      resolve(entries);
       cleanup({ kill: true });
     });
 
@@ -167,7 +185,7 @@ export async function listCodexThreadHistory(
 
     try {
       child.stdin.write(
-        `${JSON.stringify(initializeRequest())}\n${JSON.stringify(listRequest(options))}\n`,
+        `${JSON.stringify(initializeRequest())}\n${JSON.stringify(listRequest(options, requestId))}\n`,
         'utf8',
         (err?: Error | null) => {
           if (err) fail(err);
@@ -336,16 +354,22 @@ function initializeRequest() {
   };
 }
 
-function listRequest(options: ListCodexThreadHistoryOptions) {
+function listRequest(
+  options: ListCodexThreadHistoryOptions,
+  id: number,
+  cursor?: string,
+  remaining = options.limit,
+) {
   return {
     method: 'thread/list',
-    id: 2,
+    id,
     params: {
-      limit: options.limit,
+      limit: Math.min(100, remaining),
       sortKey: 'updated_at',
       sortDirection: 'desc',
       archived: false,
-      cwd: options.cwd,
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      ...(cursor ? { cursor } : {}),
       useStateDbOnly: options.useStateDbOnly ?? true,
       sourceKinds: [...(options.sourceKinds ?? DEFAULT_SOURCE_KINDS)],
     },
@@ -354,7 +378,9 @@ function listRequest(options: ListCodexThreadHistoryOptions) {
 
 function parseThreadListResponse(
   input: unknown,
-): { ok: true; entries: CodexThreadHistoryEntry[] } | { ok: false; error: CodexHistoryError } {
+):
+  | { ok: true; entries: CodexThreadHistoryEntry[]; nextCursor?: string }
+  | { ok: false; error: CodexHistoryError } {
   const raw = recordValue(input);
   if (!raw || !Array.isArray(raw.data)) {
     return {
@@ -365,6 +391,7 @@ function parseThreadListResponse(
   return {
     ok: true,
     entries: raw.data.map(normalizeThread).filter((entry): entry is CodexThreadHistoryEntry => Boolean(entry)),
+    ...(stringValue(raw.nextCursor) ? { nextCursor: stringValue(raw.nextCursor) } : {}),
   };
 }
 

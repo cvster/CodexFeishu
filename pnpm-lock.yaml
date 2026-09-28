@@ -14,6 +14,9 @@ importers:
       '@larksuite/channel':
         specifier: ^0.3.0
         version: 0.3.0
+      '@larksuiteoapi/node-sdk':
+        specifier: 1.67.0
+        version: 1.67.0
       commander:
         specifier: ^12.1.0
         version: 12.1.0

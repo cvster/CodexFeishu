@@ -34,7 +34,7 @@ export interface AgentRunOptions {
   sessionId?: string;
   threadId?: string;
   model?: string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;

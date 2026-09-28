@@ -17,6 +17,13 @@ export type Block =
 export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | null;
 export type Terminal = 'running' | 'done' | 'interrupted' | 'error' | 'idle_timeout';
 
+export interface RunRuntimeStatus {
+  startedAtMs: number;
+  lastActivityAtMs: number;
+  checkedAtMs: number;
+  processRunning: boolean;
+}
+
 export interface RunState {
   blocks: Block[];
   reasoning: { content: string; active: boolean };
@@ -26,6 +33,8 @@ export interface RunState {
   /** Set when terminal === 'idle_timeout' — how long claude was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
+  /** Periodically refreshed process/runtime status shown in the chat output. */
+  runtime?: RunRuntimeStatus;
 }
 
 export const initialState: RunState = {
@@ -34,6 +43,34 @@ export const initialState: RunState = {
   footer: 'thinking',
   terminal: 'running',
 };
+
+export function startRunRuntime(state: RunState, nowMs: number): RunState {
+  return {
+    ...state,
+    runtime: {
+      startedAtMs: nowMs,
+      lastActivityAtMs: nowMs,
+      checkedAtMs: nowMs,
+      processRunning: true,
+    },
+  };
+}
+
+export function updateRunRuntime(
+  state: RunState,
+  input: { nowMs: number; activity?: boolean; processRunning?: boolean },
+): RunState {
+  if (!state.runtime) return startRunRuntime(state, input.nowMs);
+  return {
+    ...state,
+    runtime: {
+      ...state.runtime,
+      checkedAtMs: input.nowMs,
+      ...(input.activity ? { lastActivityAtMs: input.nowMs } : {}),
+      ...(input.processRunning === undefined ? {} : { processRunning: input.processRunning }),
+    },
+  };
+}
 
 function closeStreamingText(blocks: Block[]): Block[] {
   return blocks.map((b) =>

@@ -17,8 +17,9 @@ describe('Codex thread naming from Feishu chats', () => {
 
     await syncCodexThreadNameFromChat(input);
     await syncCodexThreadNameFromChat(input);
+    await syncCodexThreadNameFromChat({ ...input, force: true });
 
-    expect(setThreadName).toHaveBeenCalledTimes(1);
+    expect(setThreadName).toHaveBeenCalledTimes(2);
     expect(setThreadName).toHaveBeenCalledWith('thread-1', 'Codex任务4');
     expect(syncedNames.get('thread-1')).toBe('Codex任务4');
   });

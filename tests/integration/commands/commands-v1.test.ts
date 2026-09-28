@@ -22,6 +22,7 @@ interface RunOverrides {
   formValue?: Record<string, unknown>;
   sessionCatalogIdentity?: SessionCatalogIdentity;
   dmGroupCreationOnly?: boolean;
+  codexHistoryProvider?: CommandContext['codexHistoryProvider'];
 }
 
 interface Harness {
@@ -137,6 +138,54 @@ describe('Bridge command contracts', () => {
     expect(panel).toContain('config');
     expect(panel).toContain('ws.list');
     expect(panel).toContain('new.chat.setup');
+    expect(panel).toContain('panel.groups');
+    expect(panel).toContain('panel.sessions');
+  });
+
+  it('creates a work group for an existing Codex session and later archives it before dissolving the group', async () => {
+    const h = await createHarness();
+    h.controls.profileConfig.agentKind = 'codex';
+    h.controls.profileConfig.codex = { binaryPath: 'codex', inheritCodexHome: true };
+    const cwd = await realpath(h.tmp.workspace);
+    const provider: NonNullable<CommandContext['codexHistoryProvider']> = async () => [
+      {
+        threadId: 'thread-existing',
+        preview: 'Linux 驱动学习',
+        name: 'Linux驱动学习',
+        cwd,
+        createdAtMs: 1_700_000_000_000,
+        updatedAtMs: 1_700_000_100_000,
+        source: 'appServer',
+      },
+    ];
+
+    await expect(h.run('/panel sessions', { codexHistoryProvider: provider })).resolves.toBe(true);
+    const sessionsCard = JSON.stringify(lastContent(h.channel));
+    expect(sessionsCard).toContain('为此会话建群');
+    const sessionToken = extractActionToken(sessionsCard, 'panel.session-group');
+
+    await expect(h.run(`/panel session-group ${sessionToken}`)).resolves.toBe(true);
+    expect(h.channel.createdChats[0]?.options).toMatchObject({ name: 'Linux驱动学习' });
+    expect(h.workspaces.cwdFor('oc_fake_1')).toBe(cwd);
+    const binding = h.sessionCatalog.entries().find(
+      (entry) => entry.scopeId === 'oc_fake_1' && entry.status === 'active',
+    );
+    expect(binding?.threadId).toBe('thread-existing');
+    expect(JSON.stringify(h.channel.sent.find((message) => message.chatId === 'oc_fake_1')?.content))
+      .toContain('已绑定现有 Codex 会话');
+
+    await expect(h.run('/panel groups')).resolves.toBe(true);
+    const groupsCard = JSON.stringify(lastContent(h.channel));
+    const groupToken = extractActionToken(groupsCard, 'panel.group');
+    await expect(h.run(`/panel group-finish-confirm ${groupToken}`)).resolves.toBe(true);
+
+    expect(h.agent.archivedThreads).toContain('thread-existing');
+    expect(h.sessionCatalog.entries().find((entry) => entry.threadId === 'thread-existing')?.status)
+      .toBe('archived');
+    expect(h.channel.rawClient.requests).toContainEqual({
+      method: 'im.v1.chat.delete',
+      params: { path: { chat_id: 'oc_fake_1' } },
+    });
   });
 
   it('restricts production private chat to workspace-group creation', async () => {
@@ -206,7 +255,7 @@ describe('Bridge command contracts', () => {
     expect(h.workspaces.cwdFor('oc_fake_1')).toBe(await realpath(target));
   });
 
-  it('confirms before archiving the Codex thread and dissolving the group', async () => {
+  it('lets a non-admin group member archive the Codex thread and dissolve the group', async () => {
     const h = await createHarness();
     h.controls.profileConfig.agentKind = 'codex';
     const cwd = await realpath(h.tmp.workspace);
@@ -219,7 +268,9 @@ describe('Bridge command contracts', () => {
     h.sessionCatalog.upsertActive({ ...identity, threadId: 'thread-1' });
     h.sessions.set('chat-1', 'legacy-session', cwd);
 
-    await expect(h.run('终止任务', { chatMode: 'group' })).resolves.toBe(true);
+    await expect(
+      h.run('终止任务', { chatMode: 'group', senderId: 'ou-colleague' }),
+    ).resolves.toBe(true);
     const confirmationCard = JSON.stringify(lastContent(h.channel));
     expect(confirmationCard).toContain('finish.archive');
     expect(confirmationCard).toContain('finish.confirm');
@@ -228,7 +279,11 @@ describe('Bridge command contracts', () => {
     );
 
     await expect(
-      h.run('/finish confirm', { chatMode: 'group', sessionCatalogIdentity: identity }),
+      h.run('/finish confirm', {
+        chatMode: 'group',
+        senderId: 'ou-colleague',
+        sessionCatalogIdentity: identity,
+      }),
     ).resolves.toBe(true);
 
     expect(h.agent.archivedThreads).toEqual(['thread-1']);
@@ -569,6 +624,7 @@ async function createHarness(): Promise<Harness> {
       controls,
       formValue: overrides.formValue,
       dmGroupCreationOnly: overrides.dmGroupCreationOnly,
+      codexHistoryProvider: overrides.codexHistoryProvider,
     });
   };
 
@@ -578,6 +634,13 @@ async function createHarness(): Promise<Harness> {
   });
 
   return { tmp, channel, sessions, sessionCatalog, workspaces, activeRuns, agent, controls, run };
+}
+
+function extractActionToken(cardJson: string, cmd: string): string {
+  const escaped = cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`"cmd":"${escaped}","arg":"([^"]+)"`).exec(cardJson);
+  if (!match?.[1]) throw new Error(`missing action token for ${cmd}`);
+  return match[1];
 }
 
 function appConfig(defaultWorkspace: string): ProfileConfig {

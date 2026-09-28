@@ -21,7 +21,7 @@ export interface SubmitRunInput {
   sessionId?: string;
   threadId?: string;
   model?: string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   images?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;

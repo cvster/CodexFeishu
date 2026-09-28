@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CodexAdapter } from '../../src/agent/codex/adapter.js';
+import { CodexAdapter as ModernCodexAdapter } from '../../src/agent/codex/adapter.js';
 import { buildCodexArgs } from '../../src/agent/codex/argv.js';
 import type { AgentEvent } from '../../src/agent/types.js';
 
@@ -10,6 +10,17 @@ interface FakeBinary {
   path: string;
   dir: string;
   recordPath: string;
+}
+
+/** Exercise the explicit legacy compatibility transport in this test file. */
+class CodexAdapter extends ModernCodexAdapter {
+  constructor(opts: ConstructorParameters<typeof ModernCodexAdapter>[0]) {
+    super({
+      ...opts,
+      useAppServerForFreshThreads: false,
+      useQueueForExistingThreads: false,
+    });
+  }
 }
 
 describe('CodexAdapter process contract', () => {

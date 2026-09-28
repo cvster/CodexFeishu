@@ -48,6 +48,7 @@
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "@larksuite/channel": "^0.3.0",
+    "@larksuiteoapi/node-sdk": "1.67.0",
     "commander": "^12.1.0",
     "cross-spawn": "^7.0.6",
     "graceful-fs": "^4.2.11",

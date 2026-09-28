@@ -432,6 +432,8 @@ export function createRuntimeAgent(
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
       larkChannel,
+      useAppServerForFreshThreads: true,
+      useQueueForExistingThreads: true,
     });
   }
   return new ClaudeAdapter({ larkChannel });

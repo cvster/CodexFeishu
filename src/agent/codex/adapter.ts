@@ -16,6 +16,8 @@ import type {
   AgentRunOptions,
 } from '../types';
 import { buildCodexArgs } from './argv';
+import { createCodexAppServerRun } from './app-server-run';
+import { createCodexQueueRun } from './queue';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { archiveCodexThread, setCodexThreadName } from '../../session/codex-history';
 
@@ -29,6 +31,10 @@ export interface CodexAdapterOptions {
   sandbox?: SandboxMode;
   stopGraceMs?: number;
   larkChannel?: LarkChannelEnvContext;
+  /** @deprecated Modern app-server transport is enabled by default. */
+  useAppServerForFreshThreads?: boolean;
+  /** @deprecated Native queue transport is enabled by default. */
+  useQueueForExistingThreads?: boolean;
 }
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -46,6 +52,8 @@ export class CodexAdapter implements AgentAdapter {
   private readonly sandbox: SandboxMode;
   private readonly defaultStopGraceMs: number;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly useAppServerForFreshThreads: boolean;
+  private readonly useQueueForExistingThreads: boolean;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: CodexAdapterOptions) {
@@ -58,6 +66,8 @@ export class CodexAdapter implements AgentAdapter {
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.larkChannel = opts.larkChannel;
+    this.useAppServerForFreshThreads = opts.useAppServerForFreshThreads !== false;
+    this.useQueueForExistingThreads = opts.useQueueForExistingThreads !== false;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -113,6 +123,42 @@ export class CodexAdapter implements AgentAdapter {
   run(opts: AgentRunOptions): AgentRun {
     if (!opts.cwd) {
       throw new Error('cwd is required for CodexAdapter.run');
+    }
+
+    if (!opts.threadId && this.useAppServerForFreshThreads) {
+      return createCodexAppServerRun({
+        runId: opts.runId,
+        binary: this.binary,
+        profileStateDir: this.profileStateDir,
+        ...(this.codexHome ? { codexHome: this.codexHome } : {}),
+        inheritCodexHome: this.inheritCodexHome,
+        cwd: opts.cwd,
+        sandbox: opts.sandbox ?? this.sandbox,
+        prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
+        images: opts.images,
+        model: opts.model,
+        reasoningEffort: opts.reasoningEffort,
+        env: buildLarkChannelEnv(this.larkChannel),
+        stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
+      });
+    }
+
+    if (opts.threadId && this.useQueueForExistingThreads) {
+      return createCodexQueueRun({
+        runId: opts.runId,
+        binary: this.binary,
+        profileStateDir: this.profileStateDir,
+        ...(this.codexHome ? { codexHome: this.codexHome } : {}),
+        inheritCodexHome: this.inheritCodexHome,
+        cwd: opts.cwd,
+        sandbox: opts.sandbox ?? this.sandbox,
+        threadId: opts.threadId,
+        prompt: prefixBridgeTurnPrompt(opts.prompt),
+        images: opts.images,
+        model: opts.model,
+        reasoningEffort: opts.reasoningEffort,
+        env: buildLarkChannelEnv(this.larkChannel),
+      });
     }
 
     const args = buildCodexArgs({

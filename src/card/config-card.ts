@@ -8,7 +8,7 @@ export interface ConfigFormOpts {
   agentKind: AgentKind;
   /** Current model selection (a value from {@link supportedModels}). */
   model: string;
-  reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -137,7 +137,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
                     tag: 'select_static',
                     name: 'reasoning_effort',
                     initial_option: opts.reasoningEffort,
-                    options: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
+                    options: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map((value) => ({
                       text: { tag: 'plain_text', content: value },
                       value,
                     })),

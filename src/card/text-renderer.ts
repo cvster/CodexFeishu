@@ -1,5 +1,6 @@
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
+import { renderColoredRunStatus } from './run-status-render';
 
 /**
  * Render `RunState` as plain markdown text — used in `messageReply: 'text'`
@@ -26,6 +27,11 @@ export function renderText(state: RunState): string {
     parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
   } else if (state.terminal === 'error' && state.errorMsg) {
     parts.push(`⚠️ agent 失败:${state.errorMsg}`);
+  }
+
+  const status = renderColoredRunStatus(state);
+  if (status) {
+    parts.push(status);
   } else if (state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
   }

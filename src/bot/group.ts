@@ -3,7 +3,8 @@ import type { LarkChannel } from '@larksuite/channel';
 export interface CreateBoundChatOptions {
   channel: LarkChannel;
   name: string;
-  inviteOpenId: string;
+  inviteOpenId?: string;
+  inviteOpenIds?: readonly string[];
   description?: string;
 }
 
@@ -28,11 +29,16 @@ export async function isSoloUserBotChat(channel: LarkChannel, chatId: string): P
  * the new chat_id. Requires `im:chat` scope on the bot.
  */
 export async function createBoundChat(opts: CreateBoundChatOptions): Promise<CreatedChat> {
-  const { channel, name, inviteOpenId, description } = opts;
+  const { channel, name, description } = opts;
+  const inviteUserIds = [...new Set([
+    ...(opts.inviteOpenIds ?? []),
+    ...(opts.inviteOpenId ? [opts.inviteOpenId] : []),
+  ].filter(Boolean))];
+  if (inviteUserIds.length === 0) throw new Error('at least one invite open_id is required');
   const { chatId } = await channel.createChat({
     name,
     description,
-    inviteUserIds: [inviteOpenId],
+    inviteUserIds,
     userIdType: 'open_id',
   });
   return { chatId, name };

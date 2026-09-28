@@ -15,6 +15,7 @@ describe('agent model catalog', () => {
     expect(claude[0]?.value).toBe(DEFAULT_MODEL);
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
     expect(claude.map((m) => m.value)).toContain('claude-opus-4-8');
+    expect(codex.map((m) => m.value)).toContain('gpt-6-astra');
     expect(codex.map((m) => m.value)).toContain('gpt-5.6-sol');
     expect(claude.map((m) => m.value)).not.toContain('gpt-5.6-sol');
   });

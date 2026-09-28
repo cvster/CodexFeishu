@@ -10,6 +10,7 @@ export interface SyncCodexThreadNameInput {
   threadId: string;
   knownChats: KnownChat[];
   syncedNames: Map<string, string>;
+  force?: boolean;
 }
 
 export async function syncCodexThreadNameFromChat(input: SyncCodexThreadNameInput): Promise<void> {
@@ -24,7 +25,7 @@ export async function syncCodexThreadNameFromChat(input: SyncCodexThreadNameInpu
     });
     name = input.knownChats.find((chat) => chat.id === input.chatId)?.name.trim();
   }
-  if (!name || input.syncedNames.get(input.threadId) === name) return;
+  if (!name || (!input.force && input.syncedNames.get(input.threadId) === name)) return;
   await input.agent.setThreadName(input.threadId, name);
   input.syncedNames.set(input.threadId, name);
   log.info('session', 'thread-name-synced', { threadId: input.threadId, name });

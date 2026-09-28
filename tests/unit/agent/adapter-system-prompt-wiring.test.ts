@@ -87,6 +87,8 @@ describe('CodexAdapter system prompt wiring', () => {
     return new CodexAdapter({
       binary: '/usr/local/bin/codex',
       profileStateDir: '/tmp/codex-profile',
+      useAppServerForFreshThreads: false,
+      useQueueForExistingThreads: false,
     });
   }
 
