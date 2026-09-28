@@ -13,6 +13,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
 - **Codex Desktop sync**: when a Codex thread bound to a Lark chat is continued from the desktop app, new user messages, run status, and replies are mirrored back to chat; old history is not replayed on first enablement.
+- **Clean Codex input**: ordinary Lark text is sent to Codex unchanged. Bridge rules are installed once when the thread is created, and only quotes, files, cards, or other rich cases add a compact context block.
 - **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.

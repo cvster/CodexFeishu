@@ -1,9 +1,46 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildAgentPrompt } from '../../../src/agent/prompt';
+import { buildAgentPrompt, buildCodexUserPrompt } from '../../../src/agent/prompt';
 
 describe('agent prompt builder', () => {
+  it('passes an ordinary Codex text message through unchanged', () => {
+    const text = '这种模式，飞书发的消息是否可以原样发送？';
+    expect(buildCodexUserPrompt({ userInput: text })).toBe(text);
+  });
+
+  it('adds only compact context for a Codex quote or non-image attachment', () => {
+    const prompt = buildCodexUserPrompt({
+      userInput: '继续处理',
+      quotedMessages: [{
+        messageId: 'internal-message-id',
+        senderId: 'internal-sender-id',
+        senderName: '同事甲',
+        rawContentType: 'text',
+        content: '上文内容',
+      }],
+      attachments: [{
+        path: 'C:/tmp/report.pdf',
+        kind: 'file',
+        decision: 'accepted',
+      }],
+    });
+
+    expect(prompt).toContain('<lark_context>');
+    expect(prompt).toContain('同事甲');
+    expect(prompt).toContain('C:/tmp/report.pdf');
+    expect(prompt).not.toContain('internal-message-id');
+    expect(prompt).not.toContain('internal-sender-id');
+    expect(prompt.endsWith('继续处理')).toBe(true);
+  });
+
+  it('does not duplicate a native Codex image in the prompt text', () => {
+    expect(buildCodexUserPrompt({
+      userInput: '看图',
+      attachments: [{ path: 'C:/tmp/image.png', kind: 'image', decision: 'accepted' }],
+    })).toBe('看图');
+  });
+
   it('serializes untrusted message, quote, card, and comment text without closing bridge tags', () => {
     const prompt = buildAgentPrompt({
       context: {

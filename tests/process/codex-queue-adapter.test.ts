@@ -24,6 +24,7 @@ describe('CodexAdapter native queue mode', () => {
       sandbox: 'workspace-write',
       prompt: 'continue from Feishu',
       threadId: 'thread-existing',
+      clientUserMessageId: 'lark-channel-bridge:queue-run',
     });
 
     expect(await collect(run.events)).toEqual([
@@ -50,18 +51,30 @@ import { createInterface } from 'node:readline';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 const statePath = ${JSON.stringify(statePath)};
-if (args[0] === 'queue') {
-  const prompt = args[args.indexOf('--message') + 1];
-  writeFileSync(statePath, JSON.stringify({ prompt }));
-  console.log('Queued message queue-1 for thread thread-existing.');
-  process.exit(0);
-}
 if (args[0] !== 'app-server') process.exit(3);
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on('line', (line) => {
   const req = JSON.parse(line);
   if (req.method === 'initialize') {
     console.log(JSON.stringify({ id: req.id, result: { userAgent: 'fake' } }));
+    return;
+  }
+  if (req.method === 'thread/resume') {
+    console.log(JSON.stringify({ id: req.id, result: { thread: { id: 'thread-existing', turns: [] } } }));
+    return;
+  }
+  if (req.method === 'thread/queue/add') {
+    writeFileSync(statePath, JSON.stringify({
+      prompt: req.params.input[0].text,
+      clientId: req.params.clientUserMessageId,
+    }));
+    console.log(JSON.stringify({ id: req.id, result: { queuedSubmission: {
+      id: 'queue-1', input: req.params.input, clientUserMessageId: req.params.clientUserMessageId
+    } } }));
+    return;
+  }
+  if (req.method === 'thread/queue/start') {
+    console.log(JSON.stringify({ id: req.id, result: { turn: { id: 'turn-queued', status: 'inProgress', items: [] } } }));
     return;
   }
   if (req.method !== 'thread/read') return;
@@ -71,7 +84,7 @@ rl.on('line', (line) => {
     status: 'completed',
     error: null,
     items: [
-      { type: 'userMessage', id: 'user-1', content: [{ type: 'text', text: queued.prompt }] },
+      { type: 'userMessage', id: 'user-1', clientId: queued.clientId, content: [{ type: 'text', text: queued.prompt }] },
       { type: 'agentMessage', id: 'agent-1', text: 'queued response', phase: 'final_answer' }
     ]
   }] : [];

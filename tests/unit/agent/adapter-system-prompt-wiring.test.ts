@@ -117,7 +117,7 @@ describe('CodexAdapter system prompt wiring', () => {
     expect(stdin).toBe(prefixBridgeSystemPrompt('hi', undefined));
   });
 
-  it('uses only a compact bridge reminder when resuming a Codex thread', async () => {
+  it('passes a resumed Codex prompt through unchanged in the legacy fallback', async () => {
     const child = fakeChild();
     spawnMock.spawnProcess.mockReturnValue(child);
     const adapter = codexAdapter();
@@ -127,7 +127,7 @@ describe('CodexAdapter system prompt wiring', () => {
 
     const stdin = await readAll(child.stdin);
     expect(stdin).toBe(prefixBridgeTurnPrompt('hi'));
-    expect(stdin.length).toBeLessThan(300);
+    expect(stdin).toBe('hi');
   });
 });
 

@@ -1,6 +1,7 @@
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
+import type { SandboxMode } from '../config/profile-schema';
 import {
   mergeProcessEnv,
   spawnProcess,
@@ -37,6 +38,23 @@ export interface CodexThreadReaderOptions {
   codexHome?: string;
   inheritCodexHome?: boolean;
   timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface CodexQueuedTurnOptions {
+  threadId: string;
+  cwd: string;
+  sandbox: SandboxMode;
+  prompt: string;
+  images?: readonly string[];
+  model?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+  clientUserMessageId: string;
+}
+
+export interface CodexQueuedTurnResult {
+  queuedSubmissionId: string;
+  turnId?: string;
 }
 
 interface PendingRequest {
@@ -109,6 +127,63 @@ export class CodexThreadReader {
     });
   }
 
+  async queueTurn(options: CodexQueuedTurnOptions): Promise<CodexQueuedTurnResult> {
+    if (this.stopped) throw new Error('Codex thread reader is stopped');
+    await this.ensureStarted();
+    await this.request('thread/resume', {
+      threadId: options.threadId,
+      cwd: options.cwd,
+      approvalPolicy: 'never',
+      sandbox: options.sandbox,
+      excludeTurns: true,
+      ...(options.model ? { model: options.model } : {}),
+      config: {
+        shell_environment_policy: { inherit: 'all' },
+        ...(options.reasoningEffort
+          ? { model_reasoning_effort: options.reasoningEffort }
+          : {}),
+      },
+    });
+    const added = await this.request('thread/queue/add', {
+      threadId: options.threadId,
+      clientUserMessageId: options.clientUserMessageId,
+      input: [
+        { type: 'text', text: options.prompt, text_elements: [] },
+        ...(options.images ?? []).map((path) => ({ type: 'localImage', path })),
+      ],
+    });
+    const queued = recordValue(recordValue(added.result)?.queuedSubmission);
+    const queuedSubmissionId = stringValue(queued?.id);
+    if (!queuedSubmissionId) throw new Error('thread/queue/add returned no queued submission id');
+
+    try {
+      const started = await this.request('thread/queue/start', {
+        threadId: options.threadId,
+        queuedSubmissionId,
+      });
+      const turnId = stringValue(recordValue(recordValue(started.result)?.turn)?.id);
+      return { queuedSubmissionId, ...(turnId ? { turnId } : {}) };
+    } catch (err) {
+      // A currently running turn consumes the queued submission when it
+      // finishes. In that case queue/start is expected to reject, but the add
+      // itself succeeded and polling will discover our exact client id later.
+      if (isActiveTurnConflict(err)) return { queuedSubmissionId };
+      throw err;
+    }
+  }
+
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    if (this.stopped) return;
+    await this.ensureStarted();
+    await this.request('turn/interrupt', { threadId, turnId });
+  }
+
+  async deleteQueuedTurn(threadId: string, queuedSubmissionId: string): Promise<void> {
+    if (this.stopped) return;
+    await this.ensureStarted();
+    await this.request('thread/queue/delete', { threadId, queuedSubmissionId });
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     const child = this.child;
@@ -147,7 +222,10 @@ export class CodexThreadReader {
           title: 'Lark Channel Bridge Thread Sync',
           version: '0.5.7',
         },
-        capabilities: null,
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+        },
       });
       if (response.error) {
         const error = recordValue(response.error);
@@ -210,12 +288,41 @@ export class CodexThreadReader {
     } catch {
       return;
     }
-    if (!message || typeof message.id !== 'number') return;
+    if (!message) return;
+    if (typeof message.method === 'string' && message.id !== undefined) {
+      this.handleServerRequest(message);
+      return;
+    }
+    if (typeof message.id !== 'number') return;
     const pending = this.pending.get(message.id);
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pending.delete(message.id);
     pending.resolve(message);
+  }
+
+  private handleServerRequest(message: Record<string, unknown>): void {
+    const id = message.id;
+    switch (message.method) {
+      case 'item/commandExecution/requestApproval':
+      case 'item/fileChange/requestApproval':
+        this.write({ id, result: { decision: 'accept' } });
+        break;
+      case 'currentTime/read':
+        this.write({ id, result: { currentTimeAt: Math.floor(Date.now() / 1000) } });
+        break;
+      case 'mcpServer/elicitation/request':
+        this.write({ id, result: { action: 'decline', content: null, _meta: null } });
+        break;
+      default:
+        this.write({
+          id,
+          error: {
+            code: -32601,
+            message: `app-server request ${String(message.method)} is not supported by lark-channel-bridge`,
+          },
+        });
+    }
   }
 
   private handleExit(error: Error): void {
@@ -262,7 +369,7 @@ export function normalizeCodexThreadSnapshot(input: unknown): CodexThreadSnapsho
 }
 
 function readerEnv(options: CodexThreadReaderOptions): NodeJS.ProcessEnv {
-  const overrides: NodeJS.ProcessEnv = {};
+  const overrides: NodeJS.ProcessEnv = { ...(options.env ?? {}) };
   if (options.codexHome) overrides.CODEX_HOME = options.codexHome;
   else if (!options.inheritCodexHome) overrides.CODEX_HOME = join(options.profileStateDir, 'codex-home');
   return mergeProcessEnv(process.env, overrides);
@@ -276,4 +383,9 @@ function recordValue(input: unknown): Record<string, unknown> | undefined {
 
 function stringValue(input: unknown): string | undefined {
   return typeof input === 'string' ? input : undefined;
+}
+
+function isActiveTurnConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:active|running|busy|in[ -]?progress|already).*(?:turn|thread)|(?:turn|thread).*(?:active|running|busy|in[ -]?progress|already)/i.test(message);
 }

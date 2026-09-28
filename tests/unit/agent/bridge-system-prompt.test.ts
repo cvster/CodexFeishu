@@ -76,10 +76,8 @@ describe('prefixBridgeSystemPrompt', () => {
     expect(BRIDGE_SYSTEM_PROMPT.length).toBeLessThan(1600);
   });
 
-  it('uses a much shorter reminder for resumed turns', () => {
+  it('does not wrap resumed turns', () => {
     const prompt = prefixBridgeTurnPrompt('hello world');
-    expect(prompt).toContain('user_input');
-    expect(prompt.endsWith('hello world')).toBe(true);
-    expect(prompt.length).toBeLessThan(300);
+    expect(prompt).toBe('hello world');
   });
 });

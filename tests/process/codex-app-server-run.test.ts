@@ -88,12 +88,14 @@ describe('Codex app-server fresh thread run', () => {
       historyMode: 'paginated',
       threadSource: 'lark-channel-bridge',
       model: 'gpt-5.6-sol',
+      developerInstructions: expect.stringContaining('lark-channel-bridge'),
     });
     expect(requests[3]?.params).toMatchObject({
       threadId: 'thread-visible',
       effort: 'high',
+      clientUserMessageId: 'lark-channel-bridge:run-app-server',
       input: [
-        { type: 'text', text: expect.stringContaining('hello'), text_elements: [] },
+        { type: 'text', text: 'hello', text_elements: [] },
         { type: 'localImage', path: image },
       ],
     });

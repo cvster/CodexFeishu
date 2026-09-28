@@ -21,6 +21,8 @@ export interface CodexAppServerRunOptions {
   cwd: string;
   sandbox: SandboxMode;
   prompt: string;
+  developerInstructions?: string;
+  clientUserMessageId: string;
   images?: readonly string[];
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
@@ -314,6 +316,9 @@ function threadStartRequest(options: CodexAppServerRunOptions): object {
       sandbox: options.sandbox,
       historyMode: 'paginated',
       threadSource: 'lark-channel-bridge',
+      ...(options.developerInstructions
+        ? { developerInstructions: options.developerInstructions }
+        : {}),
       ...(options.model ? { model: options.model } : {}),
       config: {
         shell_environment_policy: { inherit: 'all' },
@@ -335,6 +340,7 @@ function turnStartRequest(
       approvalPolicy: 'never',
       ...(options.model ? { model: options.model } : {}),
       ...(options.reasoningEffort ? { effort: options.reasoningEffort } : {}),
+      clientUserMessageId: options.clientUserMessageId,
       input: [
         { type: 'text', text: options.prompt, text_elements: [] },
         ...(options.images ?? []).map((path) => ({ type: 'localImage', path })),

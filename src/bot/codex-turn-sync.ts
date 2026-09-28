@@ -6,6 +6,7 @@ import type { Controls } from '../commands';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
 import type { SessionCatalog, SessionCatalogEntry } from '../session/catalog';
+import { isCodexBridgeClientMessageId } from '../session/codex-origin';
 import {
   CodexThreadReader,
   type CodexThreadItem,
@@ -84,8 +85,9 @@ export interface CodexTurnSyncHandle {
 /**
  * Mirror turns that originate outside the bridge (notably Codex Desktop) into
  * their bound Feishu chats. Bridge-originated turns keep using the existing
- * low-latency event stream and are positively identified by the prompt marker,
- * preventing duplicate replies while both paths coexist.
+ * low-latency event stream and are positively identified by their persisted
+ * client user-message id, preventing duplicate replies while both paths
+ * coexist. The old prompt marker remains a migration fallback.
  */
 export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<CodexTurnSyncHandle> {
   const codex = deps.controls.profileConfig.codex;
@@ -407,6 +409,11 @@ function externalUserText(turn: CodexThreadTurn): string {
 }
 
 function isBridgeTurn(turn: CodexThreadTurn): boolean {
+  const user = turn.items.find((item) => item.type === 'userMessage');
+  if (isCodexBridgeClientMessageId(user?.clientId)) return true;
+  // Legacy bridge turns created before clientUserMessageId was wired used a
+  // prompt wrapper. Keep recognizing those so an upgrade does not mirror old
+  // Feishu messages back into the same group.
   const text = externalUserText(turn).trimStart();
   return text.startsWith('# lark-channel-bridge message') || text.includes('<bridge_context>');
 }

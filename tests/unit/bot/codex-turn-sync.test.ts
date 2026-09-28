@@ -161,10 +161,17 @@ function externalTurn(
 }
 
 function bridgeTurn(id: string): CodexThreadSnapshot['turns'][number] {
-  return externalTurn(
+  return {
     id,
-    'completed',
-    '# lark-channel-bridge message\n\n<bridge_context>\n{}\n</bridge_context>',
-    'already delivered',
-  );
+    status: 'completed',
+    items: [
+      {
+        type: 'userMessage',
+        id: `${id}-user`,
+        clientId: `lark-channel-bridge:${id}`,
+        content: [{ type: 'text', text: 'plain Feishu prompt' }],
+      },
+      { type: 'agentMessage', id: `${id}-answer`, text: 'already delivered' },
+    ],
+  };
 }

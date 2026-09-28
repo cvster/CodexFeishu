@@ -83,6 +83,51 @@ export interface BuildAgentPromptInput {
   attachments?: BridgePromptAttachment[];
 }
 
+export interface BuildCodexUserPromptInput {
+  userInput: string;
+  instructions?: string[];
+  topicContext?: BridgePromptTopicMessage[];
+  quotedMessages?: BridgePromptQuotedMessage[];
+  interactiveCards?: BridgePromptInteractiveCard[];
+  attachments?: BridgePromptAttachment[];
+  mentions?: BridgePromptMention[];
+}
+
+/**
+ * Keep the common Codex path genuinely plain: a normal Feishu text message is
+ * byte-for-byte the userInput supplied here. Rich Feishu-only details are
+ * reduced to one compact block only when the model cannot infer them from the
+ * text or native image inputs.
+ */
+export function buildCodexUserPrompt(input: BuildCodexUserPromptInput): string {
+  const context: Record<string, unknown> = {};
+  if (input.instructions?.length) context.instructions = input.instructions;
+  if (input.topicContext?.length) {
+    context.topic = input.topicContext.map(compactConversationMessage);
+  }
+  if (input.quotedMessages?.length) {
+    context.quotes = input.quotedMessages.map(compactConversationMessage);
+  }
+  if (input.interactiveCards?.length) {
+    context.cards = input.interactiveCards.map((card) => card.content);
+  }
+  const attachments = input.attachments
+    ?.filter((attachment) => !isNativeCodexImage(attachment))
+    .map((attachment) => ({
+      path: attachment.path,
+      kind: attachment.kind,
+      ...(attachment.mime ? { mime: attachment.mime } : {}),
+      ...(attachment.decision ? { decision: attachment.decision } : {}),
+      ...(attachment.rejectionReason ? { rejectionReason: attachment.rejectionReason } : {}),
+    }));
+  if (attachments?.length) context.attachments = attachments;
+  if (input.mentions?.length) context.mentions = input.mentions;
+
+  return Object.keys(context).length === 0
+    ? input.userInput
+    : `${promptSection('lark_context', context)}\n\n${input.userInput}`;
+}
+
 export function buildAgentPrompt(input: BuildAgentPromptInput): string {
   const sections = [
     promptSection('bridge_context', input.context),
@@ -121,4 +166,19 @@ export function safeJsonStringify(value: unknown): string {
     .replace(/&/g, '\\u0026')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
+}
+
+function compactConversationMessage(
+  message: BridgePromptQuotedMessage | BridgePromptTopicMessage,
+): Record<string, unknown> {
+  return {
+    ...(message.senderName ? { sender: message.senderName } : {}),
+    ...(message.createdAt ? { createdAt: message.createdAt } : {}),
+    type: message.rawContentType,
+    content: message.content,
+  };
+}
+
+function isNativeCodexImage(attachment: BridgePromptAttachment): boolean {
+  return attachment.kind === 'image' && attachment.decision !== 'rejected';
 }

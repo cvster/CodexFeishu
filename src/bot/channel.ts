@@ -9,6 +9,7 @@ import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
 import {
   buildAgentPrompt,
+  buildCodexUserPrompt,
   type BridgePromptInteractiveCard,
   type BridgePromptMention,
   type BridgePromptQuotedMessage,
@@ -897,6 +898,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     topicContext,
     channel.botIdentity,
     extraInstructions,
+    agentKind === 'codex',
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -1818,6 +1820,7 @@ function buildPrompt(
   topicContext: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
+  rawCodexInput = false,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1843,6 +1846,28 @@ function buildPrompt(
 
   const senderType = senderTypeOf(first);
   const mentions = mergeMentions(batch);
+  const quotedMessages = quotes.map(toPromptQuote);
+  const topicMessages = topicContext.map(toPromptTopicMessage);
+  const interactiveCards = batch.map(toPromptInteractiveCard).filter(isDefined);
+  const promptAttachments = attachments.map(toPromptAttachment);
+
+  if (rawCodexInput) {
+    return buildCodexUserPrompt({
+      userInput: userPart,
+      ...(extraInstructions?.length ? { instructions: extraInstructions } : {}),
+      ...(topicMessages.length ? { topicContext: topicMessages } : {}),
+      ...(quotedMessages.length ? { quotedMessages } : {}),
+      ...(interactiveCards.length ? { interactiveCards } : {}),
+      ...(promptAttachments.length ? { attachments: promptAttachments } : {}),
+      ...(mentions.length
+        ? {
+            mentions: mentions.filter(
+              (mention) => !botIdentity?.openId || mention.openId !== botIdentity.openId,
+            ),
+          }
+        : {}),
+    });
+  }
 
   return buildAgentPrompt({
     context: {
@@ -1861,10 +1886,10 @@ function buildPrompt(
       ? { instructions: extraInstructions }
       : {}),
     userInput: userPart,
-    ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
-    quotedMessages: quotes.map(toPromptQuote),
-    interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
-    attachments: attachments.map(toPromptAttachment),
+    ...(topicMessages.length > 0 ? { topicContext: topicMessages } : {}),
+    quotedMessages,
+    interactiveCards,
+    attachments: promptAttachments,
   });
 }
 

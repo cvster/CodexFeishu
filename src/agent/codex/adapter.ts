@@ -5,7 +5,7 @@ import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
-import { prefixBridgeSystemPrompt, prefixBridgeTurnPrompt } from '../bridge-system-prompt';
+import { buildBridgeSystemPrompt, prefixBridgeSystemPrompt, prefixBridgeTurnPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
@@ -20,6 +20,7 @@ import { createCodexAppServerRun } from './app-server-run';
 import { createCodexQueueRun } from './queue';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { archiveCodexThread, setCodexThreadName } from '../../session/codex-history';
+import { codexBridgeClientMessageId } from '../../session/codex-origin';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -134,7 +135,9 @@ export class CodexAdapter implements AgentAdapter {
         inheritCodexHome: this.inheritCodexHome,
         cwd: opts.cwd,
         sandbox: opts.sandbox ?? this.sandbox,
-        prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
+        prompt: opts.prompt,
+        developerInstructions: buildBridgeSystemPrompt(this.botIdentity),
+        clientUserMessageId: codexBridgeClientMessageId(opts.runId),
         images: opts.images,
         model: opts.model,
         reasoningEffort: opts.reasoningEffort,
@@ -153,7 +156,8 @@ export class CodexAdapter implements AgentAdapter {
         cwd: opts.cwd,
         sandbox: opts.sandbox ?? this.sandbox,
         threadId: opts.threadId,
-        prompt: prefixBridgeTurnPrompt(opts.prompt),
+        prompt: opts.prompt,
+        clientUserMessageId: codexBridgeClientMessageId(opts.runId),
         images: opts.images,
         model: opts.model,
         reasoningEffort: opts.reasoningEffort,
