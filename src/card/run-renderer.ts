@@ -17,6 +17,8 @@ type Group = ToolGroup | TextGroup;
 
 export interface RunCardRenderOptions {
   signCallback?: (action: string) => string;
+  /** External Codex turns have no bridge-owned RunHandle to interrupt. */
+  showStopButton?: boolean;
 }
 
 export function renderCard(state: RunState, options: RunCardRenderOptions = {}): object {
@@ -51,7 +53,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     const status = renderColoredRunStatus(state);
     if (status) elements.push(noteMd(status));
     else if (state.footer) elements.push(footerStatus(state.footer));
-    elements.push(stopButton(options));
+    if (options.showStopButton !== false) elements.push(stopButton(options));
   } else {
     const status = renderColoredRunStatus(state);
     if (status) elements.push(noteMd(status));

@@ -75,6 +75,7 @@ import { fetchKnownChats } from './lark-info';
 import { isSoloUserBotChat } from './group';
 import { syncCodexThreadNameFromChat } from './thread-name';
 import { startAaSessionGroupSync } from './aa-session-groups';
+import { startCodexTurnSync } from './codex-turn-sync';
 import type { AppPaths } from '../config/app-paths';
 import {
   clearCardStreamProgress,
@@ -476,6 +477,15 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           profileStateDir: deps.appPaths.profileDir,
         })
       : undefined;
+  const codexTurnSync =
+    sessionCatalog && deps.appPaths?.profileDir
+      ? await startCodexTurnSync({
+          channel,
+          controls,
+          sessionCatalog,
+          profileStateDir: deps.appPaths.profileDir,
+        })
+      : undefined;
 
   const identity = channel.botIdentity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
@@ -516,6 +526,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       aaSessionGroupSync?.stop();
+      await codexTurnSync?.stop();
       keepalive.stop();
       pending.cancelAll();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
