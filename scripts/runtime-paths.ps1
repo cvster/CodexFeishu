@@ -128,6 +128,49 @@ function Resolve-MobileCodexNodePath {
   throw 'Node.js 22 LTS not found. Set MOBILE_CODEX_NODE if needed.'
 }
 
+function Resolve-MobileCodexCliPath {
+  if (Test-UsableExecutablePath $env:MOBILE_CODEX_CLI) {
+    $configuredQueueHelp = & $env:MOBILE_CODEX_CLI queue --help 2>$null
+    if ($LASTEXITCODE -eq 0 -and $configuredQueueHelp -match 'Queue a message') {
+      return $env:MOBILE_CODEX_CLI
+    }
+
+    throw 'MOBILE_CODEX_CLI does not support the required codex queue command.'
+  }
+
+  $desktopBinRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
+  if (Test-Path $desktopBinRoot) {
+    $desktopBinaries = @(Get-ChildItem -Path $desktopBinRoot -Filter 'codex.exe' -File -Recurse -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTimeUtc -Descending)
+
+    foreach ($binary in $desktopBinaries) {
+      if (-not (Test-UsableExecutablePath $binary.FullName)) {
+        continue
+      }
+
+      $versionOutput = & $binary.FullName --version 2>$null
+      $queueHelp = & $binary.FullName queue --help 2>$null
+      if (
+        $LASTEXITCODE -eq 0 -and
+        $versionOutput -match '^codex-cli\s+' -and
+        $queueHelp -match 'Queue a message'
+      ) {
+        return $binary.FullName
+      }
+    }
+  }
+
+  $pathCommand = Get-UsableCommandPath 'codex.exe'
+  if ($pathCommand) {
+    $pathQueueHelp = & $pathCommand queue --help 2>$null
+    if ($LASTEXITCODE -eq 0 -and $pathQueueHelp -match 'Queue a message') {
+      return $pathCommand
+    }
+  }
+
+  throw 'Codex CLI with native queue support not found. Update Codex Desktop or set MOBILE_CODEX_CLI.'
+}
+
 function Test-MobileCodexPythonPath {
   param(
     [string]$Path,

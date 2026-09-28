@@ -11,7 +11,8 @@ if (-not (Test-Path $repo)) {
 }
 
 $node = Resolve-MobileCodexNodePath
-$requiredCodexSdkVersion = '0.144.3'
+$codexCli = Resolve-MobileCodexCliPath
+$requiredCodexSdkVersion = '0.158.0'
 
 $logDir = Join-Path $workspace 'tmp\logs'
 $stdoutLog = Join-Path $logDir 'mobile-codex-app.stdout.log'
@@ -139,6 +140,9 @@ if ((Test-Path $overrideRoot) -and (Test-Path $distIndex) -and -not $env:MOBILE_
 }
 
 $env:MOBILE_CODEX_NODE = $node
+$env:MOBILE_CODEX_CLI = $codexCli
+Write-Output "Using Codex CLI: $(& $codexCli --version) ($codexCli)"
+Write-Output "Using Codex SDK: $requiredCodexSdkVersion"
 $env:NODE_ENV = 'production'
 $env:HOST = '127.0.0.1'
 $env:PORT = '3001'

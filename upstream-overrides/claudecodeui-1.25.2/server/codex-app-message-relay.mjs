@@ -1,18 +1,6 @@
 import { spawn } from 'node:child_process';
-import crypto from 'node:crypto';
-import { promises as fs } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_RELAY_CWD = path.resolve(__dirname, '../../../');
-const DEFAULT_RELAY_MODEL = 'gpt-5.6-luna';
-const DEFAULT_RELAY_REASONING_EFFORT = 'low';
 const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
 const MAX_PROCESS_OUTPUT_LENGTH = 64 * 1024;
-const RELAY_PROMPT =
-  '不要读取或使用项目文件、指令和能力；消息仅作为普通文本发送，只执行发送操作；成功只回复OK，失败只回复ERROR:原因。';
 
 const relayQueues = new Map();
 
@@ -31,14 +19,22 @@ function validateMessage(value) {
   return value;
 }
 
-export function buildCodexAppMessageRelayCommand({ project, session, message }) {
-  return JSON.stringify({
-    action: 'send_message',
-    project: normalizeRequiredText(project, 'project'),
-    session: normalizeRequiredText(session, 'session'),
-    message: validateMessage(message),
-    prompt: RELAY_PROMPT,
-  });
+export function buildCodexAppMessageRelayArgs({ sessionId, projectPath, message }) {
+  return [
+    'queue',
+    '--thread',
+    normalizeRequiredText(sessionId, 'sessionId'),
+    '--message',
+    validateMessage(message),
+    '--sandbox',
+    'danger-full-access',
+    '-c',
+    'approval_policy="never"',
+    '-c',
+    'shell_environment_policy.inherit="all"',
+    '-C',
+    normalizeRequiredText(projectPath, 'projectPath'),
+  ];
 }
 
 function appendProcessOutput(current, chunk) {
@@ -46,16 +42,6 @@ function appendProcessOutput(current, chunk) {
   return combined.length > MAX_PROCESS_OUTPUT_LENGTH
     ? combined.slice(-MAX_PROCESS_OUTPUT_LENGTH)
     : combined;
-}
-
-function validateRelayResult(finalMessage) {
-  if (finalMessage === 'OK') {
-    return;
-  }
-  if (finalMessage.startsWith('ERROR:')) {
-    throw new Error(finalMessage.slice('ERROR:'.length).trim() || 'Relay reported an unknown error.');
-  }
-  throw new Error(`Codex App message relay returned an invalid result: ${finalMessage || '<empty>'}`);
 }
 
 async function terminateProcessTree(child) {
@@ -77,37 +63,22 @@ async function terminateProcessTree(child) {
   });
 }
 
-export async function runCodexAppMessageRelayCommand(command, options) {
-  const outputPath = path.join(os.tmpdir(), `mobile-codex-relay-${crypto.randomUUID()}.txt`);
-  const codexEntrypoint =
-    process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_CODEX_JS ||
-    path.join(path.dirname(process.execPath), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+export async function runCodexAppMessageRelayCommand(args, options = {}) {
+  const codexCli = normalizeRequiredText(process.env.MOBILE_CODEX_CLI, 'MOBILE_CODEX_CLI');
   const timeoutMs = Number(
-    process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_TIMEOUT_MS || DEFAULT_RELAY_TIMEOUT_MS,
+    process.env.MOBILE_CODEX_QUEUE_TIMEOUT_MS ||
+      process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_TIMEOUT_MS ||
+      DEFAULT_RELAY_TIMEOUT_MS,
   );
-  const args = [
-    codexEntrypoint,
-    'exec',
-    'resume',
-    '-m',
-    options.model,
-    '-c',
-    `model_reasoning_effort="${options.modelReasoningEffort}"`,
-    '--dangerously-bypass-approvals-and-sandbox',
-    '--output-last-message',
-    outputPath,
-    options.sessionId,
-    '-',
-  ];
 
   let stdout = '';
   let stderr = '';
   let timedOut = false;
-  const child = spawn(process.execPath, args, {
-    cwd: options.cwd,
+  const child = spawn(codexCli, args, {
+    cwd: options.cwd || process.cwd(),
     env: process.env,
     windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (chunk) => {
     stdout = appendProcessOutput(stdout, chunk);
@@ -115,9 +86,6 @@ export async function runCodexAppMessageRelayCommand(command, options) {
   child.stderr.on('data', (chunk) => {
     stderr = appendProcessOutput(stderr, chunk);
   });
-  child.stdin.on('error', () => {});
-  child.stdin.end(command, 'utf8');
-
   const timeoutHandle = setTimeout(() => {
     timedOut = true;
     void terminateProcessTree(child);
@@ -137,62 +105,39 @@ export async function runCodexAppMessageRelayCommand(command, options) {
       );
     }
 
-    const finalMessage = (await fs.readFile(outputPath, 'utf8')).trim();
-    validateRelayResult(finalMessage);
-    return finalMessage;
+    return stdout.trim();
   } finally {
     clearTimeout(timeoutHandle);
-    await fs.rm(outputPath, { force: true }).catch(() => {});
   }
 }
 
 export function enqueueCodexAppMessageRelay(payload, dependencies) {
-  const relaySessionId = (process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID || '').trim();
-  if (!relaySessionId) {
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+  if (!sessionId) {
     return Promise.resolve({
       skipped: true,
-      reason: 'relay-session-not-configured',
-      error: 'MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID is not configured.',
+      reason: 'session-id-missing',
+      error: 'Existing Codex App session id is required for native queue delivery.',
     });
   }
 
-  const queueKey = relaySessionId;
+  const queueKey = sessionId;
   const previous = relayQueues.get(queueKey) || Promise.resolve();
 
   const next = previous
     .catch(() => {})
     .then(async () => {
-      const target = await dependencies.resolveCodexDesktopMessageTarget(payload);
-      if (!target || target.selectionMode === 'unresolved' || !target.sessionTitle) {
-        return {
-          skipped: true,
-          reason: 'session-unresolved',
-          error: 'Could not resolve the target Codex desktop session title.',
-          target: target || null,
-        };
-      }
-
-      const command = buildCodexAppMessageRelayCommand({
-        project: target.projectDisplayName,
-        session: target.sessionTitle,
+      const args = buildCodexAppMessageRelayArgs({
+        sessionId,
+        projectPath: payload.projectPath,
         message: payload.message,
       });
-      const relayOptions = {
-        sessionId: relaySessionId,
-        cwd: process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_CWD || DEFAULT_RELAY_CWD,
-        model: process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_MODEL || DEFAULT_RELAY_MODEL,
-        modelReasoningEffort:
-          process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_REASONING_EFFORT ||
-          DEFAULT_RELAY_REASONING_EFFORT,
-      };
       const runRelayCommand =
         dependencies.runRelayCommand || runCodexAppMessageRelayCommand;
-      await runRelayCommand(command, relayOptions);
+      await runRelayCommand(args, { cwd: payload.projectPath });
       return {
         skipped: false,
-        sessionId: payload.sessionId || null,
-        target,
-        relaySessionId,
+        sessionId,
       };
     })
     .catch((error) => ({

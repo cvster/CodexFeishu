@@ -3,7 +3,14 @@
   var CODEX_REASONING_STORAGE_KEY = "codex-reasoning-effort";
   var CODEX_MODEL_MIGRATION_KEY = "codex-model-default-migrated-to-5.6-sol";
   var DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
-  var CODEX_5_6_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+  var CODEX_CURRENT_MODELS = [
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+  ];
   var VALID_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
   function migrateDefaultCodexModel() {
@@ -54,12 +61,15 @@
 
   function ensureCodexModelOptions(select) {
     var labels = {
+      "gpt-6-astra": "GPT-6 Astra",
+      "gpt-6-sol": "GPT-6 Sol",
+      "gpt-6-luna": "GPT-6 Luna",
       "gpt-5.6-sol": "GPT-5.6 Sol",
       "gpt-5.6-terra": "GPT-5.6 Terra",
       "gpt-5.6-luna": "GPT-5.6 Luna",
     };
 
-    CODEX_5_6_MODELS.slice().reverse().forEach(function (model) {
+    CODEX_CURRENT_MODELS.slice().reverse().forEach(function (model) {
       if (!select.querySelector('option[value="' + model + '"]')) {
         var option = document.createElement("option");
         option.value = model;

@@ -32,7 +32,6 @@ PHONE_ACTIVITY_WINDOW_MINUTES = 10
 LOCAL_PANEL_URL = f"http://127.0.0.1:{APP_PORT}"
 APP_HEALTH_URL = f"{LOCAL_PANEL_URL}/health"
 PROXY_HEALTH_URL = f"http://127.0.0.1:{PROXY_PORT}/health"
-REMOTE_TARGET = f"http://127.0.0.1:{PROXY_PORT}"
 
 
 def resolve_workspace() -> Path:
@@ -79,10 +78,11 @@ def load_local_env(path: Path) -> None:
 
 
 load_local_env(WORKSPACE / ".env")
+PRIVATE_NETWORK_IP = os.environ.get("MOBILE_CODEX_PRIVATE_IP", "").strip()
+PRIVATE_NETWORK_URL = f"http://{PRIVATE_NETWORK_IP}:{PROXY_PORT}" if PRIVATE_NETWORK_IP else None
 SCRIPTS_DIR = WORKSPACE / "scripts"
 APP_STDERR_LOG = WORKSPACE / "tmp" / "logs" / "mobile-codex-app.stderr.log"
 MOBILE_USER_AGENT = re.compile(r"android|iphone|ipad|mobile|ios|harmony", re.IGNORECASE)
-MOBILE_OS = {"android", "ios"}
 NGINX_MONTHS = {
     "Jan": 1,
     "Feb": 2,
@@ -99,13 +99,6 @@ NGINX_MONTHS = {
 }
 
 
-def resolve_tailscale_path() -> Path:
-    configured = os.environ.get("MOBILE_CODEX_TAILSCALE")
-    if configured:
-        return Path(configured)
-    return Path(r"C:\Program Files\Tailscale\tailscale.exe")
-
-
 def resolve_ascii_alias_path() -> Path:
     configured = os.environ.get("MOBILE_CODEX_ASCII_ALIAS")
     if configured:
@@ -116,7 +109,6 @@ def resolve_ascii_alias_path() -> Path:
 
 
 ASCII_ALIAS_PATH = resolve_ascii_alias_path()
-TAILSCALE = resolve_tailscale_path()
 NGINX_ACCESS_LOG = ASCII_ALIAS_PATH / ".runtime" / "nginx" / "logs" / "mobile-codex.access.log"
 NGINX_ERROR_LOG = ASCII_ALIAS_PATH / ".runtime" / "nginx" / "logs" / "mobile-codex.error.log"
 
@@ -368,12 +360,6 @@ def is_port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.8) -> bo
         return sock.connect_ex((host, port)) == 0
 
 
-def normalize_dns_name(value: str | None) -> str | None:
-    if not value:
-        return None
-    return value[:-1] if value.endswith(".") else value
-
-
 def parse_nginx_timestamp(value: str) -> str | None:
     match = re.match(
         r"^(?P<day>\d{2})/(?P<month>[A-Za-z]{3})/(?P<year>\d{4}):"
@@ -461,120 +447,45 @@ def normalize_remote_health_detail(detail: str) -> str:
 
 def build_remote_block(remote: dict[str, Any], app_ok: bool, proxy_ok: bool) -> tuple[StatusBlock, dict[str, Any]]:
     if not remote["published"]:
-        block = StatusBlock("远程发布", False, "未开启", "远程发布未开启", "error")
+        block = StatusBlock("组网入口", False, "未配置", "未配置 MOBILE_CODEX_PRIVATE_IP", "error")
         return block, {"value": "未开启", "detail": block.detail, "level": "error"}
 
     if not app_ok or not proxy_ok:
         detail = f"{remote['url']} | 已发布，但本地服务未启动" if remote["url"] else "已发布，但本地服务未启动"
-        block = StatusBlock("远程发布", False, "已发布，待服务启动", detail, "warning")
+        block = StatusBlock("组网入口", False, "已配置，待服务启动", detail, "warning")
         return block, {"value": "已发布", "detail": detail, "level": "warning"}
 
     if remote["health_ok"]:
         detail = f"{remote['url']} | 远程健康正常" if remote["url"] else remote["detail"]
-        block = StatusBlock("远程发布", True, "可访问", detail, "success")
+        block = StatusBlock("组网入口", True, "可访问", detail, "success")
         return block, {"value": "可访问", "detail": detail, "level": "success"}
 
     health_summary = normalize_remote_health_detail(remote["health_detail"])
     detail = f"{remote['url']} | {health_summary}" if remote["url"] else health_summary
-    block = StatusBlock("远程发布", True, "已发布，待验证", detail, "warning")
+    block = StatusBlock("组网入口", True, "已配置，待验证", detail, "warning")
     return block, {"value": "已发布", "detail": detail, "level": "warning"}
 
 
-def load_tailscale_status() -> dict[str, Any]:
-    if not TAILSCALE.exists():
-        return {"ok": False, "error": f"Tailscale CLI 未找到：{TAILSCALE}"}
-    result = run_command([str(TAILSCALE), "status", "--json"])
-    if result.returncode != 0:
-        return {"ok": False, "error": result.stderr.strip() or result.stdout.strip() or "读取 Tailscale 状态失败"}
-    try:
-        return {"ok": True, "data": json.loads(result.stdout)}
-    except json.JSONDecodeError as exc:
-        return {"ok": False, "error": f"Tailscale 返回的 JSON 无法解析: {exc}"}
-
-
-def load_serve_status() -> dict[str, Any]:
-    if not TAILSCALE.exists():
-        return {"ok": False, "error": f"Tailscale CLI 未找到：{TAILSCALE}"}
-    result = run_command([str(TAILSCALE), "serve", "status", "--json"])
-    if result.returncode != 0:
-        return {"ok": False, "error": result.stderr.strip() or result.stdout.strip() or "读取远程发布状态失败"}
-    try:
-        return {"ok": True, "data": json.loads(result.stdout)}
-    except json.JSONDecodeError as exc:
-        return {"ok": False, "error": f"远程发布状态 JSON 无法解析: {exc}"}
-
-
-def build_remote_status(tailscale_status: dict[str, Any], serve_status: dict[str, Any]) -> dict[str, Any]:
-    serve_data = serve_status.get("data") if serve_status.get("ok") else {}
-    web_entries = list((serve_data or {}).get("Web", {}).items())
-    if not web_entries:
+def build_private_network_status() -> dict[str, Any]:
+    if not PRIVATE_NETWORK_URL:
         return {
             "published": False,
             "url": None,
             "target": None,
-            "detail": "远程发布未开启",
+            "detail": "未配置私有组网 IP",
             "health_ok": False,
-            "health_detail": "未执行远程健康检查",
+            "health_detail": "未执行组网健康检查",
         }
 
-    host_and_port, config = web_entries[0]
-    host = str(host_and_port).replace(":443", "")
-    target = (((config or {}).get("Handlers") or {}).get("/") or {}).get("Proxy")
-    tailscale_data = tailscale_status.get("data") if tailscale_status.get("ok") else {}
-    fallback_dns = normalize_dns_name((((tailscale_data or {}).get("Self") or {}).get("DNSName")))
-    url = f"https://{host or fallback_dns}" if (host or fallback_dns) else None
-    health_ok = False
-    health_detail = "未执行远程健康检查"
-    if url:
-        health_ok, health_detail = http_health(f"{url}/health", timeout=2.5)
+    health_ok, health_detail = http_health(f"{PRIVATE_NETWORK_URL}/health", timeout=2.5)
     return {
         "published": True,
-        "url": url,
-        "target": target,
-        "detail": f"已发布到 {target}" if target else "远程发布已开启",
+        "url": PRIVATE_NETWORK_URL,
+        "target": f"127.0.0.1:{APP_PORT}",
+        "detail": f"nginx 监听 {PRIVATE_NETWORK_IP}:{PROXY_PORT}",
         "health_ok": health_ok,
         "health_detail": health_detail,
     }
-
-
-def pick_mobile_display_name(peer: dict[str, Any]) -> str:
-    host_name = str(peer.get("HostName") or "").strip()
-    dns_name = normalize_dns_name(peer.get("DNSName")) or ""
-    tail_ip = (peer.get("TailscaleIPs") or [""])[0]
-    if host_name and host_name.lower() != "localhost":
-        return host_name
-    if dns_name:
-        return dns_name
-    if tail_ip:
-        return tail_ip
-    return "未命名手机"
-
-
-def extract_mobile_peers(tailscale_status: dict[str, Any]) -> list[dict[str, Any]]:
-    if not tailscale_status.get("ok"):
-        return []
-    peers = []
-    for peer_id, peer in (tailscale_status["data"].get("Peer") or {}).items():
-        os_name = str(peer.get("OS") or "").lower()
-        if os_name not in MOBILE_OS:
-            continue
-        peers.append(
-            {
-                "id": peer_id,
-                "display_name": pick_mobile_display_name(peer),
-                "host_name": peer.get("HostName") or "",
-                "dns_name": normalize_dns_name(peer.get("DNSName")) or "",
-                "os": os_name,
-                "online": bool(peer.get("Online")),
-                "active": bool(peer.get("Active")),
-                "last_handshake": peer.get("LastHandshake") or "",
-                "last_seen": peer.get("LastSeen") or "",
-                "tail_ip": (peer.get("TailscaleIPs") or [""])[0],
-                "relay": peer.get("Relay") or "",
-            }
-        )
-    peers.sort(key=lambda item: (not item["online"], not item["active"], item["display_name"]))
-    return peers
 
 
 def tail_lines(file_path: Path, max_lines: int = 200) -> list[str]:
@@ -801,13 +712,10 @@ def collect_status() -> dict[str, Any]:
     proxy_ok, proxy_health_detail = http_health(PROXY_HEALTH_URL)
     app_detail = describe_service(app_ok, app_health_detail, app_listener)
     proxy_detail = describe_service(proxy_ok, proxy_health_detail, proxy_listener)
-    tailscale_status = load_tailscale_status()
-    serve_status = load_serve_status()
-    remote = build_remote_status(tailscale_status, serve_status)
-    peers = extract_mobile_peers(tailscale_status)
+    remote = build_private_network_status()
+    peers: list[dict[str, Any]] = []
     approved_devices = list_approved_devices()
     pending_approvals = list_pending_device_approvals()
-    mobile_online = sum(1 for peer in peers if peer["online"])
     recent_requests = recent_mobile_requests()
     latest_request_time = recent_requests[0]["time"] if recent_requests else None
     recent_phone_activity = is_recent(latest_request_time)
@@ -815,10 +723,9 @@ def collect_status() -> dict[str, Any]:
         1 for request in recent_requests if request["path"] == "/ws" and request["status"] == 101 and is_recent(request["time"])
     )
 
-    tailscale_data = tailscale_status.get("data") if tailscale_status.get("ok") else {}
-    backend_state = (tailscale_data.get("BackendState") if tailscale_data else None) or "不可用"
-    dns_name = normalize_dns_name((((tailscale_data or {}).get("Self") or {}).get("DNSName")))
-    current_device = peers[0]["display_name"] if peers else "暂未发现手机设备"
+    mobile_online = 1 if recent_phone_activity else 0
+    mobile_total = max(len(approved_devices), mobile_online)
+    current_device = recent_requests[0]["ip"] if recent_requests else "暂未发现手机访问"
     latest_activity_summary = (
         f"{recent_requests[0]['path']} · {format_datetime(latest_request_time)}"
         if recent_requests
@@ -831,17 +738,17 @@ def collect_status() -> dict[str, Any]:
         StatusBlock("PC 应用服务", app_ok, "运行中" if app_ok else "未启动", app_detail, "success" if app_ok else "error"),
         StatusBlock("nginx 代理", proxy_ok, "运行中" if proxy_ok else "未启动", proxy_detail, "success" if proxy_ok else "error"),
         StatusBlock(
-            "Tailscale",
-            bool(tailscale_status.get("ok") and backend_state == "Running"),
-            "运行中" if bool(tailscale_status.get("ok") and backend_state == "Running") else backend_state,
-            dns_name or tailscale_status.get("error", "未获取到域名"),
-            "success" if bool(tailscale_status.get("ok") and backend_state == "Running") else "error",
+            "星空组网",
+            bool(PRIVATE_NETWORK_IP),
+            "已配置" if PRIVATE_NETWORK_IP else "未配置",
+            PRIVATE_NETWORK_IP or "请设置 MOBILE_CODEX_PRIVATE_IP",
+            "success" if PRIVATE_NETWORK_IP else "error",
         ),
         remote_block,
         StatusBlock(
             "手机连接状态",
             mobile_online > 0,
-            f"{mobile_online}/{len(peers)} 在线",
+            f"{mobile_online}/{mobile_total} 最近活跃",
             current_device,
             "success" if mobile_online > 0 else "error",
         ),
@@ -867,7 +774,8 @@ def collect_status() -> dict[str, Any]:
         "summary": {
             "app_running": app_ok,
             "nginx_running": proxy_ok,
-            "tailscale_running": bool(tailscale_status.get("ok") and backend_state == "Running"),
+            "tailscale_running": False,
+            "private_network_configured": bool(PRIVATE_NETWORK_IP),
             "remote_enabled": remote["published"],
             "remote_reachable": remote["health_ok"],
             "remote_available": remote_available,
@@ -877,7 +785,7 @@ def collect_status() -> dict[str, Any]:
             "approved_devices": len(approved_devices),
             "pending_approvals": len(pending_approvals),
             "mobile_online": mobile_online,
-            "mobile_total": len(peers),
+            "mobile_total": mobile_total,
             "recent_phone_requests": len(recent_requests),
             "recent_phone_websockets": active_phone_websockets,
             "recent_phone_activity": recent_phone_activity,
@@ -897,10 +805,7 @@ def stack_is_running() -> bool:
 
 
 def remote_publish_is_enabled() -> bool:
-    tailscale_status = load_tailscale_status()
-    serve_status = load_serve_status()
-    remote = build_remote_status(tailscale_status, serve_status)
-    return bool(remote["published"])
+    return bool(build_private_network_status()["health_ok"])
 
 
 def stack_is_stopped() -> bool:
@@ -909,14 +814,6 @@ def stack_is_stopped() -> bool:
     app_ok, _ = http_health(APP_HEALTH_URL, timeout=0.8)
     proxy_ok, _ = http_health(PROXY_HEALTH_URL, timeout=0.8)
     return not app_ok and not proxy_ok
-
-
-def wait_for_remote_reachable(timeout: float = 8.0) -> bool:
-    def _remote_ok() -> bool:
-        status = collect_status()
-        return bool(status["summary"]["remote_reachable"])
-
-    return wait_for(_remote_ok, timeout=timeout, interval=1.0)
 
 
 def perform_action(action: str) -> str:
@@ -932,8 +829,6 @@ def perform_action(action: str) -> str:
 
     if action == "stop":
         result = powershell_file("stop-mobile-codex-stack.ps1", timeout=20)
-        if TAILSCALE.exists():
-            run_command([str(TAILSCALE), "serve", "reset"], timeout=10)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "停止整套服务失败")
         if not wait_for(stack_is_stopped, timeout=15, interval=1.0):
@@ -946,22 +841,15 @@ def perform_action(action: str) -> str:
         return "整套服务已停止"
 
     if action == "enable_remote":
-        result = run_command([str(TAILSCALE), "serve", "--bg", REMOTE_TARGET], timeout=20)
+        result = powershell_file("start-mobile-codex-nginx.ps1", timeout=20)
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "开启远程发布失败")
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "启动组网入口失败")
         if not wait_for(remote_publish_is_enabled, timeout=12, interval=1.0):
-            raise RuntimeError("远程发布命令已执行，但 Tailscale Serve 状态仍未生效")
-        if wait_for_remote_reachable(timeout=8):
-            return "远程发布已开启，远程地址可访问"
-        return "远程发布已开启，若手机端暂时打不开请等待几秒后刷新"
+            raise RuntimeError(f"nginx 已启动，但组网地址 {PRIVATE_NETWORK_URL or '未配置'} 仍不可访问")
+        return f"星空组网入口已开启：{PRIVATE_NETWORK_URL}"
 
     if action == "disable_remote":
-        result = run_command([str(TAILSCALE), "serve", "reset"], timeout=10)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "关闭远程发布失败")
-        if not wait_for(lambda: not remote_publish_is_enabled(), timeout=8, interval=0.8):
-            raise RuntimeError("远程发布关闭命令已执行，但 Serve 状态仍存在")
-        return "远程发布已关闭"
+        raise RuntimeError("星空组网入口与本地 nginx 共用；请使用“停止服务”关闭")
 
     if action == "open_local":
         webbrowser.open(LOCAL_PANEL_URL)
@@ -1011,7 +899,7 @@ class ControlApp:
 
         subtitle = tk.Label(
             container,
-            text="用于在电脑端一键控制 Codex 服务，并集中查看本机服务、远程发布与手机连接状态。",
+            text="用于在电脑端一键控制 Codex 服务，并集中查看本机服务、私有组网与手机连接状态。",
             font=("Microsoft YaHei UI", 10),
             bg="#eef3f8",
             fg="#4f6072",
@@ -1040,8 +928,8 @@ class ControlApp:
         for index, (key, title_text, hint) in enumerate(
             [
                 ("services", "本机服务", "健康服务数量"),
-                ("remote", "远程发布", "Tailscale 私有地址"),
-                ("mobile", "手机在线", "手机设备在线情况"),
+                ("remote", "组网入口", "星空组网私有地址"),
+                ("mobile", "手机活跃", "最近访问情况"),
                 ("whitelist", "设备白名单", "已批准设备数量"),
                 ("approvals", "待审批", "首次登录待电脑授权"),
                 ("activity", "最近访问", "近 10 分钟活跃度"),
@@ -1078,8 +966,7 @@ class ControlApp:
             ("刷新状态", "#1f6feb", lambda: self.run_background("正在刷新状态...", self._refresh_action)),
             ("启动服务", "#0f9d58", lambda: self.run_background("正在启动整套服务...", lambda: self._action_and_refresh("start"))),
             ("停止服务", "#d93025", lambda: self.run_background("正在停止整套服务...", lambda: self._action_and_refresh("stop"))),
-            ("开启远程发布", "#0b7285", lambda: self.run_background("正在开启远程发布...", lambda: self._action_and_refresh("enable_remote"))),
-            ("关闭远程发布", "#b26a00", lambda: self.run_background("正在关闭远程发布...", lambda: self._action_and_refresh("disable_remote"))),
+            ("重启组网入口", "#0b7285", lambda: self.run_background("正在重启组网入口...", lambda: self._action_and_refresh("enable_remote"))),
             ("打开本地面板", "#5f3dc4", lambda: self.run_background("正在打开本地面板...", lambda: perform_action("open_local"))),
         ]
         for text, color, callback in buttons:
@@ -1435,7 +1322,7 @@ class ControlApp:
             ),
             "mobile": (
                 f"{summary['mobile_online']}/{summary['mobile_total']}",
-                "至少有一台手机在线" if summary["mobile_online"] else "当前没有手机在线",
+                "最近 10 分钟内有手机访问" if summary["mobile_online"] else "最近 10 分钟内无手机访问",
                 "success" if summary["mobile_online"] > 0 else "error",
             ),
             "whitelist": (

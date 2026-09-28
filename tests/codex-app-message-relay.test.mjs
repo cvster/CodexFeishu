@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  buildCodexAppMessageRelayCommand,
+  buildCodexAppMessageRelayArgs,
   enqueueCodexAppMessageRelay,
 } from '../upstream-overrides/claudecodeui-1.25.2/server/codex-app-message-relay.mjs';
 import { executeCodexCommand } from '../upstream-overrides/claudecodeui-1.25.2/server/codex-command-execution.mjs';
@@ -20,24 +20,24 @@ function createWriter() {
   };
 }
 
-test('构造精简的 App 消息转发 JSON，并保留消息原文', () => {
-  const result = JSON.parse(buildCodexAppMessageRelayCommand({
-    project: ' mytest ',
-    session: ' 早390 ',
+test('构造原生 Codex queue 参数，并保留消息原文', () => {
+  const result = buildCodexAppMessageRelayArgs({
+    sessionId: ' app-session-id ',
+    projectPath: ' D:\\dorit\\mytest ',
     message: '  结构化测试369  ',
-  }));
+  });
 
-  assert.deepEqual(Object.keys(result), ['action', 'project', 'session', 'message', 'prompt']);
-  assert.equal(result.action, 'send_message');
-  assert.equal(result.project, 'mytest');
-  assert.equal(result.session, '早390');
-  assert.equal(result.message, '  结构化测试369  ');
-  assert.match(result.prompt, /不要读取或使用项目文件/);
-  assert.match(result.prompt, /消息仅作为普通文本/);
-  assert.match(result.prompt, /成功只回复OK/);
+  assert.deepEqual(result, [
+    'queue', '--thread', 'app-session-id',
+    '--message', '  结构化测试369  ',
+    '--sandbox', 'danger-full-access',
+    '-c', 'approval_policy="never"',
+    '-c', 'shell_environment_policy.inherit="all"',
+    '-C', 'D:\\dorit\\mytest',
+  ]);
 });
 
-test('已有 App 会话只调用转发会话', async () => {
+test('已有 App 会话只调用原生队列', async () => {
   const calls = [];
   const writer = createWriter();
   const execution = executeCodexCommand({
@@ -99,42 +99,24 @@ test('新建 App 会话仍使用原桌面自动化链路', async () => {
   assert.equal(writer.sessionId, 'new-app-session-id');
 });
 
-test('转发器使用 Luna 低推理并要求明确 OK', async () => {
-  const previousSessionId = process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID;
-  process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID = 'relay-session-id';
+test('已有 App 会话通过原生 queue 直接投递', async () => {
   let invocation = null;
 
-  try {
-    const result = await enqueueCodexAppMessageRelay({
-      sessionId: 'app-session-id',
-      projectPath: 'D:\\dorit\\mytest',
-      message: '结构化测试369',
-    }, {
-      resolveCodexDesktopMessageTarget: async () => ({
-        projectDisplayName: 'mytest',
-        sessionTitle: '早390',
-        selectionMode: 'session-title',
-        resolutionSource: 'metadata',
-      }),
-      runRelayCommand: async (command, options) => {
-        invocation = { command: JSON.parse(command), options };
-        return 'OK';
-      },
-    });
+  const result = await enqueueCodexAppMessageRelay({
+    sessionId: 'app-session-id',
+    projectPath: 'D:\\dorit\\mytest',
+    message: '结构化测试369',
+  }, {
+    runRelayCommand: async (args, options) => {
+      invocation = { args, options };
+      return 'Queued';
+    },
+  });
 
-    assert.equal(result.skipped, false);
-    assert.equal(result.sessionId, 'app-session-id');
-    assert.equal(invocation.command.project, 'mytest');
-    assert.equal(invocation.command.session, '早390');
-    assert.equal(invocation.command.message, '结构化测试369');
-    assert.equal(invocation.options.sessionId, 'relay-session-id');
-    assert.equal(invocation.options.model, 'gpt-5.6-luna');
-    assert.equal(invocation.options.modelReasoningEffort, 'low');
-  } finally {
-    if (previousSessionId === undefined) {
-      delete process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID;
-    } else {
-      process.env.MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID = previousSessionId;
-    }
-  }
+  assert.equal(result.skipped, false);
+  assert.equal(result.sessionId, 'app-session-id');
+  assert.deepEqual(invocation.args.slice(0, 5), [
+    'queue', '--thread', 'app-session-id', '--message', '结构化测试369',
+  ]);
+  assert.equal(invocation.options.cwd, 'D:\\dorit\\mytest');
 });

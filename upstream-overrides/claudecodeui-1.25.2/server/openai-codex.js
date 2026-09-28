@@ -48,7 +48,15 @@ const DESKTOP_CODEX_ACTIVE_RESPONSE_TYPES = new Set([
   'custom_tool_call',
   'custom_tool_call_output',
 ]);
-const CODEX_MODEL_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+const CODEX_MODEL_REASONING_EFFORTS = new Set([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+]);
 
 const NON_ASCII_PATH_PATTERN = /[^\u0000-\u007F]/;
 

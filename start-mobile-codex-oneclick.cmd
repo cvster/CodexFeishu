@@ -47,7 +47,7 @@ if not "%EXIT_CODE%"=="0" (
 echo Start completed.
 echo Local app: http://127.0.0.1:3001
 echo Local proxy: http://127.0.0.1:8080
-echo Remote URL: https://ps5000.tail995824.ts.net
+echo Private network: http://192.168.188.2:8080
 echo.
 popd
 pause

@@ -14,7 +14,7 @@
 
 - 本地控制台：`http://127.0.0.1:3001`
 - 本地 nginx 代理：`http://127.0.0.1:8080`
-- Tailscale 远程地址：`https://ps5000.tail995824.ts.net`
+- 星空组网地址：`http://192.168.188.2:8080`
 
 这份 README 是当前这台电脑上 `mobileCodexHelper` 的本地部署总入口，给后续继续工作的会话快速接手用。
 
@@ -32,13 +32,13 @@
 - 上游源码目录：`C:\software\mobileCodexHelper\vendor\claudecodeui-1.25.2`
 - 本地控制台地址：`http://127.0.0.1:3001`
 - 本地 nginx 代理：`http://127.0.0.1:8080`
-- 当前 Tailscale 远程地址：`https://ps5000.tail995824.ts.net`
-- 远程访问方式：`Tailscale Serve -> nginx(8080) -> app(3001)`
+- 当前星空组网地址：`http://192.168.188.2:8080`
+- 远程访问方式：`星空组网 -> nginx(8080) -> app(3001)`
 - 已验证通过：
   - 本地服务启动正常
   - nginx 代理正常
-  - Tailscale 已登录
-  - Tailscale Serve 已启用
+  - nginx 仅在回环地址和星空组网 IP 上监听
+  - 星空组网入口健康检查正常
   - Android 浏览器首次登录审批流程已跑通
 
 ## 目录说明
@@ -46,7 +46,7 @@
 - `mobile_codex_control.py`
   Windows 桌面控制台，支持 GUI、JSON 状态输出和若干命令行动作。
 - `scripts/`
-  启停服务、应用 overrides、环境检查、Tailscale 检查等脚本。
+  启停服务、应用 overrides、环境检查、星空组网防火墙配置等脚本。
 - `vendor/claudecodeui-1.25.2/`
   上游 `siteboon/claudecodeui v1.25.2` 源码、依赖和构建产物。
 - `deploy/`
@@ -73,8 +73,7 @@
   `C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microsoft.Winget.Source_8wekyb3d8bbwe\node-v22.22.2-win-x64\node.exe`
 - nginx：
   `C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\nginxinc.nginx_Microsoft.Winget.Source_8wekyb3d8bbwe\nginx-1.29.8\nginx.exe`
-- Tailscale：
-  `C:\Program Files\Tailscale\tailscale.exe`
+- 星空组网接口：`StarVPN`，本机地址 `192.168.188.2`
 
 ## 依赖环境说明
 
@@ -99,11 +98,9 @@
   - 用途：监听 `127.0.0.1:8080`，给 `127.0.0.1:3001` 做本机反向代理，并提供额外安全头和登录限流
   - 安装来源：`winget`
   - 实际路径：`C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\nginxinc.nginx_Microsoft.Winget.Source_8wekyb3d8bbwe\nginx-1.29.8\nginx.exe`
-- Tailscale
-  - 实际安装版本：`1.96.3`
-  - 用途：让手机和电脑加入同一个 tailnet，并通过 `tailscale serve` 发布私网 HTTPS 地址
-  - 安装来源：`winget`
-  - 实际路径：`C:\Program Files\Tailscale\tailscale.exe`
+- 星空组网
+  - 用途：让手机和电脑加入同一个私有组网
+  - nginx 只绑定配置的组网 IPv4，不直接暴露 Node 服务
 
 ## 环境变量说明
 
@@ -111,8 +108,8 @@
 
 - `MOBILE_CODEX_NODE`
 - `MOBILE_CODEX_NGINX`
-- `MOBILE_CODEX_TAILSCALE`
- - `MOBILE_CODEX_PYTHON`
+- `MOBILE_CODEX_PRIVATE_IP`
+- `MOBILE_CODEX_PYTHON`
 
 这些值现在也同步写在仓库根目录的本地 `.env` 里。
 脚本和 `mobile_codex_control.py` 会优先读这份本地配置；它已被 `.gitignore` 忽略，不会进入仓库。
@@ -121,26 +118,20 @@
 
 - `MOBILE_CODEX_NODE`
   指向实际使用的 `node.exe`
+- `MOBILE_CODEX_CLI`
+  可选。指向新版 `codex.exe`；未设置时自动选择 Codex Desktop 捆绑目录中最新的 CLI，避免误用 PATH 里的旧 npm 版本
 - `MOBILE_CODEX_NGINX`
   指向实际使用的 `nginx.exe`
-- `MOBILE_CODEX_TAILSCALE`
-  指向实际使用的 `tailscale.exe`
+- `MOBILE_CODEX_PRIVATE_IP`
+  私有组网网卡的本机 IPv4；当前为 `192.168.188.2`
 - `MOBILE_CODEX_PYTHON`
   可选。指向 `Python 3.11+`，桌面自动化脚本会优先使用它；未设置时默认回退到 Codex 自带 `Python 3.12`
 - `MOBILE_CODEX_UPSTREAM_DIR`
   可选。默认不需要；如果以后更换上游源码目录，可以用它覆盖默认 `vendor\claudecodeui-1.25.2`
 - `MOBILE_CODEX_ASCII_ALIAS`
   可选。用于 Windows 非 ASCII 路径兼容；当前运行时默认会落到 `C:\mobileCodexHelper_ascii`
-- `MOBILE_CODEX_APP_MESSAGE_RELAY_SESSION_ID`
-  已有 App 会话发送消息时使用的后端转发会话 ID；必填。App 会话的新建和归档不经过该会话
-- `MOBILE_CODEX_APP_MESSAGE_RELAY_MODEL`
-  可选。转发会话模型，默认 `gpt-5.6-luna`
-- `MOBILE_CODEX_APP_MESSAGE_RELAY_REASONING_EFFORT`
-  可选。转发会话推理程度，默认 `low`
-- `MOBILE_CODEX_APP_MESSAGE_RELAY_CWD`
-  可选。转发会话的工作目录，默认为本仓库根目录
-- `MOBILE_CODEX_APP_MESSAGE_RELAY_TIMEOUT_MS`
-  可选。转发超时时间，默认 `120000`
+- `MOBILE_CODEX_QUEUE_TIMEOUT_MS`
+  可选。`codex queue` 投递超时时间，默认 `120000`
 
 服务启动脚本还会在运行时临时设置：
 
@@ -243,8 +234,8 @@ C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microso
 
 ### 手机访问
 
-1. 手机先登录同一个 Tailscale 网络
-2. 打开 `https://ps5000.tail995824.ts.net`
+1. 手机和电脑加入同一个星空组网
+2. 打开 `http://192.168.188.2:8080`
 3. 新设备第一次登录时，电脑端批准即可
 
 ### 已验证过的设备流程
@@ -257,7 +248,7 @@ C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microso
 
 - 真正应用服务监听在 `127.0.0.1:3001`
 - `127.0.0.1:8080` 是本机 nginx 代理层
-- Tailscale Serve 发布的是 `8080`，不是直接暴露 `3001`
+- `192.168.188.2:8080` 是星空组网入口；不会把 `3001` 直接暴露出去
 - `mobile_codex_control.py --json` 是最方便的状态接口
 
 ## 常见排障
@@ -311,9 +302,14 @@ $workers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 先确认：
 
-1. 手机和电脑是否在同一个 Tailscale 网络
-2. `tailscale status --json` 是否显示 `BackendState = Running`
-3. `tailscale serve status` 是否仍然指向 `http://127.0.0.1:8080`
+1. 手机和电脑是否在同一个星空组网
+2. `192.168.188.2` 是否仍是电脑的 StarVPN 地址
+3. `python mobile_codex_control.py --json` 是否显示“组网入口可访问”
+4. 首次迁移时，以管理员身份运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\configure-starvpn-firewall.ps1
+```
 
 ### 文档入口
 
@@ -334,4 +330,4 @@ $workers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 一句话说明当前环境：
 
-> 项目已经部署在 `C:\software\mobileCodexHelper`，本地和 Tailscale 远程访问都已打通，继续在这个目录上维护即可。
+> 项目已经部署在 `C:\software\mobileCodexHelper`，本地和星空组网访问均已配置，继续在这个目录上维护即可。
