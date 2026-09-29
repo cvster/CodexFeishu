@@ -17,6 +17,8 @@ export interface BuildCodexQueueArgsInput {
   sandbox: SandboxMode;
   threadId: string;
   prompt: string;
+  /** Optional shared app-server endpoint, for example unix://. */
+  remote?: string;
   images?: readonly string[];
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
@@ -38,6 +40,7 @@ export function buildCodexQueueArgs(input: BuildCodexQueueArgsInput): string[] {
 
   return [
     'queue',
+    ...(input.remote ? ['--remote', input.remote] : []),
     '--thread',
     input.threadId,
     '--message',

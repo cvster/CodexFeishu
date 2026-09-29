@@ -1,3 +1,5 @@
+import type { Readable, Writable } from 'node:stream';
+import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import {
@@ -6,7 +8,20 @@ import {
   type CodexThreadSnapshot,
   type CodexThreadTurn,
 } from '../../session/codex-thread-reader';
+import {
+  mergeProcessEnv,
+  spawnProcess,
+  type SpawnedProcessByStdio,
+} from '../../platform/spawn';
 import type { AgentEvent, AgentRun } from '../types';
+import { buildCodexQueueArgs } from './argv';
+import {
+  bindCodexQueuedTurnClaim,
+  registerCodexQueuedTurnClaim,
+  releaseCodexQueuedTurnClaim,
+} from '../../session/codex-origin';
+
+type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
 interface QueueRunOptions {
   runId: string;
@@ -27,7 +42,12 @@ interface QueueRunOptions {
 
 const POLL_INTERVAL_MS = 750;
 
-/** Create an AgentRun backed by app-server's durable thread queue. */
+/**
+ * Queue follow-up input through the shared Codex daemon, then use a read-only
+ * app-server client to mirror that turn back to Feishu. `codex queue` is the
+ * supported multi-client entrypoint: unlike thread/resume, it does not try to
+ * take the Desktop client's writer lease.
+ */
 export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   const controller = new AbortController();
   const reader = new CodexThreadReader({
@@ -37,6 +57,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
     inheritCodexHome: options.inheritCodexHome,
     env: options.env,
   });
+  let activeChild: CodexChild | undefined;
   let selectedTurnId: string | undefined;
   let queuedSubmissionId: string | undefined;
   let settled = false;
@@ -49,23 +70,42 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   const events = (async function* (): AsyncGenerator<AgentEvent> {
     started = true;
     try {
-      const queued = await reader.queueTurn({
-        threadId: options.threadId,
+      const baseline = await reader.readThread(options.threadId);
+      if (controller.signal.aborted) {
+        yield interrupted(options.threadId);
+        return;
+      }
+      const knownTurns = new Set(baseline.turns.map((turn) => turn.id));
+      registerCodexQueuedTurnClaim(
+        options.clientUserMessageId,
+        options.threadId,
+        options.prompt,
+        knownTurns,
+      );
+      const queueArgs = buildCodexQueueArgs({
         cwd: options.cwd,
         sandbox: options.sandbox,
+        threadId: options.threadId,
         prompt: options.prompt,
+        remote: options.env?.CODEX_QUEUE_REMOTE ?? process.env.CODEX_QUEUE_REMOTE,
         images: options.images,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
-        clientUserMessageId: options.clientUserMessageId,
       });
-      queuedSubmissionId = queued.queuedSubmissionId;
-      selectedTurnId = queued.turnId;
+      const queued = await runQueueCommand(options, queueArgs, (child) => {
+        activeChild = child;
+      });
+      activeChild = undefined;
+      if (!queued.ok) {
+        releaseCodexQueuedTurnClaim(options.clientUserMessageId);
+        yield terminalError(queued.message);
+        return;
+      }
+      queuedSubmissionId = queued.messageId;
       log.info('agent', 'queue-accepted', {
         threadId: options.threadId,
-        queuedSubmissionId,
+        queueMessageId: queuedSubmissionId,
         clientUserMessageId: options.clientUserMessageId,
-        turnId: selectedTurnId,
       });
       yield { type: 'system', threadId: options.threadId, cwd: options.cwd };
 
@@ -89,9 +129,14 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
 
         const selected = selectedTurnId
           ? snapshot.turns.find((turn) => turn.id === selectedTurnId)
-          : snapshot.turns.find((turn) => turnHasClientId(turn, options.clientUserMessageId));
+          : snapshot.turns.find(
+              (turn) => !knownTurns.has(turn.id) && turnContainsPrompt(turn, options.prompt),
+            );
         if (selected) {
-          selectedTurnId = selected.id;
+          if (!selectedTurnId) {
+            selectedTurnId = selected.id;
+            bindCodexQueuedTurnClaim(options.clientUserMessageId, selected.id);
+          }
           for (const item of selected.items) {
             const message = agentMessage(item);
             if (!message) continue;
@@ -120,6 +165,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
       if (controller.signal.aborted) yield interrupted(options.threadId);
       else yield terminalError(`Codex queue 失败：${errorMessage(err)}`);
     } finally {
+      releaseCodexQueuedTurnClaim(options.clientUserMessageId);
       await reader.stop();
       settled = true;
       settle();
@@ -137,6 +183,9 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
         return;
       }
       controller.abort();
+      if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+        activeChild.kill('SIGTERM');
+      }
       try {
         if (selectedTurnId) {
           await reader.interruptTurn(options.threadId, selectedTurnId);
@@ -161,10 +210,56 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   };
 }
 
-function turnHasClientId(turn: CodexThreadTurn, clientUserMessageId: string): boolean {
+async function runQueueCommand(
+  options: QueueRunOptions,
+  args: string[],
+  onChild: (child: CodexChild) => void,
+): Promise<{ ok: true; messageId?: string } | { ok: false; message: string }> {
+  const child = spawnProcess(options.binary, args, {
+    cwd: options.cwd,
+    env: queueEnv(options),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }) as unknown as CodexChild;
+  onChild(child);
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const code = await childExit(child);
+  const output = Buffer.concat(stdout).toString('utf8').trim();
+  if (code !== 0) {
+    const detail = Buffer.concat(stderr).toString('utf8').trim() || output;
+    return {
+      ok: false,
+      message: `codex queue exited with code ${code ?? 'signal'}${detail ? `: ${detail}` : ''}`,
+    };
+  }
+  const match = /Queued message\s+([^\s.]+)\s+for thread/i.exec(output);
+  return { ok: true, ...(match?.[1] ? { messageId: match[1] } : {}) };
+}
+
+function turnContainsPrompt(turn: CodexThreadTurn, prompt: string): boolean {
   return turn.items.some(
-    (item) => item.type === 'userMessage' && item.clientId === clientUserMessageId,
+    (item) =>
+      item.type === 'userMessage' &&
+      Array.isArray(item.content) &&
+      item.content.some((content) => {
+        const value = recordValue(content);
+        return value?.type === 'text' && value.text === prompt;
+      }),
   );
+}
+
+function queueEnv(options: QueueRunOptions): NodeJS.ProcessEnv {
+  const overrides: NodeJS.ProcessEnv = { ...(options.env ?? {}) };
+  if (options.codexHome) overrides.CODEX_HOME = options.codexHome;
+  else if (!options.inheritCodexHome) overrides.CODEX_HOME = join(options.profileStateDir, 'codex-home');
+  return mergeProcessEnv(process.env, overrides);
+}
+
+function childExit(child: CodexChild): Promise<number | null> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(child.exitCode);
+  return new Promise((resolve) => child.once('exit', (code) => resolve(code)));
 }
 
 function agentMessage(item: CodexThreadItem): { id: string; text: string } | undefined {
@@ -197,4 +292,10 @@ function terminalError(message: string): AgentEvent {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function recordValue(input: unknown): Record<string, unknown> | undefined {
+  return input && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : undefined;
 }

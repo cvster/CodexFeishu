@@ -1,7 +1,6 @@
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
-import type { SandboxMode } from '../config/profile-schema';
 import {
   mergeProcessEnv,
   spawnProcess,
@@ -39,22 +38,6 @@ export interface CodexThreadReaderOptions {
   inheritCodexHome?: boolean;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
-}
-
-export interface CodexQueuedTurnOptions {
-  threadId: string;
-  cwd: string;
-  sandbox: SandboxMode;
-  prompt: string;
-  images?: readonly string[];
-  model?: string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-  clientUserMessageId: string;
-}
-
-export interface CodexQueuedTurnResult {
-  queuedSubmissionId: string;
-  turnId?: string;
 }
 
 interface PendingRequest {
@@ -125,51 +108,6 @@ export class CodexThreadReader {
       const updatedAt = typeof thread.updatedAt === 'number' ? thread.updatedAt : 0;
       return [{ id: thread.id, updatedAtMs: Math.round(updatedAt * 1000) }];
     });
-  }
-
-  async queueTurn(options: CodexQueuedTurnOptions): Promise<CodexQueuedTurnResult> {
-    if (this.stopped) throw new Error('Codex thread reader is stopped');
-    await this.ensureStarted();
-    await this.request('thread/resume', {
-      threadId: options.threadId,
-      cwd: options.cwd,
-      approvalPolicy: 'never',
-      sandbox: options.sandbox,
-      excludeTurns: true,
-      ...(options.model ? { model: options.model } : {}),
-      config: {
-        shell_environment_policy: { inherit: 'all' },
-        ...(options.reasoningEffort
-          ? { model_reasoning_effort: options.reasoningEffort }
-          : {}),
-      },
-    });
-    const added = await this.request('thread/queue/add', {
-      threadId: options.threadId,
-      clientUserMessageId: options.clientUserMessageId,
-      input: [
-        { type: 'text', text: options.prompt, text_elements: [] },
-        ...(options.images ?? []).map((path) => ({ type: 'localImage', path })),
-      ],
-    });
-    const queued = recordValue(recordValue(added.result)?.queuedSubmission);
-    const queuedSubmissionId = stringValue(queued?.id);
-    if (!queuedSubmissionId) throw new Error('thread/queue/add returned no queued submission id');
-
-    try {
-      const started = await this.request('thread/queue/start', {
-        threadId: options.threadId,
-        queuedSubmissionId,
-      });
-      const turnId = stringValue(recordValue(recordValue(started.result)?.turn)?.id);
-      return { queuedSubmissionId, ...(turnId ? { turnId } : {}) };
-    } catch (err) {
-      // A currently running turn consumes the queued submission when it
-      // finishes. In that case queue/start is expected to reject, but the add
-      // itself succeeded and polling will discover our exact client id later.
-      if (isActiveTurnConflict(err)) return { queuedSubmissionId };
-      throw err;
-    }
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -383,9 +321,4 @@ function recordValue(input: unknown): Record<string, unknown> | undefined {
 
 function stringValue(input: unknown): string | undefined {
   return typeof input === 'string' ? input : undefined;
-}
-
-function isActiveTurnConflict(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:active|running|busy|in[ -]?progress|already).*(?:turn|thread)|(?:turn|thread).*(?:active|running|busy|in[ -]?progress|already)/i.test(message);
 }

@@ -8,6 +8,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema.j
 import type { SessionCatalog, SessionCatalogEntry } from '../../../src/session/catalog.js';
 import type { CodexThreadSnapshot } from '../../../src/session/codex-thread-reader.js';
 import { startCodexTurnSync } from '../../../src/bot/codex-turn-sync.js';
+import { registerCodexQueuedTurnClaim } from '../../../src/session/codex-origin.js';
 import { createFakeChannel } from '../../helpers/fake-channel.js';
 
 describe('Codex desktop turn sync', () => {
@@ -121,6 +122,60 @@ describe('Codex desktop turn sync', () => {
       (request) => request.method === 'cardkit.v1.card.update',
     )).toHaveLength(1);
     await restarted.stop();
+  });
+
+  it('does not mirror a raw prompt claimed by native codex queue', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-turn-sync-queue-claim-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = {
+      key: 'entry-queue-claim',
+      scopeId: 'oc_queueclaim',
+      agentId: 'codex',
+      cwdRealpath: dir,
+      policyFingerprint: 'policy',
+      status: 'active',
+      updatedAt: 1,
+      threadId: 'thread-queue-claim',
+    } satisfies SessionCatalogEntry;
+    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    let snapshot: CodexThreadSnapshot = {
+      id: 'thread-queue-claim',
+      turns: [externalTurn('old-turn-claim', 'completed', 'old prompt', 'old answer')],
+    };
+    const reader = {
+      readThread: vi.fn(async () => snapshot),
+      stop: vi.fn(async () => undefined),
+    };
+    const handle = await startCodexTurnSync({
+      channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(),
+      sessionCatalog,
+      profileStateDir: dir,
+      statePath: join(dir, 'sync-state.json'),
+      intervalMs: 60_000,
+      reader,
+      now: () => 20_000,
+    });
+    await handle.runNow();
+
+    registerCodexQueuedTurnClaim(
+      'lark-channel-bridge:queue-claim',
+      'thread-queue-claim',
+      '原样飞书消息',
+      ['old-turn-claim'],
+    );
+    snapshot = {
+      id: 'thread-queue-claim',
+      turns: [
+        ...snapshot.turns,
+        externalTurn('native-queue-turn', 'inProgress', '原样飞书消息', ''),
+      ],
+    };
+    await handle.runNow();
+
+    expect(channel.sent).toHaveLength(0);
+    await handle.stop();
   });
 });
 

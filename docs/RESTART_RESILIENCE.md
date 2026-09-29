@@ -13,8 +13,9 @@ a crash of the task runner itself is a separate failure boundary.
 ## Why the current process model cannot recover
 
 `CodexAdapter` currently spawns a per-run `codex app-server` process for a new
-thread, or uses the app-server thread queue plus polling for an existing Desktop
-thread. These processes still use pipe-backed stdin, stdout, and stderr.
+thread. Existing Desktop threads are submitted through the shared Codex daemon
+with `codex queue`, while a read-only app-server client polls their results.
+These processes still use pipe-backed stdin, stdout, and stderr.
 `startChannel().disconnect()` calls
 `activeRuns.stopAll()`, which sends SIGTERM and eventually SIGKILL to every
 Codex child. All active-run state, event fan-out buffers, card rendering state,

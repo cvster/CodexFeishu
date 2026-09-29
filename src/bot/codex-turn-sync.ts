@@ -6,7 +6,10 @@ import type { Controls } from '../commands';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
 import type { SessionCatalog, SessionCatalogEntry } from '../session/catalog';
-import { isCodexBridgeClientMessageId } from '../session/codex-origin';
+import {
+  isClaimedCodexBridgeTurn,
+  isCodexBridgeClientMessageId,
+} from '../session/codex-origin';
 import {
   CodexThreadReader,
   type CodexThreadItem,
@@ -208,7 +211,7 @@ async function syncThreadSnapshot(
     const isNewTurn = !stored;
     if (!stored) {
       stored = {
-        origin: isBridgeTurn(turn) ? 'bridge' : 'external',
+        origin: isBridgeTurn(snapshot.id, turn) ? 'bridge' : 'external',
         discoveredAtMs: nowMs,
         deliveries: {},
       };
@@ -408,14 +411,16 @@ function externalUserText(turn: CodexThreadTurn): string {
   return user ? textFromUnknown(user.content).trim() : '';
 }
 
-function isBridgeTurn(turn: CodexThreadTurn): boolean {
+function isBridgeTurn(threadId: string, turn: CodexThreadTurn): boolean {
   const user = turn.items.find((item) => item.type === 'userMessage');
   if (isCodexBridgeClientMessageId(user?.clientId)) return true;
   // Legacy bridge turns created before clientUserMessageId was wired used a
   // prompt wrapper. Keep recognizing those so an upgrade does not mirror old
   // Feishu messages back into the same group.
   const text = externalUserText(turn).trimStart();
-  return text.startsWith('# lark-channel-bridge message') || text.includes('<bridge_context>');
+  return text.startsWith('# lark-channel-bridge message') ||
+    text.includes('<bridge_context>') ||
+    isClaimedCodexBridgeTurn(threadId, turn.id, externalUserText(turn));
 }
 
 function textFromUnknown(input: unknown): string {
