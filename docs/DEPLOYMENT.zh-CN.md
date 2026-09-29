@@ -290,3 +290,26 @@ powershell -ExecutionPolicy Bypass -File scripts/enable-mobile-codex-remote.ps1
 - 把桌面工具打包成 `.exe`
 - 配置你自己的 Tailscale 访问方式
 - 根据你自己的环境调整 nginx / Caddy 配置
+
+## Linux 远程部署
+
+Ubuntu 远程机可以使用仓库内的安装脚本。先把代码同步到目标目录，并确保
+Node.js、npm 和支持 `app-server`、`queue` 的 Codex CLI 可用，然后执行：
+
+```bash
+MOBILE_CODEX_INSTALL_ROOT=/home/pc/software/mobileCodexHelper \
+MOBILE_CODEX_PRIVATE_IP=192.168.188.1 \
+bash /home/pc/software/mobileCodexHelper/scripts/install-mobile-codex-linux.sh
+```
+
+脚本会应用 overrides、安装 Node 依赖、构建前端、安装 nginx，并创建用户级
+`mobile-codex-helper.service`。应用仅监听回环地址，nginx 只额外监听指定的私网 IPv4。
+
+常用检查命令：
+
+```bash
+systemctl --user status mobile-codex-helper.service
+journalctl --user -u mobile-codex-helper.service -n 100 --no-pager
+sudo nginx -t
+curl -I http://127.0.0.1:8080/
+```

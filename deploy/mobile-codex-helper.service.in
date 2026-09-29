@@ -1,0 +1,24 @@
+[Unit]
+Description=mobileCodexHelper backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__WORKSPACE__/vendor/claudecodeui-1.25.2
+Environment="PATH=__NODE_DIR__:/usr/local/bin:/usr/bin:/bin"
+Environment="NODE_ENV=production"
+Environment="HOST=127.0.0.1"
+Environment="PORT=3001"
+Environment="CODEX_ONLY_HARDENED_MODE=true"
+Environment="VITE_CODEX_ONLY_HARDENED_MODE=true"
+Environment="NODE_OPTIONS=--max-old-space-size=8192"
+Environment="MOBILE_CODEX_CLI=__CODEX_CLI__"
+Environment="DATABASE_PATH=__HOME__/.cloudcli/auth.db"
+ExecStart=__NODE__ server/index.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

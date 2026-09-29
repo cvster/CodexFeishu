@@ -6,4 +6,6 @@
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
 *.spec text eol=lf
+*.sh text eol=lf
+*.service.in text eol=lf
 
