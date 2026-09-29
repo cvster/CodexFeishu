@@ -84,15 +84,86 @@ test('codex queue 成功时解析原生队列消息 ID', async () => {
     return child;
   };
   const calls = [];
+  let readCount = 0;
+  const client = {
+    async request(method) {
+      if (method === 'initialize') return {};
+      if (method === 'thread/read') {
+        readCount += 1;
+        return readCount === 1
+          ? { thread: { turns: [{ id: 'old-turn', status: 'completed', items: [] }] } }
+          : {
+              thread: {
+                turns: [{
+                  id: 'new-turn',
+                  status: 'completed',
+                  items: [{ type: 'userMessage', content: [{ type: 'text', text: '继续' }] }],
+                }],
+              },
+            };
+      }
+      return {};
+    },
+    notify() {},
+    async close() {},
+  };
   const result = await queueCodexCliThreadMessage({
     sessionId: 'thread-1',
     projectPath: 'D:\\dorit\\mytest',
     message: '继续',
-  }, { cliPath: 'codex.exe', spawnImpl });
+  }, { cliPath: 'codex.exe', spawnImpl, createClient: () => client });
 
   assert.equal(result.queueMessageId, 'queue-42');
   assert.equal(calls[0].args[0], 'queue');
   assert.equal(calls[0].options.cwd, 'D:\\dorit\\mytest');
+  assert.equal(readCount, 2);
+});
+
+test('空闲会话先 resume，已有桌面 writer 时继续使用共享队列', async () => {
+  const calls = [];
+  let readCount = 0;
+  const client = {
+    async request(method) {
+      calls.push(method);
+      if (method === 'thread/resume') throw new Error('thread already has an active writer');
+      if (method === 'thread/read') {
+        readCount += 1;
+        return readCount === 1
+          ? { thread: { turns: [] } }
+          : {
+              thread: {
+                turns: [{
+                  id: 'queued-turn',
+                  status: 'completed',
+                  items: [{ type: 'userMessage', content: [{ type: 'text', text: '继续' }] }],
+                }],
+              },
+            };
+      }
+      return {};
+    },
+    notify() {},
+    async close() {},
+  };
+  const spawnImpl = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      child.stdout.end('Queued message queue-1 for thread thread-1.\n');
+      child.emit('exit', 0, null);
+    });
+    return child;
+  };
+
+  await queueCodexCliThreadMessage({
+    sessionId: 'thread-1',
+    projectPath: 'D:\\dorit\\mytest',
+    message: '继续',
+  }, { cliPath: 'codex.exe', spawnImpl, createClient: () => client });
+
+  assert.deepEqual(calls.slice(0, 3), ['initialize', 'thread/read', 'thread/resume']);
 });
 
 test('新会话通过 app-server 创建并启动首轮', async () => {

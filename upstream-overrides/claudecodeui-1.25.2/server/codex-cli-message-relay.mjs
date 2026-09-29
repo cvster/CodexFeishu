@@ -5,6 +5,7 @@ import { resolveCodexAppProjectId } from './codex-desktop-projects.mjs';
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
+const QUEUED_TURN_POLL_INTERVAL_MS = 750;
 const relayQueues = new Map();
 
 function normalizeRequiredText(value, fieldName) {
@@ -63,51 +64,131 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
 
   const spawnImpl = dependencies.spawnImpl || spawn;
   const timeoutMs = Number(process.env.MOBILE_CODEX_QUEUE_TIMEOUT_MS || DEFAULT_QUEUE_TIMEOUT_MS);
-  const child = spawnImpl(cliPath, buildCodexQueueArgs({
-    sessionId,
-    message: payload.message,
-    cwd,
-    model: payload.model,
-    modelReasoningEffort: payload.modelReasoningEffort,
-  }), {
-    cwd,
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  const createClient = dependencies.createClient || createCodexAppServerClient;
+  const client = createClient({ cwd });
 
-  const stdout = [];
-  const stderr = [];
-  child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
-  child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+  try {
+    await client.request('initialize', {
+      clientInfo: { name: 'mobile-codex-helper', version: '1.0.0' },
+      capabilities: { experimentalApi: true },
+    });
+    client.notify('initialized');
 
-  const result = await new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      callback(value);
-    };
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      finish(reject, new Error(`codex queue timed out after ${timeoutMs}ms`));
-    }, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_QUEUE_TIMEOUT_MS);
-    child.once('error', (error) => finish(reject, error));
-    child.once('exit', (code, signal) => finish(resolve, { code, signal }));
-  });
-
-  const output = Buffer.concat(stdout).toString('utf8').trim();
-  const errorOutput = Buffer.concat(stderr).toString('utf8').trim();
-  if (result.code !== 0) {
-    const detail = errorOutput || output;
-    throw new Error(
-      `codex queue exited with ${result.code ?? result.signal ?? 'unknown status'}${detail ? `: ${detail}` : ''}`,
+    // Keep a read-only app-server attached while `codex queue` hands the turn
+    // to the shared daemon. Without an attached client, the CLI accepts the
+    // queue item but an idle Desktop thread may never consume it.
+    const baseline = await client.request('thread/read', {
+      threadId: sessionId,
+      includeTurns: true,
+    });
+    const knownTurnIds = new Set(
+      (Array.isArray(baseline?.thread?.turns) ? baseline.thread.turns : [])
+        .map((turn) => turn?.id)
+        .filter(Boolean),
     );
+
+    // An idle thread has no writer to consume the shared queue. Load it in
+    // this app-server when possible; if Desktop already owns the writer, keep
+    // that ownership and let Desktop consume the queue item instead.
+    try {
+      await client.request('thread/resume', { threadId: sessionId });
+    } catch (error) {
+      if (!/already has an active writer/i.test(String(error?.message || ''))) {
+        throw error;
+      }
+    }
+
+    const child = spawnImpl(cliPath, buildCodexQueueArgs({
+      sessionId,
+      message: payload.message,
+      cwd,
+      model: payload.model,
+      modelReasoningEffort: payload.modelReasoningEffort,
+    }), {
+      cwd,
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+
+    const result = await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback(value);
+      };
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        finish(reject, new Error(`codex queue timed out after ${timeoutMs}ms`));
+      }, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_QUEUE_TIMEOUT_MS);
+      child.once('error', (error) => finish(reject, error));
+      child.once('exit', (code, signal) => finish(resolve, { code, signal }));
+    });
+
+    const output = Buffer.concat(stdout).toString('utf8').trim();
+    const errorOutput = Buffer.concat(stderr).toString('utf8').trim();
+    if (result.code !== 0) {
+      const detail = errorOutput || output;
+      throw new Error(
+        `codex queue exited with ${result.code ?? result.signal ?? 'unknown status'}${detail ? `: ${detail}` : ''}`,
+      );
+    }
+
+    const queueMessageId = /Queued message\s+([^\s.]+)\s+for thread/i.exec(output)?.[1];
+    await waitForQueuedTurn(client, {
+      sessionId,
+      message: payload.message,
+      knownTurnIds,
+      timeoutMs: Number(process.env.MOBILE_CODEX_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS),
+    });
+    return { skipped: false, sessionId, ...(queueMessageId ? { queueMessageId } : {}) };
+  } finally {
+    await client.close();
+  }
+}
+
+async function waitForQueuedTurn(client, { sessionId, message, knownTurnIds, timeoutMs }) {
+  const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_TURN_TIMEOUT_MS;
+  const deadline = Date.now() + safeTimeoutMs;
+  let selectedTurnId = null;
+
+  while (Date.now() < deadline) {
+    const snapshot = await client.request('thread/read', {
+      threadId: sessionId,
+      includeTurns: true,
+    });
+    const turns = Array.isArray(snapshot?.thread?.turns) ? snapshot.thread.turns : [];
+    const selected = selectedTurnId
+      ? turns.find((turn) => turn?.id === selectedTurnId)
+      : turns.find((turn) => !knownTurnIds.has(turn?.id) && turnContainsMessage(turn, message));
+    if (selected) {
+      selectedTurnId ||= selected.id;
+      if (selected.status === 'completed') return;
+      if (selected.status === 'failed' || selected.status === 'cancelled') {
+        throw new Error(selected.error?.message || `Codex queued turn ${selected.status}`);
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, QUEUED_TURN_POLL_INTERVAL_MS));
   }
 
-  const queueMessageId = /Queued message\s+([^\s.]+)\s+for thread/i.exec(output)?.[1];
-  return { skipped: false, sessionId, ...(queueMessageId ? { queueMessageId } : {}) };
+  throw new Error(`Codex queued turn timed out after ${safeTimeoutMs}ms`);
+}
+
+function turnContainsMessage(turn, message) {
+  return Array.isArray(turn?.items) && turn.items.some((item) => (
+    item?.type === 'userMessage' &&
+    Array.isArray(item.content) &&
+    item.content.some((content) => content?.type === 'text' && content.text === message)
+  ));
 }
 
 export async function runCodexCliThreadTurn(payload, dependencies = {}) {

@@ -1,3 +1,7 @@
+param(
+  [switch]$Foreground
+)
+
 $workspace = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'runtime-paths.ps1')
 $asciiAlias = Resolve-MobileCodexAsciiAliasPath
@@ -54,5 +58,12 @@ $configText = Get-Content -Raw -LiteralPath $generatedConfig
 $configText = $configText.Replace('# MOBILE_CODEX_PRIVATE_LISTEN', $privateListen)
 $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($generatedConfig, $configText, $utf8WithoutBom)
+
+if ($Foreground) {
+  # Keep the scheduled task alive with nginx as its foreground child. Processes
+  # launched by an interactive Codex turn can be reclaimed when that turn ends.
+  & $nginxCmd '-p' $nginxRoot '-c' 'conf/mobile-codex-nginx.conf' '-g' 'daemon off;'
+  exit $LASTEXITCODE
+}
 
 Start-Process -FilePath $nginxCmd -ArgumentList @('-p', $nginxRoot, '-c', 'conf/mobile-codex-nginx.conf') -WindowStyle Hidden | Out-Null
