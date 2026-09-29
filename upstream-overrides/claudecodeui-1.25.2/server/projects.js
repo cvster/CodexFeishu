@@ -68,6 +68,10 @@ import os from 'os';
 import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames, sessionArchivesDb } from './database/db.js';
 import { extractCodexDesktopWorkspaceRoots } from './codex-desktop-projects.mjs';
+import {
+  getCodexResponseUserMessageText,
+  selectCodexRolloutCandidate,
+} from './codex-session-history.mjs';
 
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
 const CODEX_PROJECTLESS_PROJECT_NAME = '__codex_projectless__';
@@ -1762,6 +1766,70 @@ async function findCodexStateDatabasePath() {
   return candidates[0]?.fullPath || null;
 }
 
+async function findCodexSessionRolloutFile(sessionId) {
+  const sessionsRoot = path.join(os.homedir(), '.codex', 'sessions');
+  const normalizedSessionsRoot = normalizeComparablePath(sessionsRoot);
+  let stateRolloutPath = null;
+  const stateDbPath = await findCodexStateDatabasePath();
+
+  if (stateDbPath) {
+    let db;
+    try {
+      db = await open({
+        filename: stateDbPath,
+        driver: sqlite3.Database,
+        mode: sqlite3.OPEN_READONLY,
+      });
+      const row = await db.get(
+        'SELECT rollout_path FROM threads WHERE id = ? AND archived = 0',
+        sessionId
+      );
+      const candidate = typeof row?.rollout_path === 'string' ? row.rollout_path.trim() : '';
+      const normalizedCandidate = normalizeComparablePath(candidate);
+      if (
+        candidate &&
+        normalizedCandidate.startsWith(`${normalizedSessionsRoot}${path.sep}`)
+      ) {
+        try {
+          await fs.access(candidate);
+          stateRolloutPath = candidate;
+        } catch {
+          // Fall back to scanning rollout files when the state path is stale.
+        }
+      }
+    } catch (error) {
+      console.warn(`Could not resolve Codex rollout for ${sessionId}:`, error.message);
+    } finally {
+      if (db) await db.close();
+    }
+  }
+
+  if (stateRolloutPath) {
+    return stateRolloutPath;
+  }
+
+  const matchedPaths = [];
+  const scan = async (dir) => {
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await scan(fullPath);
+        } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
+          const stats = await fs.stat(fullPath);
+          matchedPaths.push({ path: fullPath, mtimeMs: stats.mtimeMs });
+        }
+      }
+    } catch {
+      // Skip directories that cannot be read.
+    }
+  };
+
+  await scan(sessionsRoot);
+  return selectCodexRolloutCandidate(sessionId, null, matchedPaths);
+}
+
 async function loadCodexDesktopWorkspaceState() {
   const visibleWorkspaceRoots = new Set();
   const workspaceRoots = [];
@@ -2289,27 +2357,7 @@ function getCodexPendingDeliveryFromMessages(messages, pendingMessage) {
 }
 
 async function getCodexPendingDeliveryMessagesFromTail(sessionId) {
-  const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
-
-  const findSessionFile = async (dir) => {
-    try {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          const found = await findSessionFile(fullPath);
-          if (found) return found;
-        } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
-          return fullPath;
-        }
-      }
-    } catch (error) {
-      // Skip directories we cannot read.
-    }
-    return null;
-  };
-
-  const sessionFilePath = await findSessionFile(codexSessionsDir);
+  const sessionFilePath = await findCodexSessionRolloutFile(sessionId);
   if (!sessionFilePath) {
     return [];
   }
@@ -2450,28 +2498,7 @@ async function parseCodexSessionFile(filePath) {
 // Get messages for a specific Codex session
 async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
   try {
-    const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
-
-    // Find the session file by searching for the session ID
-    const findSessionFile = async (dir) => {
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            const found = await findSessionFile(fullPath);
-            if (found) return found;
-          } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
-            return fullPath;
-          }
-        }
-      } catch (error) {
-        // Skip directories we can't read
-      }
-      return null;
-    };
-
-    const sessionFilePath = await findSessionFile(codexSessionsDir);
+    const sessionFilePath = await findCodexSessionRolloutFile(sessionId);
 
     if (!sessionFilePath) {
       console.warn(`Codex session file not found for session ${sessionId}`);
@@ -2529,6 +2556,22 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
                 content: normalizeCodexUserMessageForDisplay(entry.payload.message)
               }
             });
+          }
+
+          // Current Codex CLI stores visible user input as a response_item message.
+          // content_item_kinds distinguishes it from environment and plugin context.
+          if (entry.type === 'response_item') {
+            const userText = getCodexResponseUserMessageText(entry.payload);
+            if (userText) {
+              messages.push({
+                type: 'user',
+                timestamp: entry.timestamp,
+                message: {
+                  role: 'user',
+                  content: normalizeCodexUserMessageForDisplay(userText)
+                }
+              });
+            }
           }
 
           // response_item.message may include internal prompts for non-assistant roles.
