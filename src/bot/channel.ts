@@ -982,6 +982,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const recordSession = (evt: AgentEvent): void => {
     recordRunSessionEvent({
       scopeId: scope,
+      botAppId: controls.profileConfig.accounts.app.id,
       sessions,
       sessionCatalog,
       capability,

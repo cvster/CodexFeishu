@@ -322,6 +322,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           const e = next.value;
           recordCommentSessionEvent({
             scopeId: agentSessionScopeId,
+            botAppId: controls.profileConfig.accounts.app.id,
             sessions,
             sessionCatalog,
             capability,

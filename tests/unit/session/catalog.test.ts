@@ -64,6 +64,62 @@ describe('agent-aware session catalog', () => {
     await catalog.flush();
   });
 
+  it('persists the Feishu bot app that established a binding', async () => {
+    const catalogPath = await path();
+    const catalog = new SessionCatalog(catalogPath);
+    const identity = {
+      scopeId: 'chat-1',
+      agentId: 'codex' as const,
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-1',
+    };
+
+    catalog.upsertActive({
+      ...identity,
+      threadId: 'thread-1',
+      botAppId: 'cli_current',
+    });
+    await catalog.flush();
+
+    const reloaded = new SessionCatalog(catalogPath);
+    await reloaded.load();
+    expect(reloaded.activeFor(identity)).toMatchObject({
+      threadId: 'thread-1',
+      botAppId: 'cli_current',
+    });
+  });
+
+  it('consumes a creation-time replay marker and allows an explicit clear on rebinding', async () => {
+    const catalog = new SessionCatalog(await path());
+    const identity = {
+      scopeId: 'chat-replay',
+      agentId: 'codex' as const,
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-replay',
+    };
+    catalog.upsertActive({
+      ...identity,
+      threadId: 'thread-1',
+      recentTurnReplayCount: 3,
+    });
+    expect(catalog.activeFor(identity)?.recentTurnReplayCount).toBe(3);
+    expect(catalog.clearRecentTurnReplay('chat-replay', 'thread-1')).toBe(1);
+    expect(catalog.activeFor(identity)?.recentTurnReplayCount).toBeUndefined();
+
+    catalog.upsertActive({
+      ...identity,
+      threadId: 'thread-2',
+      recentTurnReplayCount: 3,
+    });
+    catalog.upsertActive({
+      ...identity,
+      threadId: 'thread-2',
+      recentTurnReplayCount: null,
+    });
+    expect(catalog.activeFor(identity)?.recentTurnReplayCount).toBeUndefined();
+    await catalog.flush();
+  });
+
   it('rejects mismatched Claude/Codex identity fields and does not auto-resume damaged entries', async () => {
     const catalog = new SessionCatalog(await path());
 

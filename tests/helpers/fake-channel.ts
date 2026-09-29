@@ -42,6 +42,7 @@ export interface FakeChannel {
     readonly im: {
       readonly v1: {
         readonly chat: {
+          create(params: unknown): Promise<unknown>;
           delete(params: unknown): Promise<unknown>;
         };
         readonly message: {
@@ -114,6 +115,30 @@ export function createFakeChannel(): FakeChannel {
       im: {
         v1: {
           chat: {
+            async create(params: unknown): Promise<unknown> {
+              requests.push({ method: 'im.v1.chat.create', params });
+              const chatId = `oc_fake_${createdChats.length + 1}`;
+              const payload = params as {
+                params?: { user_id_type?: string };
+                data?: {
+                  name?: string;
+                  description?: string;
+                  owner_id?: string;
+                  user_id_list?: string[];
+                };
+              };
+              createdChats.push({
+                chatId,
+                options: {
+                  name: payload.data?.name,
+                  description: payload.data?.description,
+                  ownerOpenId: payload.data?.owner_id,
+                  inviteUserIds: payload.data?.user_id_list ?? [],
+                  userIdType: payload.params?.user_id_type,
+                },
+              });
+              return { code: 0, data: { chat_id: chatId } };
+            },
             async delete(params: unknown): Promise<unknown> {
               requests.push({ method: 'im.v1.chat.delete', params });
               return { code: 0, data: {} };

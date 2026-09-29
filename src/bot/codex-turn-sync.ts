@@ -18,13 +18,13 @@ import {
   type CodexThreadSnapshot,
   type CodexThreadTurn,
 } from '../session/codex-thread-reader';
+import { isProvisionalInterruptedTurn } from '../session/codex-turn-status';
 import { renderCard } from '../card/run-renderer';
 import type { Block, RunState, Terminal, ToolEntry } from '../card/run-state';
 import { sendManagedCard } from '../card/managed';
 
-const DEFAULT_POLL_INTERVAL_MS = 3_000;
+const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const STATUS_HEARTBEAT_MS = 15_000;
-const PROVISIONAL_INTERRUPTED_WINDOW_MS = 10 * 60_000;
 const STATE_VERSION = 1;
 const MAX_TURNS_PER_THREAD = 300;
 
@@ -164,16 +164,16 @@ async function syncOnce(
   for (const [threadId, entries] of bindings) {
     const stored = store.state.threads[threadId];
     const revision = revisions?.get(threadId);
-    const hasRunningExternalTurn = stored
+    const hasRunningMirroredTurn = stored
       ? Object.values(stored.turns).some((turn) =>
-          turn.origin === 'external' && Object.values(turn.deliveries).some(
+          Object.values(turn.deliveries).some(
             (delivery) => delivery.status === 'card' && !delivery.terminal,
           ))
       : false;
     if (
       !forceRead &&
       stored &&
-      !hasRunningExternalTurn &&
+      !hasRunningMirroredTurn &&
       revisions &&
       (revision === undefined || revision <= (stored.lastObservedUpdatedAtMs ?? 0))
     ) {
@@ -190,6 +190,14 @@ async function syncOnce(
       continue;
     }
     await syncThreadSnapshot(deps.channel, store, snapshot, entries, now());
+    let consumedCreationReplay = false;
+    for (const entry of entries) {
+      if (!entry.recentTurnReplayCount) continue;
+      consumedCreationReplay =
+        deps.sessionCatalog.clearRecentTurnReplay(entry.scopeId, threadId) > 0 ||
+        consumedCreationReplay;
+    }
+    if (consumedCreationReplay) await deps.sessionCatalog.flush();
     const synced = store.state.threads[threadId];
     if (synced && revision !== undefined && synced.lastObservedUpdatedAtMs !== revision) {
       synced.lastObservedUpdatedAtMs = revision;
@@ -212,11 +220,11 @@ async function syncThreadSnapshot(
   store.state.threads[snapshot.id] = thread;
   const scopes = [...new Set(bindings.map((entry) => entry.scopeId).filter(isFeishuScope))];
   const newScopes = scopes.filter((scope) => !thread.bindings.includes(scope));
+  const replayTurnsByScope = recentReplayTurnsByScope(snapshot, bindings, newScopes);
   thread.bindings = [...new Set([...thread.bindings, ...scopes])];
 
-  const lastTurn = snapshot.turns.at(-1);
   for (const rawTurn of snapshot.turns) {
-    const turn = isProvisionalInterruptedTurn(snapshot, rawTurn, lastTurn, nowMs)
+    const turn = isProvisionalInterruptedTurn(snapshot, rawTurn, nowMs)
       ? { ...rawTurn, status: 'inProgress' }
       : rawTurn;
     let stored = thread.turns[turn.id];
@@ -232,7 +240,14 @@ async function syncThreadSnapshot(
       store.dirty = true;
     }
 
-    if (stored.origin === 'bridge') continue;
+    const replayScopesForTurn = new Set(
+      scopes.filter((scope) => replayTurnsByScope.get(scope)?.has(turn.id)),
+    );
+    const mirroredBridgeScopes = new Set(
+      scopes.filter((scope) =>
+        replayScopesForTurn.has(scope) || stored.deliveries[scope]?.status === 'card'),
+    );
+    if (stored.origin === 'bridge' && mirroredBridgeScopes.size === 0) continue;
 
     // A newly attached group starts at the current end of a completed
     // transcript. This avoids replaying months of Desktop history into a new
@@ -241,6 +256,7 @@ async function syncThreadSnapshot(
     if (isTerminalStatus(turn.status)) {
       const baselineScopes = firstSnapshot && isNewTurn ? scopes : newScopes;
       for (const scope of baselineScopes) {
+        if (replayTurnsByScope.get(scope)?.has(turn.id)) continue;
         if (!stored.deliveries[scope]) {
           stored.deliveries[scope] = { status: 'skipped' };
           store.dirty = true;
@@ -249,6 +265,7 @@ async function syncThreadSnapshot(
     }
 
     for (const scope of scopes) {
+      if (stored.origin === 'bridge' && !mirroredBridgeScopes.has(scope)) continue;
       const delivery = stored.deliveries[scope];
       if (delivery?.status === 'skipped') continue;
       try {
@@ -264,28 +281,43 @@ async function syncThreadSnapshot(
     }
   }
 
+  // Creation-time history replay is intentionally attempted once. Failed
+  // deliveries are closed as skipped so later polls/restarts cannot replay
+  // historical turns outside the group-creation event.
+  for (const [scope, turnIds] of replayTurnsByScope) {
+    for (const turnId of turnIds) {
+      const stored = thread.turns[turnId];
+      if (stored && !stored.deliveries[scope]) {
+        stored.deliveries[scope] = { status: 'skipped' };
+        store.dirty = true;
+      }
+    }
+  }
+
   trimStoredTurns(thread);
 }
 
-function isProvisionalInterruptedTurn(
+function recentReplayTurnsByScope(
   snapshot: CodexThreadSnapshot,
-  turn: CodexThreadTurn,
-  lastTurn: CodexThreadTurn | undefined,
-  nowMs: number,
-): boolean {
-  const normalized = turn.status.toLowerCase();
-  if (turn.id !== lastTurn?.id) return false;
-  if (normalized !== 'interrupted' && normalized !== 'cancelled' && normalized !== 'canceled') {
-    return false;
+  bindings: SessionCatalogEntry[],
+  newScopes: string[],
+): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  for (const scope of newScopes) {
+    const count = Math.max(
+      0,
+      ...bindings
+        .filter((entry) => entry.scopeId === scope)
+        .map((entry) => entry.recentTurnReplayCount ?? 0),
+    );
+    if (count === 0) continue;
+    const ids = snapshot.turns
+      .filter((turn) => isTerminalStatus(turn.status))
+      .slice(-count)
+      .map((turn) => turn.id);
+    result.set(scope, new Set(ids));
   }
-  // A separate read-only app-server reports the Desktop-owned active turn as
-  // interrupted until Desktop persists its real completion. A genuinely
-  // interrupted turn has completedAt populated. Keep a recent unfinished tail
-  // turn live; if its thread stops changing for ten minutes, let it settle as
-  // interrupted instead of showing a task as running forever after a crash.
-  if (turn.completedAtMs !== null) return false;
-  if (snapshot.updatedAtMs === undefined) return false;
-  return nowMs - snapshot.updatedAtMs <= PROVISIONAL_INTERRUPTED_WINDOW_MS;
+  return result;
 }
 
 async function syncTurnToScope(

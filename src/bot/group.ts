@@ -5,6 +5,8 @@ export interface CreateBoundChatOptions {
   name: string;
   inviteOpenId?: string;
   inviteOpenIds?: readonly string[];
+  /** Human owner of the group. Defaults to the first invited user. */
+  ownerOpenId?: string;
   description?: string;
 }
 
@@ -31,16 +33,25 @@ export async function isSoloUserBotChat(channel: LarkChannel, chatId: string): P
 export async function createBoundChat(opts: CreateBoundChatOptions): Promise<CreatedChat> {
   const { channel, name, description } = opts;
   const inviteUserIds = [...new Set([
+    ...(opts.ownerOpenId ? [opts.ownerOpenId] : []),
     ...(opts.inviteOpenIds ?? []),
     ...(opts.inviteOpenId ? [opts.inviteOpenId] : []),
   ].filter(Boolean))];
   if (inviteUserIds.length === 0) throw new Error('at least one invite open_id is required');
-  const { chatId } = await channel.createChat({
-    name,
-    description,
-    inviteUserIds,
-    userIdType: 'open_id',
+  const ownerOpenId = opts.ownerOpenId ?? inviteUserIds[0]!;
+  const response = await channel.rawClient.im.v1.chat.create({
+    params: { user_id_type: 'open_id' },
+    data: {
+      name,
+      description,
+      chat_mode: 'group',
+      chat_type: 'private',
+      owner_id: ownerOpenId,
+      user_id_list: inviteUserIds,
+    },
   });
+  const chatId = response.data?.chat_id;
+  if (!chatId) throw new Error(`Feishu returned no chat_id (${response.code ?? 'unknown'}): ${response.msg ?? 'unknown error'}`);
   return { chatId, name };
 }
 
@@ -53,6 +64,17 @@ export async function dissolveChat(channel: LarkChannel, chatId: string): Promis
   const response = await channel.rawClient.im.v1.chat.delete({ path: { chat_id: chatId } });
   if (response.code && response.code !== 0) {
     throw new Error(`Feishu rejected chat deletion (${response.code}): ${response.msg ?? 'unknown error'}`);
+  }
+}
+
+/** Rename a group that remains bound while its Codex session advances. */
+export async function renameChat(channel: LarkChannel, chatId: string, name: string): Promise<void> {
+  const response = await channel.rawClient.im.v1.chat.update({
+    path: { chat_id: chatId },
+    data: { name },
+  });
+  if (response.code && response.code !== 0) {
+    throw new Error(`Feishu rejected chat rename (${response.code}): ${response.msg ?? 'unknown error'}`);
   }
 }
 

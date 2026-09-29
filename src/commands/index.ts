@@ -717,7 +717,11 @@ async function createGroupForPanelSession(ctx: CommandContext, token: string): P
     await reply(ctx, '⚠️ 群已创建，但会话绑定失败；请在新群中使用“恢复会话”重新绑定。');
     return;
   }
-  ctx.sessionCatalog.upsertActive({ ...identity, threadId: target.threadId });
+  ctx.sessionCatalog.upsertActive({
+    ...identity,
+    threadId: target.threadId,
+    botAppId: ctx.controls.profileConfig.accounts.app.id,
+  });
   await Promise.all([ctx.workspaces.flush(), ctx.sessionCatalog.flush()]);
   await sendManagedCard(
     ctx.channel,
@@ -1115,6 +1119,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           threadId: resolved.threadId!,
+          botAppId: ctx.controls.profileConfig.accounts.app.id,
         });
       } else {
         ctx.sessionCatalog.upsertActive({
@@ -1123,6 +1128,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
+          botAppId: ctx.controls.profileConfig.accounts.app.id,
         });
         ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
       }

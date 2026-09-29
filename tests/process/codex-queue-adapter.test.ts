@@ -56,6 +56,28 @@ describe('CodexAdapter native queue mode', () => {
     ]);
     await expect(run.waitForExit(0)).resolves.toBe(true);
   });
+
+  it('keeps polling when an unfinished queued turn is provisionally interrupted', async () => {
+    const fake = await createQueueCodex('provisional-interrupted');
+    cleanup.push(fake.dir);
+    const run = createCodexQueueRun({
+      runId: 'queue-provisional-interrupted',
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      inheritCodexHome: true,
+      cwd: fake.dir,
+      sandbox: 'workspace-write',
+      prompt: 'continue after transient status',
+      threadId: 'thread-existing',
+      clientUserMessageId: 'lark-channel-bridge:queue-provisional-interrupted',
+    });
+
+    expect(await collect(run.events)).toEqual([
+      { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'text', delta: 'queued response' },
+      { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
+    ]);
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
@@ -65,7 +87,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 }
 
 async function createQueueCodex(
-  turnStatus = 'completed',
+  turnStatus: 'completed' | 'interrupted' | 'provisional-interrupted' = 'completed',
 ): Promise<{ dir: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-queue-test-'));
   const statePath = join(dir, 'state.json');
@@ -76,6 +98,7 @@ import { createInterface } from 'node:readline';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 const statePath = ${JSON.stringify(statePath)};
+let queuedReads = 0;
 if (args[0] === 'queue') {
   const prompt = args[args.indexOf('--message') + 1];
   writeFileSync(statePath, JSON.stringify({ prompt }));
@@ -92,16 +115,31 @@ rl.on('line', (line) => {
   }
   if (req.method !== 'thread/read') return;
   const queued = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : undefined;
+  if (queued) queuedReads += 1;
+  const configuredStatus = ${JSON.stringify(turnStatus)};
+  const status = configuredStatus === 'provisional-interrupted' && queuedReads === 1
+    ? 'interrupted'
+    : configuredStatus === 'provisional-interrupted'
+      ? 'completed'
+      : configuredStatus;
   const turns = queued ? [{
     id: 'turn-queued',
-    status: ${JSON.stringify(turnStatus)},
+    status,
+    completedAt: status === 'interrupted' && configuredStatus !== 'provisional-interrupted'
+      ? Date.now() / 1000
+      : status === 'interrupted'
+        ? null
+        : Date.now() / 1000,
     error: null,
     items: [
       { type: 'userMessage', id: 'user-1', content: [{ type: 'text', text: queued.prompt }] },
       { type: 'agentMessage', id: 'agent-1', text: 'queued response', phase: 'final_answer' }
     ]
   }] : [];
-  console.log(JSON.stringify({ id: req.id, result: { thread: { id: 'thread-existing', turns } } }));
+  console.log(JSON.stringify({
+    id: req.id,
+    result: { thread: { id: 'thread-existing', updatedAt: Date.now() / 1000, turns } }
+  }));
 });
 `;
   await writeFile(scriptPath, script, 'utf8');

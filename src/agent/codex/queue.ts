@@ -9,6 +9,10 @@ import {
   type CodexThreadTurn,
 } from '../../session/codex-thread-reader';
 import {
+  isInterruptedTurnStatus,
+  isProvisionalInterruptedTurn,
+} from '../../session/codex-turn-status';
+import {
   mergeProcessEnv,
   spawnProcess,
   type SpawnedProcessByStdio,
@@ -60,6 +64,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   let activeChild: CodexChild | undefined;
   let selectedTurnId: string | undefined;
   let queuedSubmissionId: string | undefined;
+  let provisionalInterruptedTurnId: string | undefined;
   let settled = false;
   let started = false;
   let settle!: () => void;
@@ -152,10 +157,22 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
             yield { type: 'done', threadId: options.threadId, terminationReason: 'normal' };
             return;
           }
-          if (selected.status === 'interrupted' || selected.status === 'cancelled') {
+          if (isInterruptedTurnStatus(selected.status)) {
+            if (isProvisionalInterruptedTurn(snapshot, selected)) {
+              if (provisionalInterruptedTurnId !== selected.id) {
+                provisionalInterruptedTurnId = selected.id;
+                log.info('agent', 'queue-interrupted-provisional', {
+                  threadId: options.threadId,
+                  turnId: selected.id,
+                });
+              }
+              await abortableDelay(POLL_INTERVAL_MS, controller.signal);
+              continue;
+            }
             yield interrupted(options.threadId);
             return;
           }
+          provisionalInterruptedTurnId = undefined;
           if (selected.status === 'failed') {
             yield terminalError(selected.error?.message ?? `Codex turn ${selected.status}`);
             return;

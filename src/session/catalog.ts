@@ -18,6 +18,10 @@ export interface SessionCatalogIdentity {
 export interface SessionCatalogEntry extends SessionCatalogIdentity {
   key: string;
   fingerprintVersion?: number;
+  /** Feishu app that last established this chat binding. Legacy entries omit it. */
+  botAppId?: string;
+  /** Number of recent completed Codex turns to replay when this chat is first attached. */
+  recentTurnReplayCount?: number;
   status: SessionCatalogStatus;
   updatedAt: number;
   sessionId?: string;
@@ -27,6 +31,9 @@ export interface SessionCatalogEntry extends SessionCatalogIdentity {
 
 export interface UpsertSessionCatalogInput extends SessionCatalogIdentity {
   now?: number;
+  botAppId?: string;
+  /** `null` explicitly clears a pending creation-time replay marker. */
+  recentTurnReplayCount?: number | null;
   sessionId?: string;
   threadId?: string;
   lastSummary?: string;
@@ -105,9 +112,15 @@ export class SessionCatalog {
   upsertActive(input: UpsertSessionCatalogInput): SessionCatalogEntry {
     assertAgentIdentity(input);
     const key = sessionCatalogKey(input);
+    const existing = this.data.get(key);
+    const recentTurnReplayCount = input.recentTurnReplayCount === null
+      ? undefined
+      : normalizeReplayCount(input.recentTurnReplayCount ?? existing?.recentTurnReplayCount);
     const entry: SessionCatalogEntry = {
       key,
       fingerprintVersion: CURRENT_FINGERPRINT_VERSION,
+      ...(input.botAppId ? { botAppId: input.botAppId } : {}),
+      ...(recentTurnReplayCount !== undefined ? { recentTurnReplayCount } : {}),
       scopeId: input.scopeId,
       agentId: input.agentId,
       cwdRealpath: input.cwdRealpath,
@@ -189,6 +202,24 @@ export class SessionCatalog {
     }
     if (archived > 0) this.schedulePersist();
     return archived;
+  }
+
+  /** Consume the one-shot history replay marker after the new group is first observed. */
+  clearRecentTurnReplay(scopeId: string, threadId: string): number {
+    let cleared = 0;
+    for (const [key, entry] of this.data.entries()) {
+      if (
+        entry.status !== 'active' ||
+        entry.scopeId !== scopeId ||
+        entry.threadId !== threadId ||
+        entry.recentTurnReplayCount === undefined
+      ) continue;
+      const { recentTurnReplayCount: _ignored, ...next } = entry;
+      this.data.set(key, next);
+      cleared += 1;
+    }
+    if (cleared > 0) this.schedulePersist();
+    return cleared;
   }
 
   private migrateLegacyActive(input: SessionCatalogIdentity): SessionCatalogEntry | undefined {
@@ -282,6 +313,10 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     key: raw.key,
     fingerprintVersion:
       typeof raw.fingerprintVersion === 'number' ? raw.fingerprintVersion : 2,
+    ...(typeof raw.botAppId === 'string' ? { botAppId: raw.botAppId } : {}),
+    ...(normalizeReplayCount(raw.recentTurnReplayCount) !== undefined
+      ? { recentTurnReplayCount: normalizeReplayCount(raw.recentTurnReplayCount) }
+      : {}),
     scopeId: raw.scopeId,
     agentId: raw.agentId,
     cwdRealpath: raw.cwdRealpath,
@@ -292,6 +327,11 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     ...(typeof raw.threadId === 'string' ? { threadId: raw.threadId } : {}),
     ...(typeof raw.lastSummary === 'string' ? { lastSummary: raw.lastSummary } : {}),
   };
+}
+
+function normalizeReplayCount(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
 }
 
 function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdentity): boolean {

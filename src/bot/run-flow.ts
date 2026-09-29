@@ -67,6 +67,7 @@ export type StartRunFlowResult =
 
 export interface RecordRunSessionEventInput {
   scopeId: string;
+  botAppId?: string;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   capability: AgentCapability;
@@ -201,6 +202,7 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       sessionId: input.event.sessionId,
+      ...(input.botAppId ? { botAppId: input.botAppId } : {}),
     });
     return;
   }
@@ -211,6 +213,7 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       cwdRealpath: input.policy.cwdRealpath,
       policyFingerprint: input.policy.policyFingerprint,
       threadId: input.event.threadId,
+      ...(input.botAppId ? { botAppId: input.botAppId } : {}),
     });
   }
 }
