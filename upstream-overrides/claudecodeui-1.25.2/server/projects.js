@@ -2204,7 +2204,8 @@ function getTimestampMs(value) {
   return null;
 }
 
-const CODEX_PENDING_DELIVERY_TIMEOUT_MS = 60_000;
+// Native queue entries can legitimately wait behind a long-running turn.
+const CODEX_PENDING_DELIVERY_TIMEOUT_MS = 30 * 60_000;
 const CODEX_PENDING_DELIVERY_BACKDATE_TOLERANCE_MS = 5 * 60_000;
 const CODEX_PENDING_DELIVERY_TAIL_READ_LIMIT = 4 * 1024 * 1024;
 

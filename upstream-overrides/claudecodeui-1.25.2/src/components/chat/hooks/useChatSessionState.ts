@@ -23,7 +23,7 @@ const INITIAL_VISIBLE_MESSAGES = 100;
 const MIN_REFRESHING_LATEST_MS = 500;
 const SESSION_STATUS_POLL_MS = 3000;
 const BACKGROUND_REFRESH_INDICATOR_INTERVAL_MS = 3_000;
-const PENDING_DELIVERY_TIMEOUT_MS = 60_000;
+const CODEX_HISTORY_SYNC_POLL_MS = 1500;
 const BOTTOM_REFRESH_GAP_PX = 12;
 const BOTTOM_REFRESH_TRIGGER_DISTANCE_PX = 28;
 const BOTTOM_REFRESH_TIMEOUT_MS = 1400;
@@ -949,26 +949,31 @@ export function useChatSessionState({
   );
 
   useEffect(() => {
-    if (
-      !pendingUserMessage ||
-      pendingUserMessage.status !== 'sending' ||
-      resolvedSessionProvider !== 'codex'
-    ) {
+    const isPendingCodexDelivery =
+      resolvedSessionProvider === 'codex' && pendingUserMessage?.status === 'sending';
+    const shouldPollCodexHistory =
+      resolvedSessionProvider === 'codex' && (isPendingCodexDelivery || isLoading);
+    if (!shouldPollCodexHistory) {
       return;
     }
 
-    const pendingTimestamp = getTimestampMs(pendingUserMessage.timestamp);
-    if (pendingTimestamp === null) {
-      return;
-    }
+    let refreshInFlight = false;
+    const refreshCodexHistory = async () => {
+      if (refreshInFlight) {
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        await refreshLatestMessages({ preserveScroll: true, showIndicator: false });
+      } finally {
+        refreshInFlight = false;
+      }
+    };
 
-    const delay = Math.max(0, pendingTimestamp + PENDING_DELIVERY_TIMEOUT_MS - Date.now() + 250);
-    const timeoutId = window.setTimeout(() => {
-      void refreshLatestMessages({ preserveScroll: true, showIndicator: false });
-    }, delay);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [pendingUserMessage, refreshLatestMessages, resolvedSessionProvider]);
+    void refreshCodexHistory();
+    const intervalId = window.setInterval(refreshCodexHistory, CODEX_HISTORY_SYNC_POLL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [isLoading, pendingUserMessage?.status, refreshLatestMessages, resolvedSessionProvider]);
 
   const handleScroll = useCallback(async () => {
     const container = scrollContainerRef.current;

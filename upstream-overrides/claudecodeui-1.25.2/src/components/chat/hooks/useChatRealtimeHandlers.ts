@@ -1186,6 +1186,9 @@ export function useChatRealtimeHandlers({
         onSessionNotProcessing?.(statusSessionId);
         if (isCurrentSession) {
           clearLoadingIndicators();
+          // Native `codex queue` persists output outside this WebSocket.
+          // Fetch once after the turn becomes idle so its final reply is shown.
+          onCodexCliCommandDelivered?.();
         }
         break;
       }
