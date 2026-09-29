@@ -48,6 +48,8 @@ export interface SetCodexThreadNameOptions {
   codexHome?: string;
   inheritCodexHome?: boolean;
   timeoutMs?: number;
+  /** Shared app-server endpoint. `unix://` uses Codex's default control socket. */
+  remote?: string;
 }
 
 export type ArchiveCodexThreadOptions = Omit<SetCodexThreadNameOptions, 'name'>;
@@ -210,12 +212,66 @@ export async function setCodexThreadName(options: SetCodexThreadNameOptions): Pr
 }
 
 export async function archiveCodexThread(options: ArchiveCodexThreadOptions): Promise<void> {
+  if (options.remote) {
+    await archiveCodexThreadThroughRemote(options);
+    return;
+  }
   await mutateCodexThread(
     options,
     'thread/archive',
     { threadId: options.threadId },
     'archive',
   );
+}
+
+async function archiveCodexThreadThroughRemote(
+  options: ArchiveCodexThreadOptions,
+): Promise<void> {
+  const child = spawnProcess(
+    options.binary,
+    ['archive', '--remote', options.remote!, options.threadId],
+    {
+      env: codexProcessEnv(options),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  const timeoutMs = options.timeoutMs ?? DEFAULT_HISTORY_TIMEOUT_MS;
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (err?: CodexHistoryError): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(new CodexHistoryError('timeout', `codex thread archive timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+    child.once('error', (err) => {
+      finish(new CodexHistoryError('spawn-failed', errorMessage(err)));
+    });
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        finish();
+        return;
+      }
+      const detail = Buffer.concat([...stderrChunks, ...stdoutChunks]).toString('utf8').trim();
+      finish(
+        new CodexHistoryError(
+          'app-server-error',
+          detail || `codex archive exited with ${code ?? signal ?? 'unknown status'}`,
+        ),
+      );
+    });
+  });
 }
 
 async function mutateCodexThread(
@@ -326,17 +382,24 @@ function spawnCodexAppServer(options: {
   codexHome?: string;
   inheritCodexHome?: boolean;
 }): CodexAppServerChild {
+  return spawnProcess(options.binary, ['app-server', '--listen', 'stdio://'], {
+    env: codexProcessEnv(options),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }) as CodexAppServerChild;
+}
+
+function codexProcessEnv(options: {
+  profileStateDir: string;
+  codexHome?: string;
+  inheritCodexHome?: boolean;
+}): NodeJS.ProcessEnv {
   const envOverrides: NodeJS.ProcessEnv = {};
   if (options.codexHome) {
     envOverrides.CODEX_HOME = options.codexHome;
   } else if (options.inheritCodexHome === false) {
     envOverrides.CODEX_HOME = join(options.profileStateDir, 'codex-home');
   }
-
-  return spawnProcess(options.binary, ['app-server', '--listen', 'stdio://'], {
-    env: mergeProcessEnv(process.env, envOverrides),
-    stdio: ['pipe', 'pipe', 'pipe'],
-  }) as CodexAppServerChild;
+  return mergeProcessEnv(process.env, envOverrides);
 }
 
 function initializeRequest() {

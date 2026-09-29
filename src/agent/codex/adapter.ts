@@ -36,6 +36,8 @@ export interface CodexAdapterOptions {
   useAppServerForFreshThreads?: boolean;
   /** @deprecated Native queue transport is enabled by default. */
   useQueueForExistingThreads?: boolean;
+  /** Shared app-server endpoint used for queueing and thread mutations. */
+  appServerRemote?: string;
 }
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -55,6 +57,7 @@ export class CodexAdapter implements AgentAdapter {
   private readonly larkChannel: LarkChannelEnvContext | undefined;
   private readonly useAppServerForFreshThreads: boolean;
   private readonly useQueueForExistingThreads: boolean;
+  private readonly appServerRemote: string | undefined;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: CodexAdapterOptions) {
@@ -69,6 +72,7 @@ export class CodexAdapter implements AgentAdapter {
     this.larkChannel = opts.larkChannel;
     this.useAppServerForFreshThreads = opts.useAppServerForFreshThreads !== false;
     this.useQueueForExistingThreads = opts.useQueueForExistingThreads !== false;
+    this.appServerRemote = opts.appServerRemote ?? process.env.CODEX_QUEUE_REMOTE;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -118,6 +122,7 @@ export class CodexAdapter implements AgentAdapter {
       profileStateDir: this.profileStateDir,
       ...(this.codexHome ? { codexHome: this.codexHome } : {}),
       inheritCodexHome: this.inheritCodexHome,
+      remote: this.appServerRemote,
     });
   }
 

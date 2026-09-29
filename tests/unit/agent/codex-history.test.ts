@@ -154,6 +154,31 @@ describe('Codex thread history provider', () => {
     ]);
   });
 
+  it('archives through the shared Codex daemon when a Unix remote is configured', async () => {
+    const fake = await createFakeCodex();
+    cleanup.push(fake.dir);
+
+    await archiveCodexThread({
+      binary: fake.path,
+      threadId: 'thread-shared',
+      profileStateDir: fake.dir,
+      remote: 'unix:///tmp/codex-control.sock',
+      timeoutMs: 5000,
+    });
+
+    const record = JSON.parse(await readFile(fake.recordPath, 'utf8')) as {
+      argv: string[];
+      requests: Array<{ method: string; params?: unknown }>;
+    };
+    expect(record.argv).toEqual([
+      'archive',
+      '--remote',
+      'unix:///tmp/codex-control.sock',
+      'thread-shared',
+    ]);
+    expect(record.requests).toEqual([]);
+  });
+
   it('throws a typed error when app-server rejects the history request', async () => {
     const fake = await createFakeCodex({ failList: true });
     cleanup.push(fake.dir);
@@ -223,6 +248,11 @@ function persist() {
     env: { CODEX_HOME: process.env.CODEX_HOME },
     requests
   }, null, 2));
+}
+
+if (process.argv[2] === 'archive') {
+  persist();
+  process.exit(0);
 }
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
