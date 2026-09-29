@@ -17,12 +17,15 @@ export interface CodexThreadItem extends Record<string, unknown> {
 export interface CodexThreadTurn {
   id: string;
   status: string;
+  startedAtMs?: number;
+  completedAtMs?: number | null;
   error?: { message?: string };
   items: CodexThreadItem[];
 }
 
 export interface CodexThreadSnapshot {
   id: string;
+  updatedAtMs?: number;
   turns: CodexThreadTurn[];
 }
 
@@ -299,11 +302,21 @@ export function normalizeCodexThreadSnapshot(input: unknown): CodexThreadSnapsho
     turns.push({
       id: turn.id,
       status: turn.status,
+      ...(typeof turn.startedAt === 'number' ? { startedAtMs: Math.round(turn.startedAt * 1000) } : {}),
+      ...(turn.completedAt === null
+        ? { completedAtMs: null }
+        : typeof turn.completedAt === 'number'
+          ? { completedAtMs: Math.round(turn.completedAt * 1000) }
+          : {}),
       items: turn.items.filter((item): item is CodexThreadItem => Boolean(recordValue(item))),
       ...(error ? { error: { ...(typeof error.message === 'string' ? { message: error.message } : {}) } } : {}),
     });
   }
-  return { id: raw.id, turns };
+  return {
+    id: raw.id,
+    ...(typeof raw.updatedAt === 'number' ? { updatedAtMs: Math.round(raw.updatedAt * 1000) } : {}),
+    turns,
+  };
 }
 
 function readerEnv(options: CodexThreadReaderOptions): NodeJS.ProcessEnv {

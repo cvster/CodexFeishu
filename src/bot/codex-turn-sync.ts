@@ -24,6 +24,7 @@ import { sendManagedCard } from '../card/managed';
 
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
 const STATUS_HEARTBEAT_MS = 15_000;
+const PROVISIONAL_INTERRUPTED_WINDOW_MS = 10 * 60_000;
 const STATE_VERSION = 1;
 const MAX_TURNS_PER_THREAD = 300;
 
@@ -41,6 +42,7 @@ interface CardDelivery {
   lastPushedAtMs: number;
   lastContentHash: string;
   terminal: boolean;
+  terminalStatus?: Terminal;
 }
 
 type TurnDelivery = SkippedDelivery | CardDelivery;
@@ -106,11 +108,15 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
   const now = deps.now ?? Date.now;
   let stopped = false;
   let running: Promise<void> | undefined;
+  let needsInitialRevalidation = true;
 
   const runNow = async (): Promise<void> => {
     if (stopped) return;
     if (running) return running;
-    running = syncOnce(deps, reader, store, now)
+    running = syncOnce(deps, reader, store, now, needsInitialRevalidation)
+      .then(() => {
+        needsInitialRevalidation = false;
+      })
       .catch((err) => log.fail('codex-turn-sync', err, { step: 'poll' }))
       .finally(() => {
         running = undefined;
@@ -139,6 +145,7 @@ async function syncOnce(
   reader: CodexTurnReaderLike,
   store: CodexTurnSyncStore,
   now: () => number,
+  forceRead: boolean,
 ): Promise<void> {
   const bindings = activeCodexBindings(deps.sessionCatalog.entries());
   let revisions: Map<string, number> | undefined;
@@ -164,6 +171,7 @@ async function syncOnce(
           ))
       : false;
     if (
+      !forceRead &&
       stored &&
       !hasRunningExternalTurn &&
       revisions &&
@@ -206,7 +214,11 @@ async function syncThreadSnapshot(
   const newScopes = scopes.filter((scope) => !thread.bindings.includes(scope));
   thread.bindings = [...new Set([...thread.bindings, ...scopes])];
 
-  for (const turn of snapshot.turns) {
+  const lastTurn = snapshot.turns.at(-1);
+  for (const rawTurn of snapshot.turns) {
+    const turn = isProvisionalInterruptedTurn(snapshot, rawTurn, lastTurn, nowMs)
+      ? { ...rawTurn, status: 'inProgress' }
+      : rawTurn;
     let stored = thread.turns[turn.id];
     const isNewTurn = !stored;
     if (!stored) {
@@ -255,6 +267,27 @@ async function syncThreadSnapshot(
   trimStoredTurns(thread);
 }
 
+function isProvisionalInterruptedTurn(
+  snapshot: CodexThreadSnapshot,
+  turn: CodexThreadTurn,
+  lastTurn: CodexThreadTurn | undefined,
+  nowMs: number,
+): boolean {
+  const normalized = turn.status.toLowerCase();
+  if (turn.id !== lastTurn?.id) return false;
+  if (normalized !== 'interrupted' && normalized !== 'cancelled' && normalized !== 'canceled') {
+    return false;
+  }
+  // A separate read-only app-server reports the Desktop-owned active turn as
+  // interrupted until Desktop persists its real completion. A genuinely
+  // interrupted turn has completedAt populated. Keep a recent unfinished tail
+  // turn live; if its thread stops changing for ten minutes, let it settle as
+  // interrupted instead of showing a task as running forever after a crash.
+  if (turn.completedAtMs !== null) return false;
+  if (snapshot.updatedAtMs === undefined) return false;
+  return nowMs - snapshot.updatedAtMs <= PROVISIONAL_INTERRUPTED_WINDOW_MS;
+}
+
 async function syncTurnToScope(
   channel: LarkChannel,
   store: CodexTurnSyncStore,
@@ -296,6 +329,7 @@ async function syncTurnToScope(
       lastPushedAtMs: nowMs,
       lastContentHash: contentHash,
       terminal: isTerminalStatus(turn.status),
+      terminalStatus: state.terminal,
     };
     stored.deliveries[scope] = delivery;
     store.dirty = true;
@@ -308,16 +342,26 @@ async function syncTurnToScope(
     });
     return;
   }
-  if (delivery.status !== 'card' || delivery.terminal) return;
+  if (delivery.status !== 'card') return;
 
-  const terminal = isTerminalStatus(turn.status);
+  const wasTerminal = delivery.terminal;
+  const nextTerminalStatus = terminalFromStatus(turn.status);
+  const terminal = nextTerminalStatus !== 'running';
   const changed = contentHash !== delivery.lastContentHash;
+  // A turn can be observed as interrupted while Codex Desktop is still
+  // transitioning it, then return to inProgress (or finish normally). Do not
+  // make the first terminal snapshot sticky: update the existing card whenever
+  // a later snapshot differs. Unchanged terminal cards still remain idle.
+  const terminalKindChanged = delivery.terminalStatus !== undefined &&
+    delivery.terminalStatus !== nextTerminalStatus;
+  if (delivery.terminal && terminal && !terminalKindChanged) return;
   if (!changed && !terminal && nowMs - delivery.lastPushedAtMs < STATUS_HEARTBEAT_MS) return;
 
   if (changed) delivery.lastActivityAtMs = nowMs;
   delivery.sequence += 1;
   delivery.lastPushedAtMs = nowMs;
   delivery.lastContentHash = contentHash;
+  delivery.terminalStatus = nextTerminalStatus;
   store.dirty = true;
   // Persist the next CardKit sequence before the API call. If the process dies
   // after Feishu accepts the update, a restart will never reuse that sequence.
@@ -340,6 +384,7 @@ async function syncTurnToScope(
     turnId: turn.id,
     scope,
     terminal,
+    reopened: wasTerminal && !terminal,
     sequence: delivery.sequence,
   });
 }

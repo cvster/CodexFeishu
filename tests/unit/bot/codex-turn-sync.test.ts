@@ -177,6 +177,186 @@ describe('Codex desktop turn sync', () => {
     expect(channel.sent).toHaveLength(0);
     await handle.stop();
   });
+
+  it('revalidates and reopens a prematurely interrupted external turn', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-turn-sync-reopen-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = {
+      key: 'entry-reopen',
+      scopeId: 'oc_reopen',
+      agentId: 'codex',
+      cwdRealpath: dir,
+      policyFingerprint: 'policy',
+      status: 'active',
+      updatedAt: 1,
+      threadId: 'thread-reopen',
+    } satisfies SessionCatalogEntry;
+    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    let nowMs = 30_000;
+    let revision = 1_000;
+    let snapshot: CodexThreadSnapshot = {
+      id: 'thread-reopen',
+      turns: [externalTurn('old-turn-reopen', 'completed', 'old prompt', 'old answer')],
+    };
+    const statePath = join(dir, 'sync-state.json');
+    const reader = {
+      readThread: vi.fn(async () => snapshot),
+      listRecentThreads: vi.fn(async () => [{ id: snapshot.id, updatedAtMs: revision }]),
+      stop: vi.fn(async () => undefined),
+    };
+    const handle = await startCodexTurnSync({
+      channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(),
+      sessionCatalog,
+      profileStateDir: dir,
+      statePath,
+      intervalMs: 60_000,
+      reader,
+      now: () => nowMs,
+    });
+    await handle.runNow();
+
+    snapshot = {
+      id: snapshot.id,
+      turns: [
+        ...snapshot.turns,
+        externalTurn('desktop-reopen', 'interrupted', 'desktop prompt', ''),
+      ],
+    };
+    revision = 2_000;
+    nowMs += 3_000;
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(2);
+    expect(JSON.stringify(channel.sent[1]?.content)).toMatch(/已中断|已被中断/);
+    await handle.stop();
+
+    // Reproduce the production race: Codex reports the same turn as running,
+    // while thread/list has not advanced beyond the persisted revision yet.
+    snapshot = {
+      id: snapshot.id,
+      turns: snapshot.turns.map((turn) =>
+        turn.id === 'desktop-reopen'
+          ? externalTurn('desktop-reopen', 'inProgress', 'desktop prompt', '')
+          : turn,
+      ),
+    };
+    nowMs += 3_000;
+    const restartedReader = {
+      readThread: vi.fn(async () => snapshot),
+      listRecentThreads: vi.fn(async () => [{ id: snapshot.id, updatedAtMs: revision }]),
+      stop: vi.fn(async () => undefined),
+    };
+    const restarted = await startCodexTurnSync({
+      channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(),
+      sessionCatalog,
+      profileStateDir: dir,
+      statePath,
+      intervalMs: 60_000,
+      reader: restartedReader,
+      now: () => nowMs,
+    });
+    await restarted.runNow();
+
+    const reopenedUpdates = channel.rawClient.requests.filter(
+      (request) => request.method === 'cardkit.v1.card.update',
+    );
+    expect(restartedReader.readThread).toHaveBeenCalled();
+    expect(reopenedUpdates).toHaveLength(1);
+    expect(JSON.stringify(reopenedUpdates[0])).toContain('运行中');
+    expect(JSON.stringify(reopenedUpdates[0])).not.toMatch(/已中断|已被中断/);
+
+    snapshot = {
+      id: snapshot.id,
+      turns: snapshot.turns.map((turn) =>
+        turn.id === 'desktop-reopen'
+          ? externalTurn('desktop-reopen', 'completed', 'desktop prompt', 'desktop answer')
+          : turn,
+      ),
+    };
+    revision = 3_000;
+    nowMs += 3_000;
+    await restarted.runNow();
+    const finalUpdates = channel.rawClient.requests.filter(
+      (request) => request.method === 'cardkit.v1.card.update',
+    );
+    expect(finalUpdates).toHaveLength(2);
+    expect(JSON.stringify(finalUpdates[1])).toContain('desktop answer');
+    await restarted.stop();
+  });
+
+  it('keeps a recent unfinished tail turn running when the read-only server reports interrupted', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-turn-sync-provisional-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = {
+      key: 'entry-provisional',
+      scopeId: 'oc_provisional',
+      agentId: 'codex',
+      cwdRealpath: dir,
+      policyFingerprint: 'policy',
+      status: 'active',
+      updatedAt: 1,
+      threadId: 'thread-provisional',
+    } satisfies SessionCatalogEntry;
+    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    let nowMs = 100_000;
+    let snapshot: CodexThreadSnapshot = {
+      id: 'thread-provisional',
+      updatedAtMs: nowMs,
+      turns: [externalTurn('old-turn-provisional', 'completed', 'old prompt', 'old answer')],
+    };
+    const reader = {
+      readThread: vi.fn(async () => snapshot),
+      stop: vi.fn(async () => undefined),
+    };
+    const handle = await startCodexTurnSync({
+      channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(),
+      sessionCatalog,
+      profileStateDir: dir,
+      statePath: join(dir, 'sync-state.json'),
+      intervalMs: 60_000,
+      reader,
+      now: () => nowMs,
+    });
+    await handle.runNow();
+
+    const provisional = externalTurn('desktop-provisional', 'interrupted', 'desktop prompt', '');
+    provisional.completedAtMs = null;
+    snapshot = {
+      id: snapshot.id,
+      updatedAtMs: nowMs,
+      turns: [...snapshot.turns, provisional],
+    };
+    nowMs += 3_000;
+    snapshot.updatedAtMs = nowMs;
+    await handle.runNow();
+
+    expect(channel.sent).toHaveLength(2);
+    expect(JSON.stringify(channel.sent[1]?.content)).toContain('运行中');
+    expect(JSON.stringify(channel.sent[1]?.content)).not.toMatch(/已中断|已被中断/);
+
+    snapshot = {
+      id: snapshot.id,
+      updatedAtMs: nowMs,
+      turns: snapshot.turns.map((turn) =>
+        turn.id === 'desktop-provisional'
+          ? externalTurn('desktop-provisional', 'completed', 'desktop prompt', 'desktop answer')
+          : turn,
+      ),
+    };
+    nowMs += 3_000;
+    snapshot.updatedAtMs = nowMs;
+    await handle.runNow();
+    const updates = channel.rawClient.requests.filter(
+      (request) => request.method === 'cardkit.v1.card.update',
+    );
+    expect(updates).toHaveLength(1);
+    expect(JSON.stringify(updates[0])).toContain('desktop answer');
+    await handle.stop();
+  });
 });
 
 function controlsForCodex(): Controls {
