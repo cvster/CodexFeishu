@@ -893,8 +893,11 @@ export function useChatSessionState({
           return false;
         }
         const renderedMessages = applyPendingUserMessage(convertedMergedMessages, nextPendingUserMessage);
+        const renderedMessagesSignature = buildChatMessagesSignature(renderedMessages);
+        const visibleContentChanged =
+          renderedMessagesSignature !== prevConvertedMessagesSignatureRef.current;
 
-        if (preserveScroll && container) {
+        if (visibleContentChanged && preserveScroll && container) {
           pendingScrollRestoreRef.current = {
             height: container.scrollHeight,
             top: container.scrollTop,
@@ -902,12 +905,14 @@ export function useChatSessionState({
           };
         }
 
-        setSessionMessages(mergedMessages);
+        if (visibleContentChanged) {
+          setSessionMessages(mergedMessages);
+          setChatMessages(renderedMessages);
+          prevConvertedMessagesSignatureRef.current = renderedMessagesSignature;
+        }
         if (nextPendingUserMessage !== refreshPendingUserMessage) {
           setPendingUserMessage(nextPendingUserMessage);
         }
-        setChatMessages(renderedMessages);
-        prevConvertedMessagesSignatureRef.current = buildChatMessagesSignature(renderedMessages);
         setTotalMessages(total);
         setHasMoreMessages(mergedMessages.length < total);
         messagesOffsetRef.current += addedCount;
@@ -1060,7 +1065,7 @@ export function useChatSessionState({
     const scrollDiff = newScrollHeight - height;
     container.scrollTop = mode === 'prepend' ? top + Math.max(scrollDiff, 0) : top;
     pendingScrollRestoreRef.current = null;
-  }, [chatMessages.length]);
+  }, [chatMessages]);
 
   useEffect(() => {
     if (!searchScrollActiveRef.current) {

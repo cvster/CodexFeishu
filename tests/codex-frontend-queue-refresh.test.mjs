@@ -10,6 +10,10 @@ const realtimeHandlersPath = new URL(
   '../upstream-overrides/claudecodeui-1.25.2/src/components/chat/hooks/useChatRealtimeHandlers.ts',
   import.meta.url,
 );
+const messagesPanePath = new URL(
+  '../upstream-overrides/claudecodeui-1.25.2/src/components/chat/view/subcomponents/ChatMessagesPane.tsx',
+  import.meta.url,
+);
 
 test('原生 Codex queue 投递后持续同步历史，并在任务结束时最终刷新', async () => {
   const [sessionState, realtimeHandlers] = await Promise.all([
@@ -22,4 +26,18 @@ test('原生 Codex queue 投递后持续同步历史，并在任务结束时最�
   assert.match(sessionState, /pendingUserMessage\?\.status === 'sending'/);
   assert.match(sessionState, /isPendingCodexDelivery \|\| isLoading/);
   assert.match(realtimeHandlers, /clearLoadingIndicators\(\);[\s\S]*onCodexCliCommandDelivered\?\.\(\);/);
+});
+
+test('Codex 历史轮询不会重建未变化的消息 DOM 或破坏滚动位置', async () => {
+  const [sessionState, messagesPane] = await Promise.all([
+    readFile(sessionStatePath, 'utf8'),
+    readFile(messagesPanePath, 'utf8'),
+  ]);
+
+  assert.match(sessionState, /const visibleContentChanged\s*=/);
+  assert.match(sessionState, /if \(visibleContentChanged\) \{[\s\S]*setChatMessages\(renderedMessages\)/);
+  assert.match(sessionState, /\}, \[chatMessages\]\);/);
+  assert.match(messagesPane, /const visibleMessageKeys = useMemo/);
+  assert.match(messagesPane, /getIntrinsicMessageKey\(message\)/);
+  assert.doesNotMatch(messagesPane, /WeakMap<ChatMessage, string>/);
 });

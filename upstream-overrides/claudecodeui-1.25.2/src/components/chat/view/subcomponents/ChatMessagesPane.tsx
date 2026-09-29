@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties, Dispatch, RefObject, SetStateAction } from 'react';
 import type { ChatMessage } from '../../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
@@ -114,9 +114,6 @@ export default function ChatMessagesPane({
   onSwipeUpRefresh,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
-  const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
-  const allocatedKeysRef = useRef<Set<string>>(new Set());
-  const generatedMessageKeyCounterRef = useRef(0);
   const touchGestureRef = useRef({
     touchId: null as number | null,
     startY: 0,
@@ -137,29 +134,22 @@ export default function ChatMessagesPane({
     -1,
   );
 
-  // Keep keys stable across prepends so existing MessageComponent instances retain local state.
-  const getMessageKey = useCallback((message: ChatMessage) => {
-    const existingKey = messageKeyMapRef.current.get(message);
-    if (existingKey) {
-      return existingKey;
-    }
+  // History polling reconstructs ChatMessage objects even when their visible
+  // content is unchanged. Keys based on object identity therefore remounted
+  // the complete transcript every 1.5 seconds, clearing text selection and
+  // breaking the browser's scroll anchoring. Derive keys from message data so
+  // the same logical message keeps the same DOM node across refreshes.
+  const visibleMessageKeys = useMemo(() => {
+    const occurrences = new Map<string, number>();
 
-    const intrinsicKey = getIntrinsicMessageKey(message);
-    let candidateKey = intrinsicKey;
-
-    if (!candidateKey || allocatedKeysRef.current.has(candidateKey)) {
-      do {
-        generatedMessageKeyCounterRef.current += 1;
-        candidateKey = intrinsicKey
-          ? `${intrinsicKey}-${generatedMessageKeyCounterRef.current}`
-          : `message-generated-${generatedMessageKeyCounterRef.current}`;
-      } while (allocatedKeysRef.current.has(candidateKey));
-    }
-
-    allocatedKeysRef.current.add(candidateKey);
-    messageKeyMapRef.current.set(message, candidateKey);
-    return candidateKey;
-  }, []);
+    return visibleMessages.map((message, index) => {
+      const intrinsicKey = getIntrinsicMessageKey(message);
+      const baseKey = intrinsicKey || `message-fallback-${message.type}-${String(message.timestamp)}-${index}`;
+      const occurrence = occurrences.get(baseKey) || 0;
+      occurrences.set(baseKey, occurrence + 1);
+      return occurrence === 0 ? baseKey : `${baseKey}-duplicate-${occurrence}`;
+    });
+  }, [visibleMessages]);
 
   const tryTriggerSwipeRefresh = useCallback(() => {
     const { startY, currentY, startedAt, armed, triggered } = touchGestureRef.current;
@@ -380,7 +370,7 @@ export default function ChatMessagesPane({
             const isLatestUserMessage = message.type === 'user' && index === latestUserMessageIndex;
             return (
               <MessageComponent
-                key={getMessageKey(message)}
+                key={visibleMessageKeys[index]}
                 message={message}
                 prevMessage={prevMessage}
                 isLatestUserMessage={isLatestUserMessage}
