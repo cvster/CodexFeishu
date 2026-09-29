@@ -14,6 +14,7 @@ Environment="CODEX_ONLY_HARDENED_MODE=true"
 Environment="VITE_CODEX_ONLY_HARDENED_MODE=true"
 Environment="NODE_OPTIONS=--max-old-space-size=8192"
 Environment="MOBILE_CODEX_CLI=__CODEX_CLI__"
+Environment="MOBILE_CODEX_QUEUE_REMOTE=unix://"
 Environment="DATABASE_PATH=__HOME__/.cloudcli/auth.db"
 ExecStart=__NODE__ server/index.js
 Restart=always

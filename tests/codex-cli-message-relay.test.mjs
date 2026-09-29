@@ -64,6 +64,16 @@ test('codex queue 使用共享 daemon 的最小参数，沿用已有会话配置
   ]);
 });
 
+test('codex queue 可显式连接桌面共享 daemon', () => {
+  assert.deepEqual(buildCodexQueueArgs({
+    sessionId: 'thread-1',
+    message: '继续',
+    remote: 'unix://',
+  }), [
+    'queue', '--remote', 'unix://', '--thread', 'thread-1', '--message', '继续',
+  ]);
+});
+
 test('codex queue 成功时解析原生队列消息 ID', async () => {
   const spawnImpl = (_cliPath, args, options) => {
     calls.push({ args, options });
@@ -113,13 +123,12 @@ test('codex queue 成功时解析原生队列消息 ID', async () => {
   assert.equal(readCount, 2);
 });
 
-test('空闲会话先 resume，已有桌面 writer 时继续使用共享队列', async () => {
+test('已有会话只读历史并通过共享队列投递，不争抢 writer', async () => {
   const calls = [];
   let readCount = 0;
   const client = {
     async request(method) {
       calls.push(method);
-      if (method === 'thread/resume') throw new Error('thread already has an active writer');
       if (method === 'thread/read') {
         readCount += 1;
         return readCount === 1
@@ -157,7 +166,57 @@ test('空闲会话先 resume，已有桌面 writer 时继续使用共享队列',
     message: '继续',
   }, { cliPath: 'codex.exe', spawnImpl, createClient: () => client });
 
-  assert.deepEqual(calls.slice(0, 3), ['initialize', 'thread/read', 'thread/resume']);
+  assert.deepEqual(calls, ['initialize', 'thread/read', 'thread/read']);
+});
+
+test('网页自建的空闲会话在共享队列无人消费时才加载 writer', async () => {
+  const calls = [];
+  let resumed = false;
+  const client = {
+    async request(method) {
+      calls.push(method);
+      if (method === 'thread/resume') {
+        resumed = true;
+        return {};
+      }
+      if (method === 'thread/read') {
+        return resumed
+          ? { thread: { turns: [{
+              id: 'queued-turn',
+              status: 'completed',
+              items: [{ type: 'userMessage', content: [{ type: 'text', text: '继续' }] }],
+            }] } }
+          : { thread: { turns: [] } };
+      }
+      return {};
+    },
+    notify() {},
+    async close() {},
+  };
+  const spawnImpl = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      child.stdout.end('Queued message queue-1 for thread thread-1.\n');
+      child.emit('exit', 0, null);
+    });
+    return child;
+  };
+
+  await queueCodexCliThreadMessage({
+    sessionId: 'thread-1',
+    projectPath: 'D:\\dorit\\mytest',
+    message: '继续',
+  }, {
+    cliPath: 'codex.exe',
+    spawnImpl,
+    createClient: () => client,
+    resumeFallbackMs: 0,
+  });
+
+  assert.equal(calls.filter((method) => method === 'thread/resume').length, 1);
 });
 
 test('新会话通过 app-server 创建并启动首轮', async () => {

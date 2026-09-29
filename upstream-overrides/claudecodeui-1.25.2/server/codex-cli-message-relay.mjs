@@ -5,6 +5,7 @@ import { resolveCodexAppProjectId } from './codex-desktop-projects.mjs';
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
+const DEFAULT_QUEUE_RESUME_FALLBACK_MS = 2_500;
 const QUEUED_TURN_POLL_INTERVAL_MS = 750;
 const relayQueues = new Map();
 
@@ -28,9 +29,11 @@ function isProjectlessPath(value) {
 export function buildCodexQueueArgs({
   sessionId,
   message,
+  remote,
 }) {
   return [
     'queue',
+    ...(remote ? ['--remote', remote] : []),
     '--thread',
     normalizeRequiredText(sessionId, 'sessionId'),
     '--message',
@@ -59,9 +62,9 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
     });
     client.notify('initialized');
 
-    // Keep a read-only app-server attached while `codex queue` hands the turn
-    // to the shared daemon. Without an attached client, the CLI accepts the
-    // queue item but an idle Desktop thread may never consume it.
+    // The app-server client is read-only. Existing Desktop-owned threads must
+    // be queued through the shared daemon instead of being resumed here,
+    // otherwise this helper competes for the thread writer lease.
     const baseline = await client.request('thread/read', {
       threadId: sessionId,
       includeTurns: true,
@@ -72,23 +75,10 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
         .filter(Boolean),
     );
 
-    // An idle thread has no writer to consume the shared queue. Load it in
-    // this app-server when possible; if Desktop already owns the writer, keep
-    // that ownership and let Desktop consume the queue item instead.
-    try {
-      await client.request('thread/resume', { threadId: sessionId });
-    } catch (error) {
-      if (!/already has an active writer/i.test(String(error?.message || ''))) {
-        throw error;
-      }
-    }
-
     const child = spawnImpl(cliPath, buildCodexQueueArgs({
       sessionId,
       message: payload.message,
-      cwd,
-      model: payload.model,
-      modelReasoningEffort: payload.modelReasoningEffort,
+      remote: process.env.MOBILE_CODEX_QUEUE_REMOTE,
     }), {
       cwd,
       env: process.env,
@@ -132,6 +122,9 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
       message: payload.message,
       knownTurnIds,
       timeoutMs: Number(process.env.MOBILE_CODEX_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS),
+      resumeFallbackMs: dependencies.resumeFallbackMs ?? Number(
+        process.env.MOBILE_CODEX_QUEUE_RESUME_FALLBACK_MS || DEFAULT_QUEUE_RESUME_FALLBACK_MS,
+      ),
     });
     return { skipped: false, sessionId, ...(queueMessageId ? { queueMessageId } : {}) };
   } finally {
@@ -139,12 +132,21 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
   }
 }
 
-async function waitForQueuedTurn(client, { sessionId, message, knownTurnIds, timeoutMs }) {
+async function waitForQueuedTurn(
+  client,
+  { sessionId, message, knownTurnIds, timeoutMs, resumeFallbackMs },
+) {
   const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? timeoutMs
     : DEFAULT_TURN_TIMEOUT_MS;
   const deadline = Date.now() + safeTimeoutMs;
+  const fallbackAt = Date.now() + (
+    Number.isFinite(resumeFallbackMs) && resumeFallbackMs >= 0
+      ? resumeFallbackMs
+      : DEFAULT_QUEUE_RESUME_FALLBACK_MS
+  );
   let selectedTurnId = null;
+  let resumeFallbackAttempted = false;
 
   while (Date.now() < deadline) {
     const snapshot = await client.request('thread/read', {
@@ -160,6 +162,32 @@ async function waitForQueuedTurn(client, { sessionId, message, knownTurnIds, tim
       if (selected.status === 'completed') return;
       if (selected.status === 'failed' || selected.status === 'cancelled') {
         throw new Error(selected.error?.message || `Codex queued turn ${selected.status}`);
+      }
+    }
+
+    // Sessions created by this web helper may not be loaded by Desktop's
+    // shared daemon after their first turn. Only when the queue remains idle
+    // and no turn is active do we load the thread in this read-only client.
+    // Desktop-owned or busy threads consume the native queue and never enter
+    // this fallback, so their writer lease is not contested.
+    const hasActiveTurn = turns.some((turn) => (
+      turn?.status === 'inProgress' ||
+      turn?.status === 'in_progress' ||
+      turn?.status === 'running'
+    ));
+    if (
+      !selected &&
+      !resumeFallbackAttempted &&
+      !hasActiveTurn &&
+      Date.now() >= fallbackAt
+    ) {
+      resumeFallbackAttempted = true;
+      try {
+        await client.request('thread/resume', { threadId: sessionId });
+      } catch (error) {
+        if (!/already has an active writer/i.test(String(error?.message || ''))) {
+          throw error;
+        }
       }
     }
     await new Promise((resolve) => setTimeout(resolve, QUEUED_TURN_POLL_INTERVAL_MS));
