@@ -28,29 +28,14 @@ function isProjectlessPath(value) {
 export function buildCodexQueueArgs({
   sessionId,
   message,
-  cwd,
-  model,
-  modelReasoningEffort,
 }) {
-  const args = [
+  return [
     'queue',
     '--thread',
     normalizeRequiredText(sessionId, 'sessionId'),
     '--message',
     validateMessage(message),
-    '--sandbox',
-    'danger-full-access',
-    '-c',
-    'approval_policy="never"',
-    '-c',
-    'shell_environment_policy.inherit="all"',
   ];
-  if (model) args.push('--model', model);
-  if (modelReasoningEffort) {
-    args.push('-c', `model_reasoning_effort="${modelReasoningEffort}"`);
-  }
-  args.push('-C', cwd);
-  return args;
 }
 
 export async function queueCodexCliThreadMessage(payload, dependencies = {}) {

@@ -52,7 +52,7 @@ test('已有会话通过原生 codex queue 提交，避免争抢 app-server writ
   });
 });
 
-test('codex queue 参数包含共享会话、模型、推理强度与工作目录', () => {
+test('codex queue 使用共享 daemon 的最小参数，沿用已有会话配置', () => {
   assert.deepEqual(buildCodexQueueArgs({
     sessionId: 'thread-1',
     message: '继续',
@@ -61,12 +61,6 @@ test('codex queue 参数包含共享会话、模型、推理强度与工作目�
     modelReasoningEffort: 'high',
   }), [
     'queue', '--thread', 'thread-1', '--message', '继续',
-    '--sandbox', 'danger-full-access',
-    '-c', 'approval_policy="never"',
-    '-c', 'shell_environment_policy.inherit="all"',
-    '--model', 'gpt-6-sol',
-    '-c', 'model_reasoning_effort="high"',
-    '-C', 'D:\\dorit\\mytest',
   ]);
 });
 
