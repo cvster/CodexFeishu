@@ -33,6 +33,29 @@ describe('CodexAdapter native queue mode', () => {
       { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
     ]);
   });
+
+  it('finishes an interrupted queued turn instead of polling forever', async () => {
+    const fake = await createQueueCodex('interrupted');
+    cleanup.push(fake.dir);
+    const run = createCodexQueueRun({
+      runId: 'queue-interrupted',
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      inheritCodexHome: true,
+      cwd: fake.dir,
+      sandbox: 'workspace-write',
+      prompt: 'stop from Desktop',
+      threadId: 'thread-existing',
+      clientUserMessageId: 'lark-channel-bridge:queue-interrupted',
+    });
+
+    expect(await collect(run.events)).toEqual([
+      { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'text', delta: 'queued response' },
+      { type: 'done', threadId: 'thread-existing', terminationReason: 'interrupted' },
+    ]);
+    await expect(run.waitForExit(0)).resolves.toBe(true);
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
@@ -41,7 +64,9 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
   return out;
 }
 
-async function createQueueCodex(): Promise<{ dir: string; path: string }> {
+async function createQueueCodex(
+  turnStatus = 'completed',
+): Promise<{ dir: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-queue-test-'));
   const statePath = join(dir, 'state.json');
   const scriptPath = join(dir, 'codex-fake.mjs');
@@ -69,7 +94,7 @@ rl.on('line', (line) => {
   const queued = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : undefined;
   const turns = queued ? [{
     id: 'turn-queued',
-    status: 'completed',
+    status: ${JSON.stringify(turnStatus)},
     error: null,
     items: [
       { type: 'userMessage', id: 'user-1', content: [{ type: 'text', text: queued.prompt }] },

@@ -152,7 +152,11 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
             yield { type: 'done', threadId: options.threadId, terminationReason: 'normal' };
             return;
           }
-          if (selected.status === 'failed' || selected.status === 'cancelled') {
+          if (selected.status === 'interrupted' || selected.status === 'cancelled') {
+            yield interrupted(options.threadId);
+            return;
+          }
+          if (selected.status === 'failed') {
             yield terminalError(selected.error?.message ?? `Codex turn ${selected.status}`);
             return;
           }
