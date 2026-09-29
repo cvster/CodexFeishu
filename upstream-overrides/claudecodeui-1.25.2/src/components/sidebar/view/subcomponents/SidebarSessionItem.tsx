@@ -1,4 +1,4 @@
-import { Archive, Check, Clock, Edit2, Server, Trash2, X } from 'lucide-react';
+import { Archive, Check, Clock, Edit2, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Badge, Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
@@ -63,14 +63,8 @@ export default function SidebarSessionItem({
   const isProcessing = processingSessions.has(session.id);
   const showCompletedState = !isProcessing;
   const canDelete = !IS_CODEX_ONLY_HARDENED && !sessionView.isCursorSession;
-  const codexSessionOrigin =
-    session.__provider === 'codex' && session.sessionOrigin === 'backend' ? 'backend' : 'app';
-  const codexSessionOriginLabel = codexSessionOrigin === 'backend' ? '后端' : 'App';
-  const sessionIconTitle =
-    session.__provider === 'codex' ? `${codexSessionOriginLabel} 会话` : undefined;
-  const sessionIcon = session.__provider === 'codex' && codexSessionOrigin === 'backend'
-    ? <Server className="h-3 w-3 text-sky-600 dark:text-sky-400" />
-    : <SessionProviderLogo provider={session.__provider} className="h-3 w-3" />;
+  const sessionIconTitle = session.__provider === 'codex' ? 'Codex CLI 会话' : undefined;
+  const sessionIcon = <SessionProviderLogo provider={session.__provider} className="h-3 w-3" />;
 
   const selectMobileSession = () => {
     onProjectSelect(project);
@@ -86,15 +80,8 @@ export default function SidebarSessionItem({
   };
 
   const requestArchiveSession = () => {
-    const sessionOrigin =
-      session.__provider === 'codex'
-        ? session.sessionOrigin === 'backend'
-          ? 'backend'
-          : 'app'
-        : undefined;
     onArchiveSession(project.name, session.id, sessionView.sessionName, session.__provider, {
       projectPath: project.fullPath || project.path,
-      sessionOrigin,
     });
   };
 

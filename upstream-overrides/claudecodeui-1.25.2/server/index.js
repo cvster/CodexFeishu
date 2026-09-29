@@ -47,16 +47,11 @@ import mime from 'mime-types';
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations, getCodexSessions } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
-import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
+import { abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
-import {
-    createCodexDesktopSyncContextFromRequest,
-    enqueueCodexDesktopArchive,
-    enqueueCodexDesktopMessageBridge,
-    resolveCodexDesktopMessageTarget
-} from './codex-desktop-sync.js';
-import { enqueueCodexAppMessageRelay } from './codex-app-message-relay.mjs';
+import { enqueueCodexCliMessage } from './codex-cli-message-relay.mjs';
 import { executeCodexArchive, executeCodexCommand } from './codex-command-execution.mjs';
+import { archiveCodexAppThread } from './codex-app-server-client.mjs';
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
@@ -74,7 +69,7 @@ import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import { startEnabledPluginServers, stopAllPlugins } from './utils/plugin-process-manager.js';
-import { initializeDatabase, sessionNamesDb, sessionArchivesDb, sessionOriginsDb, applyCustomSessionNames } from './database/db.js';
+import { initializeDatabase, sessionNamesDb, sessionArchivesDb, applyCustomSessionNames } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocketRequest } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
 
@@ -118,53 +113,6 @@ let isGetProjectsRunning = false; // Flag to prevent reentrant calls
 
 function hasGlobPattern(targetPath) {
     return /[*?[\]{}()]/.test(targetPath);
-}
-
-async function resolveMobileCodexCommandOptions(options = {}, desktopSyncContext = null) {
-    const normalizedOptions = { ...options };
-    const executionMode =
-        typeof normalizedOptions.executionMode === 'string'
-            ? normalizedOptions.executionMode.trim().toLowerCase()
-            : '';
-    const treatAsMobile =
-        executionMode === 'desktop-ui' ||
-        (Boolean(desktopSyncContext?.isMobile) && executionMode !== 'sdk');
-
-    if (
-        normalizedOptions.sessionId ||
-        normalizedOptions.newSession ||
-        !treatAsMobile ||
-        normalizedOptions.allowImplicitSessionCreation
-    ) {
-        return normalizedOptions;
-    }
-
-    const projectPath = normalizedOptions.projectPath || normalizedOptions.cwd;
-    if (!projectPath) {
-        return {
-            ...normalizedOptions,
-            disallowImplicitSessionCreation: true,
-        };
-    }
-
-    const existingSessions = await getCodexSessions(projectPath, { limit: 1 });
-    const latestSessionId =
-        typeof existingSessions[0]?.id === 'string' && existingSessions[0].id.trim()
-            ? existingSessions[0].id.trim()
-            : null;
-
-    if (!latestSessionId) {
-        return {
-            ...normalizedOptions,
-            disallowImplicitSessionCreation: true,
-        };
-    }
-
-    return {
-        ...normalizedOptions,
-        sessionId: latestSessionId,
-        resume: true,
-    };
 }
 
 function formatWatcherChangedFile(rootPath, filePath, ensureParentDir = false) {
@@ -736,7 +684,7 @@ app.put('/api/sessions/:sessionId/archive', authenticateToken, async (req, res) 
             return res.status(400).json({ error: 'Invalid sessionId' });
         }
 
-        const { provider, projectPath, sessionTitle } = req.body;
+        const { provider, projectPath } = req.body;
         if (!provider || !VALID_PROVIDERS.includes(provider)) {
             return res.status(400).json({ error: `Provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
         }
@@ -744,15 +692,11 @@ app.put('/api/sessions/:sessionId/archive', authenticateToken, async (req, res) 
         const result = await executeCodexArchive({
             sessionId: safeSessionId,
             provider,
-            projectPath,
-            sessionTitle,
-            sourceContext: createCodexDesktopSyncContextFromRequest(req)
+            projectPath
         }, {
             archiveSession: (sessionIdToArchive, archiveProvider) => sessionArchivesDb.archive(sessionIdToArchive, archiveProvider),
             broadcastProjectsUpdated,
-            enqueueCodexDesktopArchive,
-            getCodexSessions,
-            getSessionOrigin: (originSessionId, originProvider) => sessionOriginsDb.getOrigin(originSessionId, originProvider)
+            archiveCodexAppThread
         });
 
         if (!result.success) {
@@ -1684,8 +1628,6 @@ function handleChatConnection(ws, request = null) {
 
     // Wrap WebSocket with writer for consistent interface with SSEStreamWriter
     const writer = new WebSocketWriter(ws);
-    const desktopSyncContext = createCodexDesktopSyncContextFromRequest(request);
-
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
@@ -1723,19 +1665,7 @@ function handleChatConnection(ws, request = null) {
                 console.log('🤖 Model:', data.options?.model || 'default');
                 await spawnCursor(data.command, data.options, writer);
             } else if (data.type === 'codex-command') {
-            const resolvedCodexOptions = await resolveMobileCodexCommandOptions(
-                    data.options,
-                    desktopSyncContext
-                );
-
-                if (resolvedCodexOptions.disallowImplicitSessionCreation) {
-                    writer.send({
-                        type: 'codex-error',
-                        error: 'No existing Codex session was found for this project. Open it once in the desktop Codex app first, then try again from mobile.',
-                        provider: 'codex'
-                    });
-                    return;
-                }
+                const resolvedCodexOptions = { ...(data.options || {}) };
 
                 console.log('[DEBUG] Codex message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd || 'Unknown');
@@ -1743,50 +1673,14 @@ function handleChatConnection(ws, request = null) {
                 console.log('🤖 Model:', resolvedCodexOptions.model || 'default');
                 console.log('🧠 Reasoning:', resolvedCodexOptions.modelReasoningEffort || 'default');
 
-                const shouldBridgeToDesktopUI =
-                    resolvedCodexOptions.executionMode === 'desktop-ui' ||
-                    (desktopSyncContext?.isMobile && resolvedCodexOptions.executionMode !== 'sdk');
-
-                if (shouldBridgeToDesktopUI) {
-                    const bridgedProjectPath = resolvedCodexOptions.projectPath || resolvedCodexOptions.cwd;
-                    console.log('[mobile-codex][bridge-request]', JSON.stringify({
-                        projectPath: bridgedProjectPath,
-                        sessionId: resolvedCodexOptions.sessionId || null,
-                        newSession: Boolean(resolvedCodexOptions.newSession),
-                        sessionTitleHint: resolvedCodexOptions.sessionTitleHint || null,
-                        executionMode: resolvedCodexOptions.executionMode || null,
-                    }));
-                    const execution = executeCodexCommand({
-                        command: data.command || '',
-                        options: resolvedCodexOptions,
-                        desktopSyncContext,
-                        writer
-                    }, {
-                        enqueueCodexAppMessageRelay: (payload) => enqueueCodexAppMessageRelay(payload, {
-                            resolveCodexDesktopMessageTarget
-                        }),
-                        enqueueCodexDesktopMessageBridge,
-                        queryCodex,
-                        setSessionOrigin: (sessionId, originProvider, origin) => sessionOriginsDb.setOrigin(sessionId, originProvider, origin)
-                    });
-                    void execution.completion;
-                    return;
-                }
-
                 const execution = executeCodexCommand({
                     command: data.command,
                     options: resolvedCodexOptions,
-                    desktopSyncContext,
                     writer
                 }, {
-                    enqueueCodexAppMessageRelay: (payload) => enqueueCodexAppMessageRelay(payload, {
-                        resolveCodexDesktopMessageTarget
-                    }),
-                    enqueueCodexDesktopMessageBridge,
-                    queryCodex,
-                    setSessionOrigin: (sessionId, originProvider, origin) => sessionOriginsDb.setOrigin(sessionId, originProvider, origin)
+                    enqueueCodexCliMessage
                 });
-                await execution.completion;
+                void execution.completion;
             } else if (data.type === 'gemini-command') {
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
@@ -2062,7 +1956,7 @@ function handleShellConnection(ws) {
                             try {
                                 // Gemini CLI enforces its own native session IDs, unlike other agents that accept arbitrary string names.
                                 // The UI only knows about its internal generated `sessionId` (e.g. gemini_1234).
-                                // We must fetch the mapping from the backend session manager to pass the native `cliSessionId` to the shell.
+                                // Fetch the server-side mapping to pass the native `cliSessionId` to the shell.
                                 const sess = sessionManager.getSession(sessionId);
                                 if (sess && sess.cliSessionId) {
                                     resumeId = sess.cliSessionId;

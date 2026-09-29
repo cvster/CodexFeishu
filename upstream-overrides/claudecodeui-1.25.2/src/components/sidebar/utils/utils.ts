@@ -158,6 +158,10 @@ export const sortProjects = (
   starredProjects: Set<string>,
   additionalSessions: AdditionalSessionsByProject,
 ): Project[] => {
+  if (IS_CODEX_ONLY_HARDENED) {
+    return [...projects];
+  }
+
   const byName = [...projects];
 
   byName.sort((projectA, projectB) => {

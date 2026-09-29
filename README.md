@@ -18,13 +18,9 @@
 
 这份 README 是当前这台电脑上 `mobileCodexHelper` 的本地部署总入口，给后续继续工作的会话快速接手用。
 
-## 项目来源与会话类型
+## 会话架构
 
-本项目 fork 自同名项目，并在原项目基础上增加了 `app 会话` 和 `后端会话` 两种会话类型的区别。
-
-原项目存在一个问题：向 Codex app 中的会话发消息时，Codex app 窗口不会同步更新，只能在网页端看到更新，容易导致 app 上显示的会话内容不完整。本项目针对这类 `app 会话` 增加了通过操作 Codex app 窗口发送消息的方式，让消息真正进入 Codex app 中的对应会话，避免 app 侧显示不完整。
-
-如果是在网页上新建的 `后端会话`，则仍然通过后端发消息；这类会话不会显示在 Codex app 中。
+网页端只使用一种会话：最新版 Codex CLI 会话。新建通过 Codex app server 执行，续聊通过原生 `codex queue` 进入共享队列，归档通过 `thread/archive` 完成。所有会话与 Codex App 共用同一份历史和项目归属，不再区分 App 会话与后端会话，也不依赖桌面窗口自动化。
 
 ## 当前状态
 
@@ -89,10 +85,10 @@
   - 用途：运行上游 `claudecodeui` 后端、安装 npm 依赖、构建前端
   - 安装来源：`winget`
   - 实际路径：`C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microsoft.Winget.Source_8wekyb3d8bbwe\node-v22.22.2-win-x64\node.exe`
-- Codex SDK
-  - 桥接后端要求版本：`0.144.3`
-  - 用途：支持 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 等新版模型
-  - 启动脚本会校验已安装版本，并在 vendor 目录仍是旧版时自动升级
+- Codex CLI / app server
+  - 当前要求版本：`0.158.0`
+  - 用途：统一创建、续聊和归档 Codex 会话
+  - 启动脚本会自动选择 Codex App 捆绑目录中的最新 CLI
 - nginx
   - 实际安装版本：`nginx 1.29.8`
   - 用途：监听 `127.0.0.1:8080`，给 `127.0.0.1:3001` 做本机反向代理，并提供额外安全头和登录限流
@@ -125,13 +121,15 @@
 - `MOBILE_CODEX_PRIVATE_IP`
   私有组网网卡的本机 IPv4；当前为 `192.168.188.2`
 - `MOBILE_CODEX_PYTHON`
-  可选。指向 `Python 3.11+`，桌面自动化脚本会优先使用它；未设置时默认回退到 Codex 自带 `Python 3.12`
+  可选。指向控制台辅助脚本使用的 `Python 3.11+`
 - `MOBILE_CODEX_UPSTREAM_DIR`
   可选。默认不需要；如果以后更换上游源码目录，可以用它覆盖默认 `vendor\claudecodeui-1.25.2`
 - `MOBILE_CODEX_ASCII_ALIAS`
   可选。用于 Windows 非 ASCII 路径兼容；当前运行时默认会落到 `C:\mobileCodexHelper_ascii`
+- `MOBILE_CODEX_TURN_TIMEOUT_MS`
+  可选。app server 新会话首轮等待时间，默认 30 分钟
 - `MOBILE_CODEX_QUEUE_TIMEOUT_MS`
-  可选。`codex queue` 投递超时时间，默认 `120000`
+  可选。已有会话的原生队列投递超时时间，默认 30 秒
 
 服务启动脚本还会在运行时临时设置：
 
@@ -177,39 +175,7 @@ powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\s
 powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-unit-tests.ps1
 ```
 
-当前覆盖后端会话和 Codex App 会话收到命令后的新建、发送与归档流程。测试跳过网页操作，直接向本地服务发送网页等价命令；后续 SDK、桌面自动化和归档均真实执行，并在 `D:\dorit\mytest` 下创建后归档临时会话。
-
-### 查看 Codex 桌面窗口状态
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 dump-state --json
-```
-
-### 查看 Codex 桌面项目列表
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 list-projects --json
-```
-
-### 验证桌面自动化 worker
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 worker
-```
-
-正常时会立即输出：
-
-```json
-{"event":"ready"}
-```
-
-### 打开 Codex 桌面里的指定会话
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\software\mobileCodexHelper\scripts\run-codex-desktop-automation.ps1 open-session --project future_research --session 策略6 --json
-```
-
-第一次运行桌面自动化脚本时，会自动在 `tmp\desktop-automation-venv` 里安装 `pywinauto`。
+当前覆盖统一 CLI 会话的新建、续聊和归档流程。实时测试直接向本地服务发送网页等价命令，并在 `D:\dorit\mytest` 下创建、续聊后归档临时 CLI 会话。
 
 ### 打开桌面控制台 GUI
 
@@ -260,43 +226,15 @@ C:\Users\ps5000\AppData\Local\Microsoft\WinGet\Packages\OpenJS.NodeJS.22_Microso
 - `C:\software\mobileCodexHelper\tmp\logs\mobile-codex-app.stdout.log`
 - `C:\software\mobileCodexHelper\tmp\logs\mobile-codex-app.stderr.log`
 
-### 手机发消息后 Codex 桌面没动作
+### CLI 消息没有进入会话
 
-先判断是哪一层卡住：
-
-1. 看 `tmp\logs\mobile-codex-app.stdout.log` 是否有 `[mobile-codex][bridge-request]`
-2. 如果有，说明前端消息已经到后端
-3. 再看 `tmp\logs\mobile-codex-app.stderr.log` 是否有 `[Codex Desktop Worker]` 或 `[Codex Desktop Bridge]` 错误
-4. 运行 `list-projects --json`，确认桌面自动化能读到 Codex 左侧项目
-5. 运行 `worker`，确认能立即输出 `{"event":"ready"}`
-
-当前设计里，桌面自动化会先用 Win32 找到标题为 `Codex`、类名为 `Chrome_WidgetWin_1` 的主窗口，再用 UIA 按窗口句柄连接。这样比 UIA 全局搜索稳定。
-
-发送消息时，桌面自动化会先临时禁用 Windows 屏保、唤醒显示器并尝试关闭当前屏保；发送动作结束后会恢复原来的屏保启用状态。这样既能降低屏保壁纸挡住 Codex 的概率，也不会永久改掉用户的系统设置。
-
-如果 worker ready 超时或请求超时，后端会清理整棵 PowerShell / Python 进程树，避免残留 worker 越堆越多。worker 启动阶段失败时，发送会安全回退到 one-shot；但如果 `send-message` 已经开始执行，失败后不会自动重试，避免重复发送。
+先检查服务日志中的 Codex CLI 错误，并确认 `MOBILE_CODEX_CLI` 指向同时支持 `app-server` 和 `queue` 的新版 `codex.exe`。新会话由 app server 创建；已有会话通过原生 `codex queue` 提交消息，不会与 Codex App 争抢 writer lock，全程不要求 Codex 桌面窗口处于前台。
 
 最后一条“发送中”消息是否已真正发到 Codex，由后端 `pending-delivery` 检查接口读取完整 Codex JSONL 历史判断；前端不再用当前页面渲染出的消息列表自行确认。如果发送超过 1 分钟仍未同步到 Codex 历史，后端会返回 `failed`，前端显示“发送失败”。
 
 点击“重发”会把最后一条 pending 消息的状态重新改为“发送中”，并刷新本地 pending 时间戳；后端的 1 分钟失败判断会从这次重发时间重新计算。
 
 输入框左侧状态按钮会按链路展示：发送未确认时显示“发送中”，发送失败时显示“发送失败”；没有未确认发送且 Codex 仍在处理时显示“回复中”，空闲时显示完成状态。侧边栏会复用同一套状态：所有已加载的普通会话项都会显示徽标，只有一个会话的项目会把状态显示在项目行上，多会话项目行会显示项目内已加载会话的汇总状态。为了避免必须先打开会话才刷新，前端顶层会定期检查已加载会话的处理状态，侧边栏徽标也会在“发送中”时主动向后端确认最后一条 pending 是否已进入 Codex 历史。
-
-### 清理残留桌面自动化进程
-
-正常情况下不需要手动清理。若排障时确认有异常残留，可以只清理本项目的 worker 进程：
-
-```powershell
-$current = $PID
-$workers = Get-CimInstance Win32_Process | Where-Object {
-  $_.ProcessId -ne $current -and (
-    ($_.Name -in @('powershell.exe','pwsh.exe') -and $_.CommandLine -like '*run-codex-desktop-automation.ps1 worker*') -or
-    ($_.Name -eq 'python.exe' -and $_.CommandLine -like '*codex_desktop_automation.py worker*')
-  )
-}
-$workers | Select-Object ProcessId,Name,CommandLine
-$workers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-```
 
 ### 手机打不开远程地址
 

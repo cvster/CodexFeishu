@@ -75,20 +75,6 @@ CREATE TABLE IF NOT EXISTS session_archives (
 
 CREATE INDEX IF NOT EXISTS idx_session_archives_lookup ON session_archives(session_id, provider);
 
--- Session origins distinguish Codex app-backed sessions from backend SDK sessions
-CREATE TABLE IF NOT EXISTS session_origins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    provider TEXT NOT NULL DEFAULT 'codex',
-    origin TEXT NOT NULL DEFAULT 'app',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(session_id, provider)
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_origins_lookup ON session_origins(session_id, provider);
-CREATE INDEX IF NOT EXISTS idx_session_origins_provider_origin ON session_origins(provider, origin);
-
 -- Approved devices (browser/app wrappers) that are allowed to log in for this single-user system
 CREATE TABLE IF NOT EXISTS trusted_devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

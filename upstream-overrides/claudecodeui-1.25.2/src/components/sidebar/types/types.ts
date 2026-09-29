@@ -1,11 +1,8 @@
 import type { LoadingProgress, Project, ProjectSession, SessionProvider } from '../../../types/app';
 
 export type ProjectSortOrder = 'name' | 'date';
-export type CodexSessionOrigin = 'app' | 'backend';
-
 export type SessionArchiveMetadata = {
   projectPath?: string;
-  sessionOrigin?: CodexSessionOrigin;
 };
 
 export type SessionWithProvider = ProjectSession & {
@@ -34,7 +31,7 @@ export type SidebarProps = {
   processingSessions: Set<string>;
   onProjectSelect: (project: Project) => void;
   onSessionSelect: (session: ProjectSession) => void;
-  onNewSession: (project: Project, sessionOrigin?: CodexSessionOrigin) => void;
+  onNewSession: (project: Project) => void;
   onSessionDelete?: (sessionId: string) => void;
   onProjectDelete?: (projectName: string) => void;
   isLoading: boolean;

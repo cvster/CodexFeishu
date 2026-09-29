@@ -130,12 +130,15 @@ function Resolve-MobileCodexNodePath {
 
 function Resolve-MobileCodexCliPath {
   if (Test-UsableExecutablePath $env:MOBILE_CODEX_CLI) {
+    $configuredAppServerHelp = & $env:MOBILE_CODEX_CLI app-server --help 2>$null
+    $configuredAppServerOk = $LASTEXITCODE -eq 0 -and $configuredAppServerHelp -match 'app server'
     $configuredQueueHelp = & $env:MOBILE_CODEX_CLI queue --help 2>$null
-    if ($LASTEXITCODE -eq 0 -and $configuredQueueHelp -match 'Queue a message') {
+    $configuredQueueOk = $LASTEXITCODE -eq 0 -and $configuredQueueHelp -match 'Queue a message'
+    if ($configuredAppServerOk -and $configuredQueueOk) {
       return $env:MOBILE_CODEX_CLI
     }
 
-    throw 'MOBILE_CODEX_CLI does not support the required codex queue command.'
+    throw 'MOBILE_CODEX_CLI does not support the required codex app-server and queue commands.'
   }
 
   $desktopBinRoot = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
@@ -149,11 +152,14 @@ function Resolve-MobileCodexCliPath {
       }
 
       $versionOutput = & $binary.FullName --version 2>$null
+      $appServerHelp = & $binary.FullName app-server --help 2>$null
+      $appServerOk = $LASTEXITCODE -eq 0 -and $appServerHelp -match 'app server'
       $queueHelp = & $binary.FullName queue --help 2>$null
+      $queueOk = $LASTEXITCODE -eq 0 -and $queueHelp -match 'Queue a message'
       if (
-        $LASTEXITCODE -eq 0 -and
         $versionOutput -match '^codex-cli\s+' -and
-        $queueHelp -match 'Queue a message'
+        $appServerOk -and
+        $queueOk
       ) {
         return $binary.FullName
       }
@@ -162,13 +168,16 @@ function Resolve-MobileCodexCliPath {
 
   $pathCommand = Get-UsableCommandPath 'codex.exe'
   if ($pathCommand) {
+    $pathAppServerHelp = & $pathCommand app-server --help 2>$null
+    $pathAppServerOk = $LASTEXITCODE -eq 0 -and $pathAppServerHelp -match 'app server'
     $pathQueueHelp = & $pathCommand queue --help 2>$null
-    if ($LASTEXITCODE -eq 0 -and $pathQueueHelp -match 'Queue a message') {
+    $pathQueueOk = $LASTEXITCODE -eq 0 -and $pathQueueHelp -match 'Queue a message'
+    if ($pathAppServerOk -and $pathQueueOk) {
       return $pathCommand
     }
   }
 
-  throw 'Codex CLI with native queue support not found. Update Codex Desktop or set MOBILE_CODEX_CLI.'
+  throw 'Codex CLI with app-server and queue support not found. Update Codex Desktop or set MOBILE_CODEX_CLI.'
 }
 
 function Test-MobileCodexPythonPath {

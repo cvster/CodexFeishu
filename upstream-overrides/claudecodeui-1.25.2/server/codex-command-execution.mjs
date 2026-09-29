@@ -1,131 +1,67 @@
-export function executeCodexCommand({ command, options, desktopSyncContext, writer }, dependencies) {
-  const {
-    enqueueCodexAppMessageRelay,
-    enqueueCodexDesktopMessageBridge,
-    queryCodex,
-    setSessionOrigin,
-  } = dependencies;
-
-  const shouldBridgeToDesktopUI =
-    options.executionMode === 'desktop-ui' ||
-    (desktopSyncContext?.isMobile && options.executionMode !== 'sdk');
-
-  if (!shouldBridgeToDesktopUI) {
-    return {
-      mode: 'backend',
-      completion: Promise.resolve(
-        queryCodex(command, {
-          ...options,
-          sessionOrigin: 'backend',
-          syncToDesktop: false,
-          desktopSync: null,
-        }, writer),
-      ),
-    };
-  }
-
-  const projectPath = options.projectPath || options.cwd;
-  const sourceContext = { ...(desktopSyncContext || {}), isMobile: true };
+export function executeCodexCommand({ command, options, writer }, dependencies) {
+  const { enqueueCodexCliMessage } = dependencies;
+  let createdSessionId = options.sessionId || null;
 
   writer.send({
-    type: 'codex-desktop-command-submitted',
-    sessionId: options.sessionId || null,
+    type: 'codex-cli-command-submitted',
+    sessionId: createdSessionId,
     provider: 'codex',
   });
 
-  const enqueueMessage = options.newSession
-    ? enqueueCodexDesktopMessageBridge
-    : enqueueCodexAppMessageRelay;
-
-  const completion = Promise.resolve(enqueueMessage({
-    sessionId: options.sessionId || null,
-    projectPath,
+  const completion = Promise.resolve(enqueueCodexCliMessage({
+    sessionId: createdSessionId,
+    projectPath: options.projectPath || options.cwd,
     message: command || '',
-    newSession: Boolean(options.newSession),
-    sessionTitleHint: options.sessionTitleHint || null,
-    sourceContext,
-  })).then((bridgeResult) => {
-    if (bridgeResult?.error || bridgeResult?.skipped) {
+    newSession: Boolean(options.newSession || !createdSessionId),
+    model: options.model,
+    modelReasoningEffort: options.modelReasoningEffort,
+    onSessionCreated: (sessionId) => {
+      createdSessionId = sessionId;
+      writer.setSessionId(sessionId);
+      writer.send({ type: 'session-created', sessionId, provider: 'codex' });
+    },
+  })).then((result) => {
+    if (result?.error || result?.skipped) {
       writer.send({
-        type: 'codex-desktop-command-error',
-        sessionId: options.sessionId || null,
-        error: bridgeResult?.error || 'Failed to submit the message to the desktop Codex app.',
+        type: 'codex-cli-command-error',
+        sessionId: createdSessionId,
+        error: result?.error || 'Failed to submit the message through Codex CLI.',
         provider: 'codex',
       });
-      return bridgeResult;
+      return result;
     }
 
-    const bridgedSessionId = bridgeResult?.sessionId || options.sessionId || null;
-    if (bridgedSessionId) {
-      if (bridgeResult?.sessionId && !options.sessionId) {
-        writer.setSessionId(bridgedSessionId);
-        writer.send({
-          type: 'session-created',
-          sessionId: bridgedSessionId,
-          provider: 'codex',
-        });
-      }
-
-      setSessionOrigin(bridgedSessionId, 'codex', 'app');
+    const sessionId = result?.sessionId || createdSessionId;
+    if (sessionId && !createdSessionId) {
+      writer.setSessionId(sessionId);
+      writer.send({ type: 'session-created', sessionId, provider: 'codex' });
     }
-
-    writer.send({
-      type: 'codex-desktop-command-delivered',
-      sessionId: bridgedSessionId,
-      provider: 'codex',
-    });
-    return bridgeResult;
+    writer.send({ type: 'codex-cli-command-delivered', sessionId, provider: 'codex' });
+    return result;
   });
 
-  return { mode: 'app', completion };
+  return { mode: 'cli', completion };
 }
 
 export async function executeCodexArchive(
-  { sessionId, provider, projectPath, sessionTitle, sourceContext },
+  { sessionId, provider, projectPath },
   dependencies,
 ) {
-  const {
-    archiveSession,
-    broadcastProjectsUpdated,
-    enqueueCodexDesktopArchive,
-    getCodexSessions,
-    getSessionOrigin,
-  } = dependencies;
+  const { archiveSession, archiveCodexAppThread, broadcastProjectsUpdated } = dependencies;
 
-  let sessionOrigin = null;
   if (provider === 'codex') {
-    const indexedSessions = projectPath
-      ? await getCodexSessions(projectPath, { limit: 0 })
-      : [];
-    const indexedSession = indexedSessions.find((session) => session.id === sessionId);
-    sessionOrigin = indexedSession?.sessionOrigin || getSessionOrigin(sessionId, provider) || 'backend';
-  }
-
-  if (provider === 'codex' && sessionOrigin === 'app') {
-    const archiveResult = await enqueueCodexDesktopArchive({
-      sessionId,
-      projectPath,
-      sessionTitleHint: sessionTitle || null,
-      sourceContext,
-    });
-
+    const archiveResult = await archiveCodexAppThread({ sessionId, projectPath });
     if (archiveResult?.skipped) {
       return {
         success: false,
         status: 409,
-        error: archiveResult.error || 'Codex desktop archive was not completed',
+        error: archiveResult.error || 'Codex CLI archive was not completed',
         reason: archiveResult.reason,
-        target: archiveResult.target || null,
       };
     }
   }
 
   archiveSession(sessionId, provider);
-  await broadcastProjectsUpdated({
-    changeType: 'session_archived',
-    provider,
-    sessionId,
-  });
-
-  return { success: true, sessionOrigin };
+  await broadcastProjectsUpdated({ changeType: 'session_archived', provider, sessionId });
+  return { success: true };
 }

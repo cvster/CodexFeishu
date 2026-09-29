@@ -10,7 +10,6 @@ import type {
   ProjectSession,
   ProjectsUpdatedMessage,
 } from '../types/app';
-import type { CodexSessionOrigin } from '../components/sidebar/types/types';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
@@ -523,14 +522,7 @@ export function useProjectsState({
   );
 
   const handleNewSession = useCallback(
-    (project: Project, sessionOrigin?: CodexSessionOrigin) => {
-      if (IS_CODEX_ONLY_HARDENED) {
-        sessionStorage.setItem(
-          'codex-new-session-origin',
-          sessionOrigin === 'backend' ? 'backend' : 'app',
-        );
-      }
-
+    (project: Project) => {
       setSelectedProject(project);
       setSelectedSession(null);
       setActiveTab('chat');

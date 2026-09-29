@@ -21,8 +21,7 @@ const responseTimeoutMs = Number(process.env.TEST_RESPONSE_TIMEOUT_MS || 240_000
 
 assert.ok(token, 'TEST_WS_TOKEN is required. Run this test through scripts/run-unit-tests.ps1.');
 
-let backendSessionId = null;
-let appSessionId = null;
+let cliSessionId = null;
 
 function connect() {
   return new Promise((resolve, reject) => {
@@ -57,7 +56,7 @@ async function sendCodexCommand(command, options, terminalType) {
         }
 
         events.push(event);
-        if (event.type === 'codex-error' || event.type === 'codex-desktop-command-error' || event.type === 'error') {
+        if (event.type === 'codex-error' || event.type === 'codex-cli-command-error' || event.type === 'error') {
           finish(reject, new Error(event.error || `Codex command failed with ${event.type}`));
           return;
         }
@@ -124,62 +123,32 @@ async function archiveSession(sessionId) {
   });
 }
 
-test('后端会话：真实新建会话并收到助手回复', { timeout: commandTimeoutMs + responseTimeoutMs }, async () => {
-  const marker = `LIVE_BACKEND_NEW_${randomUUID()}`;
+test('CLI 会话：真实新建会话并收到助手回复', { timeout: commandTimeoutMs + responseTimeoutMs }, async () => {
+  const marker = `LIVE_CLI_NEW_${randomUUID()}`;
   const result = await sendCodexCommand(
     `Reply with exactly ${marker}`,
-    { executionMode: 'sdk', newSession: true },
-    'codex-complete',
+    { newSession: true },
+    'codex-cli-command-delivered',
   );
 
-  backendSessionId = result.terminalEvent.actualSessionId || result.terminalEvent.sessionId;
-  assert.ok(backendSessionId, 'Backend create did not return a session ID.');
-  await waitForAssistantMarker(backendSessionId, marker);
+  cliSessionId = result.terminalEvent.sessionId;
+  assert.ok(cliSessionId, 'CLI create did not return a session ID.');
+  await waitForAssistantMarker(cliSessionId, marker);
 });
 
-test('后端会话：向真实已有会话发送消息', { timeout: commandTimeoutMs + responseTimeoutMs }, async () => {
-  assert.ok(backendSessionId, 'Backend create test did not produce a session ID.');
-  const marker = `LIVE_BACKEND_SEND_${randomUUID()}`;
+test('CLI 会话：向真实已有会话发送消息', { timeout: commandTimeoutMs + responseTimeoutMs }, async () => {
+  assert.ok(cliSessionId, 'CLI create test did not produce a session ID.');
+  const marker = `LIVE_CLI_SEND_${randomUUID()}`;
   await sendCodexCommand(
     `Reply with exactly ${marker}`,
-    { executionMode: 'sdk', sessionId: backendSessionId },
-    'codex-complete',
+    { sessionId: cliSessionId },
+    'codex-cli-command-delivered',
   );
-  await waitForAssistantMarker(backendSessionId, marker);
+  await waitForAssistantMarker(cliSessionId, marker);
 });
 
-test('后端会话：真实归档会话', { timeout: commandTimeoutMs }, async () => {
-  assert.ok(backendSessionId, 'Backend create test did not produce a session ID.');
-  const result = await archiveSession(backendSessionId);
-  assert.equal(result.success, true);
-});
-
-test('App 会话：真实新建会话并收到助手回复', { timeout: commandTimeoutMs + responseTimeoutMs }, async () => {
-  const marker = `LIVE_APP_NEW_${randomUUID()}`;
-  const result = await sendCodexCommand(
-    `Reply with exactly ${marker}`,
-    { executionMode: 'desktop-ui', newSession: true },
-    'codex-desktop-command-delivered',
-  );
-
-  appSessionId = result.terminalEvent.sessionId;
-  assert.ok(appSessionId, 'App create did not return the real Codex session ID.');
-  await waitForAssistantMarker(appSessionId, marker);
-});
-
-test('App 会话：向真实已有会话发送消息', { timeout: commandTimeoutMs + responseTimeoutMs }, async () => {
-  assert.ok(appSessionId, 'App create test did not produce a session ID.');
-  const marker = `LIVE_APP_SEND_${randomUUID()}`;
-  await sendCodexCommand(
-    `Reply with exactly ${marker}`,
-    { executionMode: 'desktop-ui', sessionId: appSessionId },
-    'codex-desktop-command-delivered',
-  );
-  await waitForAssistantMarker(appSessionId, marker);
-});
-
-test('App 会话：真实归档会话', { timeout: commandTimeoutMs }, async () => {
-  assert.ok(appSessionId, 'App create test did not produce a session ID.');
-  const result = await archiveSession(appSessionId);
+test('CLI 会话：真实归档会话', { timeout: commandTimeoutMs }, async () => {
+  assert.ok(cliSessionId, 'CLI create test did not produce a session ID.');
+  const result = await archiveSession(cliSessionId);
   assert.equal(result.success, true);
 });

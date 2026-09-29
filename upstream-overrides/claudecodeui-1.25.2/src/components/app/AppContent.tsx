@@ -20,8 +20,8 @@ type SidebarStatusPollTarget = {
 };
 
 const SIDEBAR_PROCESSING_STARTED_TYPES = new Set([
-  'codex-desktop-command-submitted',
-  'codex-desktop-command-delivered',
+  'codex-cli-command-submitted',
+  'codex-cli-command-delivered',
 ]);
 
 const SIDEBAR_PROCESSING_FINISHED_TYPES = new Set([

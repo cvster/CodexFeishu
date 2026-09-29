@@ -128,18 +128,6 @@ const runMigrations = () => {
     )`);
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_archives_lookup ON session_archives(session_id, provider)');
 
-    db.exec(`CREATE TABLE IF NOT EXISTS session_origins (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      provider TEXT NOT NULL DEFAULT 'codex',
-      origin TEXT NOT NULL DEFAULT 'app',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(session_id, provider)
-    )`);
-    db.exec('CREATE INDEX IF NOT EXISTS idx_session_origins_lookup ON session_origins(session_id, provider)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_session_origins_provider_origin ON session_origins(provider, origin)');
-
     db.exec(`CREATE TABLE IF NOT EXISTS trusted_devices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -704,39 +692,6 @@ const sessionArchivesDb = {
   },
 };
 
-const sessionOriginsDb = {
-  setOrigin: (sessionId, provider, origin) => {
-    const safeOrigin = origin === 'backend' ? 'backend' : 'app';
-    db.prepare(`
-      INSERT INTO session_origins (session_id, provider, origin)
-      VALUES (?, ?, ?)
-      ON CONFLICT(session_id, provider)
-      DO UPDATE SET origin = excluded.origin, updated_at = CURRENT_TIMESTAMP
-    `).run(sessionId, provider, safeOrigin);
-  },
-
-  getOrigin: (sessionId, provider) => {
-    const row = db.prepare(
-      'SELECT origin FROM session_origins WHERE session_id = ? AND provider = ? LIMIT 1'
-    ).get(sessionId, provider);
-    return row?.origin || null;
-  },
-
-  getOrigins: (provider) => {
-    const rows = db.prepare(
-      'SELECT session_id, origin FROM session_origins WHERE provider = ?'
-    ).all(provider);
-    return new Map(rows.map((row) => [row.session_id, row.origin]));
-  },
-
-  getIdsByOrigin: (provider, origin) => {
-    const rows = db.prepare(
-      'SELECT session_id FROM session_origins WHERE provider = ? AND origin = ?'
-    ).all(provider, origin);
-    return new Set(rows.map((row) => row.session_id));
-  },
-};
-
 // Apply custom session names from the database (overrides CLI-generated summaries)
 function applyCustomSessionNames(sessions, provider) {
   if (!sessions?.length) return;
@@ -747,9 +702,7 @@ function applyCustomSessionNames(sessions, provider) {
       const custom = customNames.get(session.id);
       if (custom) {
         session.summary = custom;
-        if (provider === 'codex' && session.sessionOrigin === 'backend') {
-          session.title = custom;
-        }
+        if (provider === 'codex') session.title = custom;
       }
     }
   } catch (error) {
@@ -812,7 +765,6 @@ export {
   trustedDevicesDb,
   sessionNamesDb,
   sessionArchivesDb,
-  sessionOriginsDb,
   applyCustomSessionNames,
   appConfigDb,
   githubTokensDb // Backward compatibility

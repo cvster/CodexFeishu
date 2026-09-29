@@ -473,7 +473,6 @@ export function useSidebarController({
         const response = await api.archiveSession(sessionId, provider, {
           projectName: _projectName,
           projectPath: metadata.projectPath,
-          sessionOrigin: metadata.sessionOrigin,
           sessionTitle,
         });
         if (response.ok) {

@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import type { TFunction } from 'i18next';
 import type { LoadingProgress, Project, ProjectSession, SessionProvider } from '../../../../types/app';
 import type {
-  CodexSessionOrigin,
   LoadingSessionsByProject,
   MCPServerStatus,
   SessionArchiveMetadata,
@@ -55,7 +54,7 @@ export type SidebarProjectListProps = {
     metadata?: SessionArchiveMetadata,
   ) => void;
   onLoadMoreSessions: (project: Project) => void;
-  onNewSession: (project: Project, sessionOrigin?: CodexSessionOrigin) => void;
+  onNewSession: (project: Project) => void;
   onEditingSessionNameChange: (value: string) => void;
   onStartEditingSession: (sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;

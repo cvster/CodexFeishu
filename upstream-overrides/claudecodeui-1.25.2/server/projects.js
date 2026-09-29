@@ -66,8 +66,8 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
-import { applyCustomSessionNames, sessionArchivesDb, sessionOriginsDb } from './database/db.js';
-import { inferCodexSessionOrigin } from './codex-session-routing.mjs';
+import { applyCustomSessionNames, sessionArchivesDb } from './database/db.js';
+import { extractCodexDesktopWorkspaceRoots } from './codex-desktop-projects.mjs';
 
 const CODEX_ONLY_HARDENED_MODE = process.env.CODEX_ONLY_HARDENED_MODE !== 'false';
 const CODEX_PROJECTLESS_PROJECT_NAME = '__codex_projectless__';
@@ -362,6 +362,9 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
   const desktopWorkspaceRootByComparablePath = new Map(
     desktopWorkspaceRoots.map(workspaceRoot => [normalizeComparablePath(workspaceRoot), workspaceRoot])
   );
+  const desktopWorkspaceOrderByComparablePath = new Map(
+    desktopWorkspaceRoots.map((workspaceRoot, index) => [normalizeComparablePath(workspaceRoot), index])
+  );
   const projectEntries = Array.from(sessionsByProject.entries());
   const projects = [];
   const totalProjects = projectEntries.length;
@@ -372,24 +375,18 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
     const codexSessions = [...sessions];
     applyCustomSessionNames(codexSessions, 'codex');
 
-    const isProjectlessProject = normalizedProjectPath === CODEX_PROJECTLESS_PROJECT_PATH;
     const desktopWorkspaceRoot = desktopWorkspaceRootByComparablePath.get(normalizedProjectPath);
-    if (!isProjectlessProject && !desktopWorkspaceRoot) {
+    if (!desktopWorkspaceRoot) {
       continue;
     }
-    const actualProjectDir = isProjectlessProject
-      ? CODEX_PROJECTLESS_PROJECT_PATH
-      : desktopWorkspaceRoot;
+    const isProjectlessProject = false;
+    const actualProjectDir = desktopWorkspaceRoot;
     const matchedMetadata = metadataByPath.get(normalizedProjectPath);
     const projectName = isProjectlessProject
       ? CODEX_PROJECTLESS_PROJECT_NAME
       : matchedMetadata?.name || encodeProjectNameFromPath(actualProjectDir);
 
     if (!projectName || !actualProjectDir) {
-      continue;
-    }
-
-    if (!isProjectlessProject && !doesProjectPathExist(actualProjectDir)) {
       continue;
     }
 
@@ -437,10 +434,10 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
       continue;
     }
 
+    // Keep App membership authoritative even when a local checkout is
+    // temporarily offline or has moved. Existing route-level validation will
+    // report unavailable filesystem operations when the user opens it.
     const actualProjectDir = resolveProjectPath(workspaceRoot) || workspaceRoot;
-    if (!doesProjectPathExist(actualProjectDir)) {
-      continue;
-    }
 
     const matchedMetadata = metadataByPath.get(normalizedWorkspaceRoot);
     const projectName = matchedMetadata?.name || encodeProjectNameFromPath(actualProjectDir);
@@ -463,20 +460,10 @@ async function getCodexOnlyProjects(progressCallback, config, codexSessionsIndex
     discoveredProjectPaths.add(normalizedWorkspaceRoot);
   }
 
-  projects.sort((leftProject, rightProject) => {
-    const leftTimestamp = leftProject.codexSessions[0]?.lastActivity
-      ? new Date(leftProject.codexSessions[0].lastActivity).getTime()
-      : 0;
-    const rightTimestamp = rightProject.codexSessions[0]?.lastActivity
-      ? new Date(rightProject.codexSessions[0].lastActivity).getTime()
-      : 0;
-
-    if (rightTimestamp !== leftTimestamp) {
-      return rightTimestamp - leftTimestamp;
-    }
-
-    return leftProject.displayName.localeCompare(rightProject.displayName, undefined, { sensitivity: 'base' });
-  });
+  projects.sort((leftProject, rightProject) => (
+    desktopWorkspaceOrderByComparablePath.get(normalizeComparablePath(leftProject.path)) -
+    desktopWorkspaceOrderByComparablePath.get(normalizeComparablePath(rightProject.path))
+  ));
 
   if (progressCallback) {
     progressCallback({
@@ -1795,58 +1782,7 @@ async function loadCodexDesktopWorkspaceState() {
     const rawState = await fs.readFile(globalStatePath, 'utf8');
     const state = JSON.parse(rawState);
 
-    const localProjects =
-      state?.['local-projects'] &&
-      typeof state['local-projects'] === 'object' &&
-      !Array.isArray(state['local-projects'])
-        ? state['local-projects']
-        : {};
-    const projectOrder = Array.isArray(state?.['project-order'])
-      ? state['project-order']
-      : [];
-
-    // Current Codex builds store project IDs in project-order and keep the
-    // actual paths in local-projects. Older builds stored paths directly.
-    // Resolve both formats so the web sidebar mirrors the desktop app.
-    for (const projectEntry of projectOrder) {
-      const project =
-        typeof projectEntry === 'string' &&
-        localProjects[projectEntry] &&
-        typeof localProjects[projectEntry] === 'object'
-          ? localProjects[projectEntry]
-          : null;
-
-      if (project && Array.isArray(project.rootPaths)) {
-        project.rootPaths.forEach(addWorkspaceRoot);
-        continue;
-      }
-
-      if (
-        typeof projectEntry === 'string' &&
-        (path.isAbsolute(projectEntry) || projectEntry === CODEX_PROJECTLESS_PROJECT_PATH)
-      ) {
-        addWorkspaceRoot(projectEntry);
-      }
-    }
-
-    for (const key of ['electron-saved-workspace-roots', 'active-workspace-roots']) {
-      const roots = state?.[key];
-      if (!Array.isArray(roots)) {
-        continue;
-      }
-
-      roots.forEach(addWorkspaceRoot);
-    }
-
-    // Some transitional app builds populate local-projects before writing
-    // project-order. Use the local records only when no explicit order exists.
-    if (projectOrder.length === 0) {
-      Object.values(localProjects).forEach((project) => {
-        if (project && Array.isArray(project.rootPaths)) {
-          project.rootPaths.forEach(addWorkspaceRoot);
-        }
-      });
-    }
+    extractCodexDesktopWorkspaceRoots(state).forEach(addWorkspaceRoot);
 
     const projectlessThreads = state?.['projectless-thread-ids'];
     if (Array.isArray(projectlessThreads)) {
@@ -2009,15 +1945,6 @@ async function buildCodexSessionsIndex() {
   const threadNames = await loadCodexThreadNames();
   const shouldFilterWorkspaceRoots = hasDesktopState && visibleWorkspaceRoots.size > 0;
   const locallyArchivedSessionIds = sessionArchivesDb.getArchivedIds('codex');
-  const codexSessionOrigins = sessionOriginsDb.getOrigins('codex');
-  const backendSessionIds = sessionOriginsDb.getIdsByOrigin('codex', 'backend');
-  const backendFallbackTimestamps = Array.from(backendSessionIds)
-    .map((sessionId) => {
-      const match = String(sessionId).match(/^codex-(\d+)$/);
-      return match ? Number.parseInt(match[1], 10) : null;
-    })
-    .filter((timestamp) => Number.isFinite(timestamp));
-
   for (const filePath of jsonlFiles) {
     try {
       const normalizedFilePath = normalizeComparablePath(filePath);
@@ -2046,25 +1973,6 @@ async function buildCodexSessionsIndex() {
 
       if (locallyArchivedSessionIds.has(sessionId)) {
         continue;
-      }
-
-      const sessionTimestampMs = Date.parse(sessionData.timestamp || '');
-      const hasBackendFallbackOrigin =
-        sessionData.source === 'exec' &&
-        Number.isFinite(sessionTimestampMs) &&
-        backendFallbackTimestamps.some((fallbackTimestamp) =>
-          Math.abs(sessionTimestampMs - fallbackTimestamp) <= 10 * 60 * 1000
-        );
-      const storedSessionOrigin = codexSessionOrigins.get(sessionId) || null;
-      const sessionOrigin = inferCodexSessionOrigin(
-        sessionData,
-        storedSessionOrigin,
-        hasBackendFallbackOrigin,
-      );
-      const isBackendSession = sessionOrigin === 'backend';
-      if (isBackendSession && storedSessionOrigin !== 'backend') {
-        sessionOriginsDb.setOrigin(sessionId, 'codex', 'backend');
-        codexSessionOrigins.set(sessionId, 'backend');
       }
 
       if (
@@ -2096,9 +2004,6 @@ async function buildCodexSessionsIndex() {
       }
 
       const indexedThreadName = threadNames.get(sessionId) || null;
-      const backendDefaultTitle = isBackendSession
-        ? indexedThreadName || getDefaultBackendSessionTitle(sessionData.firstUserMessage)
-        : null;
       const desktopTitle =
         indexedThreadName ||
         desktopTitlesBySessionId.get(sessionId) ||
@@ -2106,17 +2011,14 @@ async function buildCodexSessionsIndex() {
         null;
       const session = {
         id: sessionId,
-        title: isBackendSession ? backendDefaultTitle || null : desktopTitle,
-        summary: isBackendSession
-          ? backendDefaultTitle || 'Codex Session'
-          : desktopTitle || sessionData.summary || 'Codex Session',
+        title: desktopTitle,
+        summary: desktopTitle || sessionData.summary || 'Codex Session',
         messageCount: sessionData.messageCount || 0,
         lastActivity: sessionData.timestamp ? new Date(sessionData.timestamp) : new Date(),
         cwd: resolveProjectPath(sessionCwd) || sessionCwd,
         model: sessionData.model,
         filePath,
         provider: 'codex',
-        sessionOrigin,
         isProjectless: isProjectlessSession,
       };
 
@@ -2262,17 +2164,6 @@ function normalizeCodexUserMessageForDisplay(message) {
   const extractedRequest = requestMatch?.[1]?.trim();
 
   return extractedRequest || normalized;
-}
-
-function getDefaultBackendSessionTitle(message) {
-  const normalized = normalizeCodexUserMessageForDisplay(message)
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!normalized) {
-    return '';
-  }
-
-  return Array.from(normalized).slice(0, 5).join('');
 }
 
 function normalizeCodexPendingDeliveryText(value) {
@@ -3591,7 +3482,6 @@ export {
   getCodexSessions,
   getCodexSessionMessages,
   getCodexPendingDeliveryStatus,
-  inferCodexSessionOrigin,
   deleteCodexSession,
   getGeminiCliSessions,
   getGeminiCliSessionMessages,

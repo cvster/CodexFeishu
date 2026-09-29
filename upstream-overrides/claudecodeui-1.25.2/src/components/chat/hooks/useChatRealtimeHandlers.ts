@@ -53,7 +53,7 @@ interface UseChatRealtimeHandlersArgs {
   onReplaceTemporarySession?: (sessionId?: string | null) => void;
   onNavigateToSession?: (sessionId: string) => void;
   onWebSocketReconnect?: () => void;
-  onDesktopCommandDelivered?: () => void;
+  onCodexCliCommandDelivered?: () => void;
 }
 
 const appendStreamingChunk = (
@@ -120,7 +120,7 @@ export function useChatRealtimeHandlers({
   onReplaceTemporarySession,
   onNavigateToSession,
   onWebSocketReconnect,
-  onDesktopCommandDelivered,
+  onCodexCliCommandDelivered,
 }: UseChatRealtimeHandlersArgs) {
   const lastProcessedMessageRef = useRef<LatestChatMessage | null>(null);
 
@@ -149,9 +149,9 @@ export function useChatRealtimeHandlers({
       'taskmaster-project-updated',
       'session-created',
       'websocket-reconnected',
-      'codex-desktop-command-submitted',
-      'codex-desktop-command-delivered',
-      'codex-desktop-command-error',
+      'codex-cli-command-submitted',
+      'codex-cli-command-delivered',
+      'codex-cli-command-error',
     ];
     const isGlobalMessage = globalMessageTypes.includes(messageType);
     const lifecycleMessageTypes = new Set([
@@ -298,7 +298,7 @@ export function useChatRealtimeHandlers({
     }
 
     switch (latestMessage.type) {
-      case 'codex-desktop-command-submitted':
+      case 'codex-cli-command-submitted':
         if (latestMessage.sessionId) {
           onSessionProcessing?.(latestMessage.sessionId);
         }
@@ -316,10 +316,9 @@ export function useChatRealtimeHandlers({
         }
         break;
 
-      case 'codex-desktop-command-delivered':
-        // Desktop delivery only means the automation submitted the text to Codex.
-        // The UI must keep confirming success from the synced session history so a
-        // failed or misrouted desktop send is not shown as delivered prematurely.
+      case 'codex-cli-command-delivered':
+        // CLI acceptance is followed by history refresh so the rendered transcript
+        // remains sourced from the persisted Codex thread.
         if (latestMessage.sessionId) {
           onSessionProcessing?.(latestMessage.sessionId);
 
@@ -336,13 +335,13 @@ export function useChatRealtimeHandlers({
             onNavigateToSession?.(latestMessage.sessionId);
           }
         }
-        onDesktopCommandDelivered?.();
+        onCodexCliCommandDelivered?.();
         if (typeof window !== 'undefined' && window.refreshProjects) {
           setTimeout(() => window.refreshProjects?.(), 300);
         }
         break;
 
-      case 'codex-desktop-command-error':
+      case 'codex-cli-command-error':
         if (latestMessage.sessionId) {
           onSessionInactive?.(latestMessage.sessionId);
           onSessionNotProcessing?.(latestMessage.sessionId);
@@ -352,7 +351,7 @@ export function useChatRealtimeHandlers({
           ...previous,
           {
             type: 'error',
-            content: latestMessage.error || 'Failed to submit the message to the desktop Codex app.',
+            content: latestMessage.error || 'Failed to submit the message through Codex CLI.',
             timestamp: new Date(),
           },
         ]);

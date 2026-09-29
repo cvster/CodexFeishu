@@ -305,7 +305,7 @@ function ChatInterface({
     setCanAbortSession,
   ]);
 
-  const handleDesktopCommandDelivered = useCallback(() => {
+  const handleCodexCliCommandDelivered = useCallback(() => {
     void refreshLatestMessages({ preserveScroll: true, showIndicator: false });
   }, [refreshLatestMessages]);
 
@@ -332,7 +332,7 @@ function ChatInterface({
     onReplaceTemporarySession,
     onNavigateToSession,
     onWebSocketReconnect: handleWebSocketReconnect,
-    onDesktopCommandDelivered: handleDesktopCommandDelivered,
+    onCodexCliCommandDelivered: handleCodexCliCommandDelivered,
   });
 
   useEffect(() => {

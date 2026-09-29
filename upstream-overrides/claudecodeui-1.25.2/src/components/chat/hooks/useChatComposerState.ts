@@ -92,27 +92,6 @@ const createFakeSubmitEvent = () => {
 const isTemporarySessionId = (sessionId: string | null | undefined) =>
   Boolean(sessionId && sessionId.startsWith('new-session-'));
 
-const MOBILE_USER_AGENT_PATTERN =
-  /(android|iphone|ipad|ipod|mobile|tablet|windows phone|kindle|silk|miuibrowser|harmonyos)/i;
-
-const isLikelyMobileBrowser = () =>
-  typeof navigator !== 'undefined' && MOBILE_USER_AGENT_PATTERN.test(navigator.userAgent || '');
-
-const getCodexSessionOrigin = (selectedSession: ProjectSession | null): 'app' | 'backend' => {
-  const selectedOrigin = selectedSession?.sessionOrigin;
-  if (selectedOrigin === 'backend' || selectedOrigin === 'app') {
-    return selectedOrigin;
-  }
-
-  const pendingOrigin =
-    typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('codex-new-session-origin') : null;
-  if (pendingOrigin === 'backend' || pendingOrigin === 'app') {
-    return pendingOrigin;
-  }
-
-  return isLikelyMobileBrowser() ? 'app' : 'backend';
-};
-
 const CODEX_PROJECTLESS_PROJECT_PATH = 'codex://projectless';
 
 export function useChatComposerState({
@@ -576,15 +555,9 @@ export function useChatComposerState({
       const effectiveSessionId =
         selectedSessionId ||
         (provider === 'cursor' ? sessionStorage.getItem('cursorSessionId') : null);
-      const codexSessionOrigin = provider === 'codex' ? getCodexSessionOrigin(selectedSession) : null;
-      const shouldBridgeCodexToApp = provider === 'codex' && codexSessionOrigin === 'app';
+      const isCodexCliSession = provider === 'codex';
       const shouldConfirmPendingDelivery = provider === 'codex';
-      const codexSessionTitleHint =
-        provider === 'codex' && selectedSession
-          ? selectedSession.summary || selectedSession.title || selectedSession.name || null
-          : null;
-
-      if (isLoading && !shouldBridgeCodexToApp) {
+      if (isLoading && !isCodexCliSession) {
         return;
       }
 
@@ -661,7 +634,7 @@ export function useChatComposerState({
         );
       });
 
-      if (!shouldBridgeCodexToApp) {
+      if (!isCodexCliSession) {
         setCanAbortSession(true);
         setClaudeStatus({
           text: 'Processing',
@@ -671,13 +644,13 @@ export function useChatComposerState({
       } else {
         setCanAbortSession(false);
         setClaudeStatus({
-          text: 'Sending to Codex app...',
+          text: 'Sending through Codex CLI...',
           tokens: 0,
           can_interrupt: false,
         });
       }
 
-      if (!shouldBridgeCodexToApp) {
+      if (!isCodexCliSession) {
         setIsLoading(true);
       }
 
@@ -709,7 +682,7 @@ export function useChatComposerState({
         };
       }
 
-      if (!shouldBridgeCodexToApp) {
+      if (!isCodexCliSession) {
         onSessionActive?.(sessionToActivate);
       }
 
@@ -745,7 +718,7 @@ export function useChatComposerState({
       const toolsSettings = getToolsSettings();
       const selectedSessionCwd = typeof selectedSession?.cwd === 'string' ? selectedSession.cwd : '';
       const resolvedProjectPath =
-        selectedProject.isProjectless && shouldBridgeCodexToApp
+        selectedProject.isProjectless && isCodexCliSession
           ? selectedProject.fullPath || selectedProject.path || CODEX_PROJECTLESS_PROJECT_PATH
           : selectedProject.isProjectless
             ? selectedSessionCwd || ''
@@ -777,8 +750,7 @@ export function useChatComposerState({
           selectedProjectPath: resolvedProjectPath,
           selectedSessionId,
           effectiveSessionId,
-          codexSessionOrigin,
-          shouldBridgeCodexToApp,
+          transport: 'cli',
         });
       }
 
@@ -810,9 +782,6 @@ export function useChatComposerState({
             model: codexModel,
             modelReasoningEffort: codexReasoningEffort || undefined,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
-            executionMode: shouldBridgeCodexToApp ? 'desktop-ui' : 'sdk',
-            sessionOrigin: codexSessionOrigin || 'backend',
-            sessionTitleHint: codexSessionTitleHint,
             newSession: !effectiveSessionId,
             allowImplicitSessionCreation: !effectiveSessionId,
           },
