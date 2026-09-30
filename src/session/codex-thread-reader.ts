@@ -3,9 +3,9 @@ import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
 import {
   mergeProcessEnv,
-  spawnProcess,
   type SpawnedProcessByStdio,
 } from '../platform/spawn';
+import { spawnCodexProcess as spawnProcess } from '../platform/codex-binary';
 import {
   CodexTurnTerminalVerifier,
   type CodexPersistedTurnTerminal,
@@ -25,6 +25,8 @@ export interface CodexThreadTurn {
   completedAtMs?: number | null;
   error?: { message?: string };
   items: CodexThreadItem[];
+  model?: string;
+  reasoningEffort?: string;
 }
 
 export interface CodexThreadSnapshot {
@@ -89,7 +91,11 @@ export class CodexThreadReader {
     const result = recordValue(response.result);
     const thread = normalizeCodexThreadSnapshot(result?.thread);
     if (!thread) throw new Error('thread/read returned malformed data');
-    return thread;
+    const executions = await this.terminalVerifier.executionsFor(thread.rolloutPath);
+    return {
+      ...thread,
+      turns: thread.turns.map((turn) => ({ ...turn, ...executions.get(turn.id) })),
+    };
   }
 
   async listRecentThreads(limit = 100): Promise<CodexThreadRevision[]> {
@@ -315,6 +321,8 @@ export function normalizeCodexThreadSnapshot(input: unknown): CodexThreadSnapsho
     turns.push({
       id: turn.id,
       status: turn.status,
+      ...(typeof turn.model === 'string' ? { model: turn.model } : {}),
+      ...(typeof turn.reasoningEffort === 'string' ? { reasoningEffort: turn.reasoningEffort } : {}),
       ...(typeof turn.startedAt === 'number' ? { startedAtMs: Math.round(turn.startedAt * 1000) } : {}),
       ...(turn.completedAt === null
         ? { completedAtMs: null }

@@ -35,6 +35,8 @@ export interface RunState {
   idleTimeoutMinutes?: number;
   /** Periodically refreshed process/runtime status shown in the chat output. */
   runtime?: RunRuntimeStatus;
+  /** Snapshot of this turn's execution, never the mutable global preferences. */
+  execution?: { model?: string; reasoningEffort?: string };
 }
 
 export const initialState: RunState = {
@@ -80,6 +82,15 @@ function closeStreamingText(blocks: Block[]): Block[] {
 
 export function reduce(state: RunState, evt: AgentEvent): RunState {
   switch (evt.type) {
+    case 'system':
+      return {
+        ...state,
+        execution: {
+          ...state.execution,
+          ...(evt.model ? { model: evt.model } : {}),
+          ...(evt.reasoningEffort ? { reasoningEffort: evt.reasoningEffort } : {}),
+        },
+      };
     case 'text': {
       const last = state.blocks[state.blocks.length - 1];
       if (last && last.kind === 'text' && last.streaming) {

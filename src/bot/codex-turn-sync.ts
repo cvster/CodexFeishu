@@ -401,7 +401,7 @@ async function syncTurnToScope(
     const sent = await sendManagedCard(
       channel,
       target.chatId,
-      renderCard(state, { showStopButton: false }),
+      renderCard(state),
     );
     delivery = {
       status: 'card',
@@ -457,7 +457,7 @@ async function syncTurnToScope(
   });
   await channel.updateCardById(
     delivery.cardId,
-    renderCard(state, { showStopButton: false }),
+    renderCard(state),
     delivery.sequence,
   );
   delivery.terminal = terminal;

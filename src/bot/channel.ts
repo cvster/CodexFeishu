@@ -1621,6 +1621,8 @@ async function processAgentStream(
 
       if (evt.type === 'system') {
         recordSession(evt);
+        state = reduce(state, evt);
+        await enqueueFlush(state);
         continue;
       }
       if (evt.type === 'usage') {

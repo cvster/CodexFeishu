@@ -54,6 +54,25 @@ afterEach(async () => {
 });
 
 describe('profile-aware account and config commands', () => {
+  it('sends model settings independently before recalling the clicked console', async () => {
+    const h = await createHarness();
+    const send = vi.spyOn(h.channel, 'send');
+    const recall = vi.fn(async () => {});
+    Object.assign(h.channel, { recallMessage: recall });
+    await h.command('/config');
+    expect(send).toHaveBeenCalledWith('chat-1', expect.anything(), undefined);
+    expect(recall).toHaveBeenCalledTimes(1);
+    expect(send.mock.invocationCallOrder[0]).toBeLessThan(recall.mock.invocationCallOrder[0]!);
+  });
+
+  it('keeps the old console when sending replacement settings fails', async () => {
+    const h = await createHarness();
+    const recall = vi.fn(async () => {});
+    Object.assign(h.channel, { recallMessage: recall });
+    vi.spyOn(h.channel, 'createCard').mockRejectedValueOnce(new Error('send failed'));
+    await h.command('/config');
+    expect(recall).not.toHaveBeenCalled();
+  });
   it('saves /config submit into the active v2 profile without flattening root config', async () => {
     vi.useFakeTimers();
     const h = await createHarness();

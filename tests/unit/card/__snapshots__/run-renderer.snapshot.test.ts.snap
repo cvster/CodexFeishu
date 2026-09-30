@@ -89,14 +89,15 @@ _运行中…_",
                 ],
                 "tag": "button",
                 "text": {
-                  "content": "终止",
+                  "content": "停止",
                   "tag": "plain_text",
                 },
                 "type": "danger",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -118,7 +119,8 @@ _运行中…_",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -139,10 +141,11 @@ _运行中…_",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -204,6 +207,29 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -217,7 +243,8 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -238,10 +265,11 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -312,14 +340,15 @@ exports[`run card renderer snapshots > renders active and completed thinking 1`]
                 ],
                 "tag": "button",
                 "text": {
-                  "content": "终止",
+                  "content": "停止",
                   "tag": "plain_text",
                 },
                 "type": "danger",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -341,7 +370,8 @@ exports[`run card renderer snapshots > renders active and completed thinking 1`]
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -362,10 +392,11 @@ exports[`run card renderer snapshots > renders active and completed thinking 1`]
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -429,6 +460,29 @@ exports[`run card renderer snapshots > renders active and completed thinking 2`]
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -442,7 +496,8 @@ exports[`run card renderer snapshots > renders active and completed thinking 2`]
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -463,10 +518,11 @@ exports[`run card renderer snapshots > renders active and completed thinking 2`]
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -500,6 +556,29 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -513,7 +592,8 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -534,10 +614,11 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -571,6 +652,29 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -584,7 +688,8 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -605,10 +710,11 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -646,6 +752,29 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -659,7 +788,8 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -680,10 +810,11 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -721,6 +852,29 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -734,7 +888,8 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -755,10 +910,11 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -798,14 +954,15 @@ exports[`run card renderer snapshots > renders initial running state 1`] = `
                 ],
                 "tag": "button",
                 "text": {
-                  "content": "终止",
+                  "content": "停止",
                   "tag": "plain_text",
                 },
                 "type": "danger",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -827,7 +984,8 @@ exports[`run card renderer snapshots > renders initial running state 1`] = `
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -848,10 +1006,11 @@ exports[`run card renderer snapshots > renders initial running state 1`] = `
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -959,14 +1118,15 @@ _运行中…_",
                 ],
                 "tag": "button",
                 "text": {
-                  "content": "终止",
+                  "content": "停止",
                   "tag": "plain_text",
                 },
                 "type": "danger",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -988,7 +1148,8 @@ _运行中…_",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -1009,10 +1170,11 @@ _运行中…_",
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -1080,6 +1242,29 @@ pwd
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -1093,7 +1278,8 @@ pwd
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -1114,10 +1300,11 @@ pwd
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },
@@ -1182,6 +1369,29 @@ ENOENT
                   {
                     "type": "callback",
                     "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "停止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "weight": 1,
+            "width": "weighted",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
                       "cmd": "panel",
                     },
                   },
@@ -1195,7 +1405,8 @@ ENOENT
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
           {
             "elements": [
@@ -1216,10 +1427,11 @@ ENOENT
               },
             ],
             "tag": "column",
-            "width": "auto",
+            "weight": 1,
+            "width": "weighted",
           },
         ],
-        "flex_mode": "flow",
+        "flex_mode": "none",
         "horizontal_spacing": "small",
         "tag": "column_set",
       },

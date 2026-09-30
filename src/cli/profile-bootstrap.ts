@@ -5,6 +5,7 @@ import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '
 import type { AppConfig } from '../config/schema';
 import { resolveWorkingDirectory } from '../policy/workspace';
 import { resolveExecutablePath } from './agent-detection';
+import { resolveCodexBinary } from '../platform/codex-binary';
 
 export interface BootstrapProfileInput {
   agentKind: AgentKind;
@@ -65,6 +66,16 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
   try {
     resolvedBinary = await resolveExecutablePath(command);
   } catch (err) {
+    // Preserve a working explicit/PATH selection, including its spelling.
+    // Only recover a removed Desktop/NVM path during profile bootstrap.
+    const recovered = resolveCodexBinary(command);
+    if (recovered !== command) {
+      try {
+        return { binaryPath: await resolveExecutablePath(recovered) };
+      } catch {
+        // Keep the original diagnostic if recovery also fails.
+      }
+    }
     const errno = (err as NodeJS.ErrnoException).code;
     throw new AgentPreflightError({
       code: codexBootstrapBinaryErrorCode(errno),

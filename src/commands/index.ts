@@ -1516,7 +1516,7 @@ async function handleRefresh(_args: string, ctx: CommandContext): Promise<void> 
     });
     await ctx.channel.send(
       ctx.msg.chatId,
-      { card: renderCard(state, { showStopButton: false }) },
+      { card: renderCard(state) },
       commandReplyOptions(ctx),
     );
     log.info('command', 'refresh-turn', {
@@ -2160,10 +2160,7 @@ async function showCurrent(ctx: CommandContext): Promise<void> {
 
 async function showForm(ctx: CommandContext): Promise<void> {
   const card = accountFormCard({ initialTenant: ctx.controls.cfg.accounts.app.tenant });
-  if (ctx.fromCardAction) {
-    await recallMessage(ctx, ctx.msg.messageId);
-  }
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
+  await sendReplacementManagedCard(ctx, card);
 }
 
 async function cancelAccount(ctx: CommandContext): Promise<void> {
@@ -2287,6 +2284,18 @@ async function recallMessage(ctx: CommandContext, messageId: string): Promise<vo
     await ctx.channel.recallMessage(messageId);
   } catch (err) {
     console.warn('[recall failed]', err);
+  }
+}
+
+/** Never reply to a message we have already recalled, or erase a failed navigation. */
+async function sendReplacementManagedCard(ctx: CommandContext, card: object): Promise<void> {
+  const replyOptions = ctx.fromCardAction && ctx.chatMode !== 'topic'
+    ? {}
+    : commandReplyOptions(ctx);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, replyOptions);
+  if (ctx.fromCardAction && ctx.chatMode !== 'topic') {
+    await recallMessage(ctx, ctx.msg.messageId);
+    forgetManagedCard(ctx.msg.messageId);
   }
 }
 
@@ -2585,8 +2594,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     admins: access.admins,
     knownChats: ctx.controls.knownChats ?? [],
   });
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
+  await sendReplacementManagedCard(ctx, card);
 }
 
 async function showResultCardInPlace(

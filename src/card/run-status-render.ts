@@ -2,12 +2,16 @@ import type { RunState } from './run-state';
 
 export function renderRunStatus(state: RunState): string | undefined {
   const runtime = state.runtime;
-  if (!runtime) return undefined;
+  const execution = state.execution
+    ? `模型 ${state.execution.model ?? 'CLI 默认（待确认）'} · 思考 ${state.execution.reasoningEffort ?? '未知'}`
+    : '';
+  const executionSuffix = execution ? ` · ${execution}` : '';
+  if (!runtime) return execution || undefined;
 
   const elapsed = formatDuration(Math.max(0, runtime.checkedAtMs - runtime.startedAtMs));
   const updatedAt = formatClockTime(runtime.checkedAtMs);
   if (state.terminal !== 'running') {
-    return `${terminalLabel(state)} · 用时 ${elapsed} · 最近更新 ${updatedAt}`;
+    return `${terminalLabel(state)} · 用时 ${elapsed} · 最近更新 ${updatedAt}${executionSuffix}`;
   }
 
   const phase =
@@ -20,7 +24,7 @@ export function renderRunStatus(state: RunState): string | undefined {
           : '正在思考';
   const inactiveMs = Math.max(0, runtime.checkedAtMs - runtime.lastActivityAtMs);
   const activity = inactiveMs >= 10_000 ? ` · 最近活动 ${formatDuration(inactiveMs)}前` : '';
-  return `运行中 · ${phase} · 已运行 ${elapsed}${activity} · 最近更新 ${updatedAt}`;
+  return `运行中 · ${phase} · 已运行 ${elapsed}${activity} · 最近更新 ${updatedAt}${executionSuffix}`;
 }
 
 /** Feishu CardKit markdown supports semantic font colors. */

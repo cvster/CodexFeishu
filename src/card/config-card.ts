@@ -150,7 +150,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               content:
                 '**消息回复方式**\n' +
                 '_纯文本:agent 跑完一次性发出,不流式,体感最轻_\n' +
-                '_交互卡片:流式显示，并在回答末尾提供任务控制台和刷新按钮_\n' +
+                '_交互卡片:流式显示，并在回答末尾提供停止、控制台和刷新按钮_\n' +
                 '_流式消息:轻量 markdown 卡片,飞书原生打字机动画,不支持按钮_',
             },
             {

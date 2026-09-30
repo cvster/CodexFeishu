@@ -14,9 +14,9 @@ import {
 } from '../../session/codex-turn-status';
 import {
   mergeProcessEnv,
-  spawnProcess,
   type SpawnedProcessByStdio,
 } from '../../platform/spawn';
+import { spawnCodexProcess as spawnProcess } from '../../platform/codex-binary';
 import type { AgentEvent, AgentRun } from '../types';
 import { buildCodexQueueArgs } from './argv';
 import {
@@ -72,6 +72,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   let provisionalInterruptedTurnId: string | undefined;
   let interruptedObservedAtMs: number | undefined;
   let persistedTerminalSeen: string | undefined;
+  let emittedExecutionInfo: string | undefined;
   let settled = false;
   let started = false;
   let settle!: () => void;
@@ -119,7 +120,10 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
         queueMessageId: queuedSubmissionId,
         clientUserMessageId: options.clientUserMessageId,
       });
-      yield { type: 'system', threadId: options.threadId, cwd: options.cwd };
+      yield {
+        type: 'system', threadId: options.threadId, cwd: options.cwd,
+        model: options.model, reasoningEffort: options.reasoningEffort,
+      };
 
       const emittedText = new Map<string, string>();
       let consecutiveReadFailures = 0;
@@ -145,6 +149,14 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
               (turn) => !knownTurns.has(turn.id) && turnContainsPrompt(turn, options.prompt),
             );
         if (selected) {
+          const executionKey = JSON.stringify([selected.model, selected.reasoningEffort]);
+          if ((selected.model || selected.reasoningEffort) && executionKey !== emittedExecutionInfo) {
+            emittedExecutionInfo = executionKey;
+            yield {
+              type: 'system', threadId: options.threadId,
+              model: selected.model, reasoningEffort: selected.reasoningEffort,
+            };
+          }
           if (!selectedTurnId) {
             selectedTurnId = selected.id;
             bindCodexQueuedTurnClaim(options.clientUserMessageId, selected.id);

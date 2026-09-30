@@ -57,7 +57,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   } else {
     const status = renderColoredRunStatus(state);
     if (status) elements.push(noteMd(status));
-    elements.push(controlButtonRow(options, false));
+    elements.push(controlButtonRow(options, options.showStopButton !== false));
   }
 
   return {
@@ -194,7 +194,7 @@ function stopButton(options: RunCardRenderOptions): object {
   }
   return {
     tag: 'button',
-    text: { tag: 'plain_text', content: '终止' },
+    text: { tag: 'plain_text', content: '停止' },
     type: 'danger',
     behaviors: [{ type: 'callback', value }],
   };
@@ -208,11 +208,12 @@ function controlButtonRow(options: RunCardRenderOptions, showStop: boolean): obj
   ];
   return {
     tag: 'column_set',
-    flex_mode: 'flow',
+    flex_mode: 'none',
     horizontal_spacing: 'small',
     columns: buttons.map((button) => ({
       tag: 'column',
-      width: 'auto',
+      width: 'weighted',
+      weight: 1,
       elements: [button],
     })),
   };

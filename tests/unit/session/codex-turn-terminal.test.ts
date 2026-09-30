@@ -36,6 +36,25 @@ describe('CodexTurnTerminalVerifier', () => {
     ).resolves.toBe('interrupted');
   });
 
+  it('keeps actual execution metadata separate for each turn and reads appended updates', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-turn-metadata-'));
+    cleanup.push(dir);
+    const rollout = join(dir, 'rollout.jsonl');
+    const context = (turnId: string, model: string, effort: string) => JSON.stringify({
+      type: 'turn_context', payload: { turn_id: turnId, model, effort },
+    });
+    await writeFile(rollout, `${event('task_started', 'one')}\n${context('one', 'gpt-5.6-sol', 'high')}\n`);
+    const verifier = new CodexTurnTerminalVerifier();
+    expect((await verifier.executionsFor(rollout)).get('one')).toEqual({
+      model: 'gpt-5.6-sol', reasoningEffort: 'high',
+    });
+    await appendFile(rollout, `${event('task_complete', 'one')}\n${event('task_started', 'two')}\n${context('two', 'gpt-6-sol', 'xhigh')}\n`);
+    const metadata = await verifier.executionsFor(rollout);
+    expect(metadata.get('one')).toEqual({ model: 'gpt-5.6-sol', reasoningEffort: 'high' });
+    expect(metadata.get('two')).toEqual({ model: 'gpt-6-sol', reasoningEffort: 'xhigh' });
+    await expect(verifier.terminalFor(rollout, 'one')).resolves.toBe('completed');
+  });
+
   it('associates legacy unscoped aborts with the active turn', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-turn-terminal-'));
     cleanup.push(dir);

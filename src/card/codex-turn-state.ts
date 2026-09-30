@@ -33,6 +33,7 @@ export function codexTurnRunState(
             : 'thinking')
       : null,
     terminal,
+    execution: { model: turn.model ?? '未知', reasoningEffort: turn.reasoningEffort },
     ...(terminal === 'error' && turn.error?.message ? { errorMsg: turn.error.message } : {}),
     runtime: {
       startedAtMs: runtime.firstSeenAtMs,

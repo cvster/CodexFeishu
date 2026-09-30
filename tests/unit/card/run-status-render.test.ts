@@ -15,6 +15,15 @@ import {
 import { renderText } from '../../../src/card/text-renderer.js';
 
 describe('run status rendering', () => {
+  it('shows actual per-turn model and effort during streaming and after completion', () => {
+    let state = startRunRuntime(initialState, 1_000);
+    state = reduce(state, { type: 'system', model: 'gpt-5.6-sol', reasoningEffort: 'high' });
+    expect(renderText(state)).toContain('模型 gpt-5.6-sol · 思考 high');
+    state = reduce(state, { type: 'system', model: 'gpt-6-sol', reasoningEffort: 'xhigh' });
+    state = reduce(state, { type: 'done', terminationReason: 'normal' });
+    expect(JSON.stringify(renderCard(state))).toContain('模型 gpt-6-sol · 思考 xhigh');
+    expect(renderText(state)).toContain('✅ 已完成');
+  });
   it('shows phase, elapsed time, and recent activity for a running task', () => {
     let state = startRunRuntime(initialState, 1_000);
     state = reduce(state, { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} });

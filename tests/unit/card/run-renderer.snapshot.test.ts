@@ -92,7 +92,7 @@ describe('run card renderer snapshots', () => {
       body?: { elements?: CardElement[] };
     };
     const button = card.body?.elements?.flatMap(buttonsIn).find(
-      (element) => element.text?.content === '终止',
+      (element) => element.text?.content === '停止',
     );
 
     expect(button?.behaviors?.[0]?.value).toEqual({
@@ -104,14 +104,22 @@ describe('run card renderer snapshots', () => {
 
   it('renders run controls in one horizontal row', () => {
     for (const [state, labels] of [
-      [initialState, ['终止', '控制台', '刷新']],
-      [stateFrom([{ type: 'done', terminationReason: 'normal' }]), ['控制台', '刷新']],
+      [initialState, ['停止', '控制台', '刷新']],
+      [stateFrom([{ type: 'done', terminationReason: 'normal' }]), ['停止', '控制台', '刷新']],
     ] as const) {
       const card = renderCard(state) as {
         body?: { elements?: CardElement[] };
       };
       const rows = card.body?.elements?.filter((element) => element.tag === 'column_set') ?? [];
       expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        flex_mode: 'none',
+        columns: [
+          { width: 'weighted', weight: 1 },
+          { width: 'weighted', weight: 1 },
+          { width: 'weighted', weight: 1 },
+        ],
+      });
       const buttons = rows.flatMap(buttonsIn);
       expect(buttons.map((button) => button.text?.content)).toEqual(labels);
       expect(buttons.find((button) => button.text?.content === '刷新')?.behaviors?.[0]?.value)

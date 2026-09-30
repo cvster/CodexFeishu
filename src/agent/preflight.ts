@@ -1,4 +1,5 @@
 import { spawnProcess } from '../platform/spawn';
+import { resolveCodexBinary } from '../platform/codex-binary';
 
 export type LocalAgentId = 'claude' | 'codex';
 
@@ -72,7 +73,8 @@ export async function checkAgentAvailability(
 export async function checkAgentVersion(input: CheckAgentVersionInput): Promise<string> {
   const args = input.args ?? ['--version'];
   const timeoutMs = input.timeoutMs ?? 5000;
-  const executable = input.realpath ?? input.binaryPath;
+  const configured = input.realpath ?? input.binaryPath;
+  const executable = input.agentId === 'codex' ? resolveCodexBinary(configured) : configured;
 
   return new Promise((resolve, reject) => {
     let settled = false;

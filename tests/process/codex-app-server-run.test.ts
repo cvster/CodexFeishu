@@ -42,6 +42,7 @@ describe('Codex app-server fresh thread run', () => {
         threadId: 'thread-visible',
         cwd: fake.dir,
         model: 'gpt-5.6-sol',
+        reasoningEffort: 'high',
       },
       {
         type: 'tool_use',

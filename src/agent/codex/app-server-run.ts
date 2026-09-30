@@ -5,9 +5,9 @@ import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import {
   mergeProcessEnv,
-  spawnProcess,
   type SpawnedProcessByStdio,
 } from '../../platform/spawn';
+import { spawnCodexProcess as spawnProcess } from '../../platform/codex-binary';
 import type { AgentEvent, AgentRun } from '../types';
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -127,7 +127,11 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
             yield terminalError('codex app-server thread/start returned no thread id');
             return;
           }
-          yield { type: 'system', threadId, cwd: options.cwd, model: options.model };
+          yield {
+            type: 'system', threadId, cwd: options.cwd,
+            model: nestedString(message, ['result', 'model']) ?? options.model,
+            reasoningEffort: nestedString(message, ['result', 'reasoningEffort']) ?? options.reasoningEffort,
+          };
           writeRequest(child, turnStartRequest(options, threadId));
           continue;
         }

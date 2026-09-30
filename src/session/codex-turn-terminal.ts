@@ -3,6 +3,11 @@ import { fileURLToPath } from 'node:url';
 
 export type CodexPersistedTurnTerminal = 'completed' | 'interrupted';
 
+export interface CodexTurnExecutionInfo {
+  model?: string;
+  reasoningEffort?: string;
+}
+
 interface RolloutCursor {
   offset: number;
   carry: string;
@@ -10,6 +15,7 @@ interface RolloutCursor {
   activeTurnId?: string;
   unscopedAbortSeen: boolean;
   terminals: Map<string, CodexPersistedTurnTerminal>;
+  executions: Map<string, CodexTurnExecutionInfo>;
 }
 
 const INITIAL_TAIL_BYTES = 4 * 1024 * 1024;
@@ -29,6 +35,16 @@ export class CodexTurnTerminalVerifier {
     rolloutPath: string | undefined,
     turnId: string,
   ): Promise<CodexPersistedTurnTerminal | undefined> {
+    const cursor = await this.loadCursor(rolloutPath);
+    return cursor?.terminals.get(turnId) ??
+      (cursor?.unscopedAbortSeen ? 'interrupted' : undefined);
+  }
+
+  async executionsFor(rolloutPath: string | undefined): Promise<ReadonlyMap<string, CodexTurnExecutionInfo>> {
+    return (await this.loadCursor(rolloutPath))?.executions ?? new Map();
+  }
+
+  private async loadCursor(rolloutPath: string | undefined): Promise<RolloutCursor | undefined> {
     const path = localPath(rolloutPath);
     if (!path) return undefined;
 
@@ -48,14 +64,14 @@ export class CodexTurnTerminalVerifier {
         skipFirstPartialLine: info.size > INITIAL_TAIL_BYTES,
         unscopedAbortSeen: false,
         terminals: new Map(),
+        executions: new Map(),
       };
       this.cursors.set(path, cursor);
     }
     if (info.size > cursor.offset) {
       await this.readAppended(path, info.size, cursor);
     }
-    return cursor.terminals.get(turnId) ??
-      (cursor.unscopedAbortSeen ? 'interrupted' : undefined);
+    return cursor;
   }
 
   private async readAppended(path: string, size: number, cursor: RolloutCursor): Promise<void> {
@@ -85,7 +101,8 @@ function recordEvent(line: string, cursor: RolloutCursor): void {
     !line.includes('turn_started') &&
     !line.includes('task_complete') &&
     !line.includes('turn_complete') &&
-    !line.includes('turn_aborted')
+    !line.includes('turn_aborted') &&
+    !line.includes('turn_context')
   ) {
     return;
   }
@@ -95,8 +112,21 @@ function recordEvent(line: string, cursor: RolloutCursor): void {
   } catch {
     return;
   }
+  const payload = recordValue(envelope?.payload);
+  if (envelope?.type === 'turn_context') {
+    const contextTurnId = stringValue(payload?.turn_id) ?? cursor.activeTurnId;
+    if (contextTurnId) {
+      const model = stringValue(payload?.model);
+      const effort = stringValue(payload?.effort) ?? stringValue(payload?.reasoning_effort);
+      cursor.executions.set(contextTurnId, {
+        ...cursor.executions.get(contextTurnId),
+        ...(model ? { model } : {}),
+        ...(effort ? { reasoningEffort: effort } : {}),
+      });
+    }
+    return;
+  }
   if (envelope?.type !== 'event_msg') return;
-  const payload = recordValue(envelope.payload);
   const type = stringValue(payload?.type);
   const turnId = stringValue(payload?.turn_id);
   if ((type === 'task_started' || type === 'turn_started') && turnId) {
