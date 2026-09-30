@@ -2,11 +2,13 @@ import { spawn } from 'node:child_process';
 
 import { createCodexAppServerClient } from './codex-app-server-client.mjs';
 import { resolveCodexAppProjectId } from './codex-desktop-projects.mjs';
+import { CodexTurnTerminalVerifier } from './codex-turn-terminal-verifier.mjs';
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
 const DEFAULT_QUEUE_RESUME_FALLBACK_MS = 2_500;
 const QUEUED_TURN_POLL_INTERVAL_MS = 750;
+const INTERRUPTED_SETTLE_MS = 3_000;
 const relayQueues = new Map();
 
 function normalizeRequiredText(value, fieldName) {
@@ -125,6 +127,9 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
       resumeFallbackMs: dependencies.resumeFallbackMs ?? Number(
         process.env.MOBILE_CODEX_QUEUE_RESUME_FALLBACK_MS || DEFAULT_QUEUE_RESUME_FALLBACK_MS,
       ),
+      pollIntervalMs: dependencies.pollIntervalMs ?? QUEUED_TURN_POLL_INTERVAL_MS,
+      interruptedSettleMs: dependencies.interruptedSettleMs ?? INTERRUPTED_SETTLE_MS,
+      terminalVerifier: dependencies.terminalVerifier ?? new CodexTurnTerminalVerifier(),
     });
     return { skipped: false, sessionId, ...(queueMessageId ? { queueMessageId } : {}) };
   } finally {
@@ -134,7 +139,16 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
 
 async function waitForQueuedTurn(
   client,
-  { sessionId, message, knownTurnIds, timeoutMs, resumeFallbackMs },
+  {
+    sessionId,
+    message,
+    knownTurnIds,
+    timeoutMs,
+    resumeFallbackMs,
+    pollIntervalMs,
+    interruptedSettleMs,
+    terminalVerifier,
+  },
 ) {
   const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? timeoutMs
@@ -147,6 +161,8 @@ async function waitForQueuedTurn(
   );
   let selectedTurnId = null;
   let resumeFallbackAttempted = false;
+  let interruptedObservedAt = null;
+  let persistedTerminalSeen = null;
 
   while (Date.now() < deadline) {
     const snapshot = await client.request('thread/read', {
@@ -160,8 +176,38 @@ async function waitForQueuedTurn(
     if (selected) {
       selectedTurnId ||= selected.id;
       if (selected.status === 'completed') return;
-      if (selected.status === 'failed' || selected.status === 'cancelled') {
+      if (isInterruptedTurnStatus(selected.status)) {
+        const durableTerminal = await terminalVerifier.terminalFor(
+          snapshot?.thread?.path,
+          selected.id,
+        );
+        if (durableTerminal) {
+          const terminalKey = `${selected.id}:${durableTerminal}`;
+          if (persistedTerminalSeen !== terminalKey) {
+            // The rollout can advance just before thread/read exposes the last
+            // assistant item. Take one more snapshot before completing.
+            persistedTerminalSeen = terminalKey;
+          } else if (durableTerminal === 'completed') {
+            return;
+          } else {
+            throw new Error(selected.error?.message || 'Codex queued turn interrupted');
+          }
+        } else {
+          persistedTerminalSeen = null;
+          interruptedObservedAt ??= Date.now();
+          const stillSettling = Date.now() - interruptedObservedAt < interruptedSettleMs;
+          // A rollout path without a durable terminal event means the
+          // read-only app-server is projecting another writer's live turn.
+          // Older/fake servers without a path retain the short settle window.
+          if (!snapshot?.thread?.path && !stillSettling) {
+            throw new Error(selected.error?.message || 'Codex queued turn interrupted');
+          }
+        }
+      } else if (selected.status === 'failed') {
         throw new Error(selected.error?.message || `Codex queued turn ${selected.status}`);
+      } else {
+        interruptedObservedAt = null;
+        persistedTerminalSeen = null;
       }
     }
 
@@ -170,15 +216,29 @@ async function waitForQueuedTurn(
     // and no turn is active do we load the thread in this read-only client.
     // Desktop-owned or busy threads consume the native queue and never enter
     // this fallback, so their writer lease is not contested.
-    const hasActiveTurn = turns.some((turn) => (
+    const hasRunningTurn = turns.some((turn) => (
       turn?.status === 'inProgress' ||
       turn?.status === 'in_progress' ||
       turn?.status === 'running'
     ));
+    const tailTurn = turns.at(-1);
+    let hasUnconfirmedInterruptedTurn = false;
+    if (!selected && tailTurn && isInterruptedTurnStatus(tailTurn.status)) {
+      const durableTerminal = await terminalVerifier.terminalFor(
+        snapshot?.thread?.path,
+        tailTurn.id,
+      );
+      hasUnconfirmedInterruptedTurn = !durableTerminal && (
+        Boolean(snapshot?.thread?.path) ||
+        tailTurn.completedAt === null ||
+        tailTurn.completedAt === undefined
+      );
+    }
     if (
       !selected &&
       !resumeFallbackAttempted &&
-      !hasActiveTurn &&
+      !hasRunningTurn &&
+      !hasUnconfirmedInterruptedTurn &&
       Date.now() >= fallbackAt
     ) {
       resumeFallbackAttempted = true;
@@ -190,10 +250,15 @@ async function waitForQueuedTurn(
         }
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, QUEUED_TURN_POLL_INTERVAL_MS));
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
 
   throw new Error(`Codex queued turn timed out after ${safeTimeoutMs}ms`);
+}
+
+function isInterruptedTurnStatus(status) {
+  const normalized = typeof status === 'string' ? status.toLowerCase() : '';
+  return normalized === 'interrupted' || normalized === 'cancelled' || normalized === 'canceled';
 }
 
 function turnContainsMessage(turn, message) {

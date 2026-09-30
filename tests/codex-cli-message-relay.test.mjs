@@ -169,6 +169,136 @@ test('已有会话只读历史并通过共享队列投递，不争抢 writer', a
   assert.deepEqual(calls, ['initialize', 'thread/read', 'thread/read']);
 });
 
+test('旧会话忽略只读 app-server 的暂态 interrupted 并等待真实完成', async () => {
+  const calls = [];
+  let readCount = 0;
+  const client = {
+    async request(method) {
+      calls.push(method);
+      if (method !== 'thread/read') return {};
+      readCount += 1;
+      if (readCount === 1) return { thread: { path: 'rollout.jsonl', turns: [] } };
+      return {
+        thread: {
+          path: 'rollout.jsonl',
+          turns: [{
+            id: 'queued-turn',
+            status: readCount === 2 ? 'interrupted' : 'completed',
+            completedAt: readCount === 2 ? Date.now() / 1000 : undefined,
+            items: [{ type: 'userMessage', content: [{ type: 'text', text: '继续' }] }],
+          }],
+        },
+      };
+    },
+    notify() {},
+    async close() {},
+  };
+
+  await queueCodexCliThreadMessage({
+    sessionId: 'thread-1',
+    projectPath: 'D:\\dorit\\mytest',
+    message: '继续',
+  }, {
+    cliPath: 'codex.exe',
+    spawnImpl: successfulQueueChild,
+    createClient: () => client,
+    pollIntervalMs: 0,
+    resumeFallbackMs: 0,
+    terminalVerifier: { terminalFor: async () => undefined },
+  });
+
+  assert.equal(calls.includes('thread/resume'), false);
+  assert.equal(readCount, 3);
+});
+
+test('旧会话只在 rollout 持久化中断后结束等待', async () => {
+  let readCount = 0;
+  const client = {
+    async request(method) {
+      if (method !== 'thread/read') return {};
+      readCount += 1;
+      return readCount === 1
+        ? { thread: { path: 'rollout.jsonl', turns: [] } }
+        : {
+            thread: {
+              path: 'rollout.jsonl',
+              turns: [{
+                id: 'queued-turn',
+                status: 'interrupted',
+                items: [{ type: 'userMessage', content: [{ type: 'text', text: '继续' }] }],
+              }],
+            },
+          };
+    },
+    notify() {},
+    async close() {},
+  };
+
+  await assert.rejects(
+    queueCodexCliThreadMessage({
+      sessionId: 'thread-1',
+      projectPath: 'D:\\dorit\\mytest',
+      message: '继续',
+    }, {
+      cliPath: 'codex.exe',
+      spawnImpl: successfulQueueChild,
+      createClient: () => client,
+      pollIntervalMs: 0,
+      terminalVerifier: { terminalFor: async () => 'interrupted' },
+    }),
+    /queued turn interrupted/,
+  );
+  assert.equal(readCount, 3);
+});
+
+test('旧会话的活动 turn 被投影为 interrupted 时不会争抢 writer', async () => {
+  const calls = [];
+  let readCount = 0;
+  const projectedTurn = {
+    id: 'desktop-turn',
+    status: 'interrupted',
+    completedAt: null,
+    items: [],
+  };
+  const client = {
+    async request(method) {
+      calls.push(method);
+      if (method !== 'thread/read') return {};
+      readCount += 1;
+      if (readCount <= 3) {
+        return { thread: { path: 'rollout.jsonl', turns: [projectedTurn] } };
+      }
+      return {
+        thread: {
+          path: 'rollout.jsonl',
+          turns: [projectedTurn, {
+            id: 'queued-turn',
+            status: 'completed',
+            items: [{ type: 'userMessage', content: [{ type: 'text', text: '继续' }] }],
+          }],
+        },
+      };
+    },
+    notify() {},
+    async close() {},
+  };
+
+  await queueCodexCliThreadMessage({
+    sessionId: 'thread-1',
+    projectPath: 'D:\\dorit\\mytest',
+    message: '继续',
+  }, {
+    cliPath: 'codex.exe',
+    spawnImpl: successfulQueueChild,
+    createClient: () => client,
+    pollIntervalMs: 0,
+    resumeFallbackMs: 0,
+    terminalVerifier: { terminalFor: async () => undefined },
+  });
+
+  assert.equal(calls.includes('thread/resume'), false);
+});
+
 test('网页自建的空闲会话在共享队列无人消费时才加载 writer', async () => {
   const calls = [];
   let resumed = false;
@@ -267,3 +397,15 @@ test('同一会话的多条消息按顺序执行', async () => {
   ]);
   assert.deepEqual(order, ['start:一', 'end:一', 'start:二', 'end:二']);
 });
+
+function successfulQueueChild() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => true;
+  queueMicrotask(() => {
+    child.stdout.end('Queued message queue-1 for thread thread-1.\n');
+    child.emit('exit', 0, null);
+  });
+  return child;
+}
