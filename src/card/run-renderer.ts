@@ -53,11 +53,11 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     const status = renderColoredRunStatus(state);
     if (status) elements.push(noteMd(status));
     else if (state.footer) elements.push(footerStatus(state.footer));
-    if (options.showStopButton !== false) elements.push(stopButton(options));
+    elements.push(controlButtonRow(options, options.showStopButton !== false));
   } else {
     const status = renderColoredRunStatus(state);
     if (status) elements.push(noteMd(status));
-    elements.push(taskPanelButton());
+    elements.push(controlButtonRow(options, false));
   }
 
   return {
@@ -194,18 +194,44 @@ function stopButton(options: RunCardRenderOptions): object {
   }
   return {
     tag: 'button',
-    text: { tag: 'plain_text', content: '⏹ 终止' },
+    text: { tag: 'plain_text', content: '终止' },
     type: 'danger',
     behaviors: [{ type: 'callback', value }],
+  };
+}
+
+function controlButtonRow(options: RunCardRenderOptions, showStop: boolean): object {
+  const buttons = [
+    ...(showStop ? [stopButton(options)] : []),
+    taskPanelButton(),
+    refreshButton(),
+  ];
+  return {
+    tag: 'column_set',
+    flex_mode: 'flow',
+    horizontal_spacing: 'small',
+    columns: buttons.map((button) => ({
+      tag: 'column',
+      width: 'auto',
+      elements: [button],
+    })),
   };
 }
 
 function taskPanelButton(): object {
   return {
     tag: 'button',
-    text: { tag: 'plain_text', content: '任务控制台' },
+    text: { tag: 'plain_text', content: '控制台' },
     type: 'primary',
     behaviors: [{ type: 'callback', value: { cmd: 'panel' } }],
+  };
+}
+
+function refreshButton(): object {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: '刷新' },
+    behaviors: [{ type: 'callback', value: { cmd: 'refresh' } }],
   };
 }
 

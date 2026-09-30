@@ -75,20 +75,76 @@ _运行中…_",
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "stop",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "终止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "⏹ 终止",
-          "tag": "plain_text",
-        },
-        "type": "danger",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -140,20 +196,54 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
         "vertical_spacing": "8px",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -208,20 +298,76 @@ exports[`run card renderer snapshots > renders active and completed thinking 1`]
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "stop",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "终止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "⏹ 终止",
-          "tag": "plain_text",
-        },
-        "type": "danger",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -275,20 +421,54 @@ exports[`run card renderer snapshots > renders active and completed thinking 2`]
         "tag": "markdown",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -312,20 +492,54 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -349,20 +563,54 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -390,20 +638,54 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -431,20 +713,54 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -468,20 +784,76 @@ exports[`run card renderer snapshots > renders initial running state 1`] = `
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "stop",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "终止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "⏹ 终止",
-          "tag": "plain_text",
-        },
-        "type": "danger",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -573,20 +945,76 @@ _运行中…_",
         "text_size": "notation",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "stop",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "stop",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "终止",
+                  "tag": "plain_text",
+                },
+                "type": "danger",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "⏹ 终止",
-          "tag": "plain_text",
-        },
-        "type": "danger",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -644,20 +1072,54 @@ pwd
         "vertical_spacing": "8px",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },
@@ -712,20 +1174,54 @@ ENOENT
         "vertical_spacing": "8px",
       },
       {
-        "behaviors": [
+        "columns": [
           {
-            "type": "callback",
-            "value": {
-              "cmd": "panel",
-            },
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "panel",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "控制台",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "refresh",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "刷新",
+                  "tag": "plain_text",
+                },
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
           },
         ],
-        "tag": "button",
-        "text": {
-          "content": "任务控制台",
-          "tag": "plain_text",
-        },
-        "type": "primary",
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
       },
     ],
   },

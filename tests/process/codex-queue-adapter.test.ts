@@ -47,6 +47,8 @@ describe('CodexAdapter native queue mode', () => {
       prompt: 'stop from Desktop',
       threadId: 'thread-existing',
       clientUserMessageId: 'lark-channel-bridge:queue-interrupted',
+      pollIntervalMs: 5,
+      interruptedSettleMs: 15,
     });
 
     expect(await collect(run.events)).toEqual([
@@ -78,6 +80,30 @@ describe('CodexAdapter native queue mode', () => {
       { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
     ]);
   });
+
+  it('waits through a transient interrupted snapshot that already has a completion timestamp', async () => {
+    const fake = await createQueueCodex('provisional-completed-interrupted');
+    cleanup.push(fake.dir);
+    const run = createCodexQueueRun({
+      runId: 'queue-provisional-completed-interrupted',
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      inheritCodexHome: true,
+      cwd: fake.dir,
+      sandbox: 'workspace-write',
+      prompt: 'continue after stale terminal projection',
+      threadId: 'thread-existing',
+      clientUserMessageId: 'lark-channel-bridge:queue-provisional-completed-interrupted',
+      pollIntervalMs: 5,
+      interruptedSettleMs: 15,
+    });
+
+    expect(await collect(run.events)).toEqual([
+      { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'text', delta: 'queued response' },
+      { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
+    ]);
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
@@ -87,7 +113,8 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 }
 
 async function createQueueCodex(
-  turnStatus: 'completed' | 'interrupted' | 'provisional-interrupted' = 'completed',
+  turnStatus: 'completed' | 'interrupted' | 'provisional-interrupted' |
+    'provisional-completed-interrupted' = 'completed',
 ): Promise<{ dir: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-queue-test-'));
   const statePath = join(dir, 'state.json');
@@ -95,13 +122,18 @@ async function createQueueCodex(
   const path = process.platform === 'win32' ? join(dir, 'codex.cmd') : scriptPath;
   const script = `#!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 const statePath = ${JSON.stringify(statePath)};
+const rolloutPath = ${JSON.stringify(join(dir, 'rollout.jsonl'))};
 let queuedReads = 0;
+let terminalWritten = false;
 if (args[0] === 'queue') {
   const prompt = args[args.indexOf('--message') + 1];
   writeFileSync(statePath, JSON.stringify({ prompt }));
+  writeFileSync(rolloutPath, JSON.stringify({
+    type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-queued' }
+  }) + '\\n');
   console.log('Queued message queue-1 for thread thread-existing.');
   process.exit(0);
 }
@@ -117,28 +149,48 @@ rl.on('line', (line) => {
   const queued = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : undefined;
   if (queued) queuedReads += 1;
   const configuredStatus = ${JSON.stringify(turnStatus)};
-  const status = configuredStatus === 'provisional-interrupted' && queuedReads === 1
+  const transientInterrupted = configuredStatus === 'provisional-interrupted';
+  const status = configuredStatus === 'provisional-completed-interrupted'
     ? 'interrupted'
-    : configuredStatus === 'provisional-interrupted'
+    : transientInterrupted && queuedReads === 1
+      ? 'interrupted'
+      : transientInterrupted
       ? 'completed'
       : configuredStatus;
+  if (queued && !terminalWritten && (
+    status === 'completed' || configuredStatus === 'provisional-completed-interrupted'
+  )) {
+    appendFileSync(rolloutPath, JSON.stringify({
+      type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-queued' }
+    }) + '\\n');
+    terminalWritten = true;
+  } else if (queued && !terminalWritten && status === 'interrupted' && !transientInterrupted) {
+    appendFileSync(rolloutPath, JSON.stringify({
+      type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 'turn-queued' }
+    }) + '\\n');
+    terminalWritten = true;
+  }
+  const includeAgentMessage = configuredStatus !== 'provisional-completed-interrupted' ||
+    queuedReads > 1;
   const turns = queued ? [{
     id: 'turn-queued',
     status,
-    completedAt: status === 'interrupted' && configuredStatus !== 'provisional-interrupted'
-      ? Date.now() / 1000
-      : status === 'interrupted'
+    completedAt: status === 'interrupted' && configuredStatus === 'provisional-interrupted'
         ? null
         : Date.now() / 1000,
     error: null,
     items: [
       { type: 'userMessage', id: 'user-1', content: [{ type: 'text', text: queued.prompt }] },
-      { type: 'agentMessage', id: 'agent-1', text: 'queued response', phase: 'final_answer' }
+      ...(includeAgentMessage
+        ? [{ type: 'agentMessage', id: 'agent-1', text: 'queued response', phase: 'final_answer' }]
+        : [])
     ]
   }] : [];
   console.log(JSON.stringify({
     id: req.id,
-    result: { thread: { id: 'thread-existing', updatedAt: Date.now() / 1000, turns } }
+    result: { thread: {
+      id: 'thread-existing', path: rolloutPath, updatedAt: Date.now() / 1000, turns
+    } }
   }));
 });
 `;

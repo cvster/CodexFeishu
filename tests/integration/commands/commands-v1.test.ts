@@ -500,6 +500,16 @@ describe('Bridge command contracts', () => {
     expect(status).toContain(jsonStringFragment(await realpath(h.tmp.workspace)));
   });
 
+  it('uses /refresh as the button-friendly current-status alias', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/refresh', { chatMode: 'group' })).resolves.toBe(true);
+
+    const status = JSON.stringify(lastContent(h.channel));
+    expect(status).toContain('当前状态');
+    expect(status).toContain('Fake Agent');
+  });
+
   it('shows workspace paths in group-visible /status replies', async () => {
     const h = await createHarness();
 

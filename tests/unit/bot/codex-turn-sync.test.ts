@@ -477,6 +477,73 @@ describe('Codex desktop turn sync', () => {
     expect(JSON.stringify(updates[0])).toContain('desktop answer');
     await handle.stop();
   });
+
+  it('refreshes through app-server before sealing a rollout-confirmed completion', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-turn-sync-terminal-refresh-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = {
+      key: 'entry-terminal-refresh',
+      scopeId: 'oc_terminalrefresh',
+      agentId: 'codex',
+      cwdRealpath: dir,
+      policyFingerprint: 'policy',
+      status: 'active',
+      updatedAt: 1,
+      threadId: 'thread-terminal-refresh',
+    } satisfies SessionCatalogEntry;
+    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    const baseline: CodexThreadSnapshot = {
+      id: entry.threadId,
+      turns: [externalTurn('old-terminal-refresh', 'completed', 'old prompt', 'old answer')],
+    };
+    const projected: CodexThreadSnapshot = {
+      id: entry.threadId,
+      rolloutPath: join(dir, 'rollout.jsonl'),
+      turns: [
+        ...baseline.turns,
+        externalTurn('desktop-terminal-refresh', 'interrupted', 'desktop prompt', ''),
+      ],
+    };
+    const refreshed: CodexThreadSnapshot = {
+      ...projected,
+      turns: projected.turns.map((turn) =>
+        turn.id === 'desktop-terminal-refresh'
+          ? externalTurn(
+              'desktop-terminal-refresh',
+              'completed',
+              'desktop prompt',
+              'complete desktop answer',
+            )
+          : turn,
+      ),
+    };
+    const pending = [baseline, projected, refreshed];
+    const reader = {
+      readThread: vi.fn(async () => pending.shift() ?? refreshed),
+      persistedTurnTerminal: vi.fn(async () => 'completed' as const),
+      stop: vi.fn(async () => undefined),
+    };
+    const handle = await startCodexTurnSync({
+      channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(),
+      sessionCatalog,
+      profileStateDir: dir,
+      statePath: join(dir, 'sync-state.json'),
+      intervalMs: 60_000,
+      reader,
+      now: () => 200_000,
+    });
+
+    await handle.runNow();
+    await handle.runNow();
+
+    expect(reader.readThread).toHaveBeenCalledTimes(3);
+    expect(channel.sent).toHaveLength(2);
+    expect(JSON.stringify(channel.sent[1]?.content)).toContain('complete desktop answer');
+    expect(JSON.stringify(channel.sent[1]?.content)).toContain('已完成');
+    await handle.stop();
+  });
 });
 
 function controlsForCodex(): Controls {

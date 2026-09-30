@@ -71,6 +71,7 @@ import { setSecret } from '../config/keystore';
 import { buildEncryptedAccountConfig, saveConfig } from '../config/store';
 import { log, reportMetric } from '../core/logger';
 import { renderCard } from '../card/run-renderer';
+import { codexTurnRunState } from '../card/codex-turn-state';
 import {
   finalizeIfRunning,
   initialState,
@@ -84,6 +85,8 @@ import {
   type CodexThreadHistoryEntry,
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
+import { CodexThreadReader } from '../session/codex-thread-reader';
+import { isProvisionalInterruptedTurn } from '../session/codex-turn-status';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import type { SessionStore } from '../session/store';
@@ -209,6 +212,7 @@ const handlers: Record<string, Handler> = {
   '/ws': handleWs,
   '/resume': handleResume,
   '/status': handleStatus,
+  '/refresh': handleRefresh,
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
@@ -1463,6 +1467,70 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     chatMode: ctx.chatMode,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+}
+
+async function handleRefresh(_args: string, ctx: CommandContext): Promise<void> {
+  const codex = ctx.controls.profileConfig.agentKind === 'codex'
+    ? ctx.controls.profileConfig.codex
+    : undefined;
+  const exactEntry = ctx.sessionCatalogIdentity
+    ? ctx.sessionCatalog?.activeFor(ctx.sessionCatalogIdentity)
+    : undefined;
+  const entry = exactEntry ?? ctx.sessionCatalog?.entries()
+    .filter((candidate) =>
+      candidate.status === 'active' &&
+      candidate.agentId === 'codex' &&
+      candidate.scopeId === ctx.scope &&
+      Boolean(candidate.threadId),
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  if (!codex?.binaryPath || !entry?.threadId) {
+    await handleStatus('', ctx);
+    return;
+  }
+
+  const reader = new CodexThreadReader({
+    binary: codex.binaryPath,
+    profileStateDir: commandProfilePaths(ctx).profileDir,
+    ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
+    ...(codex.inheritCodexHome !== undefined
+      ? { inheritCodexHome: codex.inheritCodexHome }
+      : {}),
+  });
+  try {
+    const snapshot = await reader.readThread(entry.threadId);
+    const rawTurn = snapshot.turns.at(-1);
+    if (!rawTurn) {
+      await handleStatus('', ctx);
+      return;
+    }
+    const nowMs = Date.now();
+    const turn = isProvisionalInterruptedTurn(snapshot, rawTurn, nowMs)
+      ? { ...rawTurn, status: 'inProgress' }
+      : rawTurn;
+    const startedAtMs = turn.startedAtMs ?? snapshot.updatedAtMs ?? nowMs;
+    const state = codexTurnRunState(turn, {
+      firstSeenAtMs: startedAtMs,
+      lastActivityAtMs: snapshot.updatedAtMs ?? startedAtMs,
+      checkedAtMs: nowMs,
+    });
+    await ctx.channel.send(
+      ctx.msg.chatId,
+      { card: renderCard(state, { showStopButton: false }) },
+      commandReplyOptions(ctx),
+    );
+    log.info('command', 'refresh-turn', {
+      scope: ctx.scope,
+      threadId: entry.threadId,
+      turnId: turn.id,
+      status: turn.status,
+    });
+  } catch (err) {
+    log.warn('command', 'refresh-turn-failed', { scope: ctx.scope, message: errorText(err) });
+    await handleStatus('', ctx);
+  } finally {
+    await reader.stop();
+  }
 }
 
 function formatOwnerState(ctx: CommandContext): string {

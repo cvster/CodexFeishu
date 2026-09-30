@@ -6,6 +6,10 @@ import {
   spawnProcess,
   type SpawnedProcessByStdio,
 } from '../platform/spawn';
+import {
+  CodexTurnTerminalVerifier,
+  type CodexPersistedTurnTerminal,
+} from './codex-turn-terminal';
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -25,6 +29,7 @@ export interface CodexThreadTurn {
 
 export interface CodexThreadSnapshot {
   id: string;
+  rolloutPath?: string;
   updatedAtMs?: number;
   turns: CodexThreadTurn[];
 }
@@ -63,6 +68,7 @@ export class CodexThreadReader {
   private starting: Promise<void> | undefined;
   private nextRequestId = 2;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly terminalVerifier = new CodexTurnTerminalVerifier();
   private stopped = false;
 
   constructor(private readonly options: CodexThreadReaderOptions) {}
@@ -123,6 +129,13 @@ export class CodexThreadReader {
     if (this.stopped) return;
     await this.ensureStarted();
     await this.request('thread/queue/delete', { threadId, queuedSubmissionId });
+  }
+
+  async persistedTurnTerminal(
+    snapshot: CodexThreadSnapshot,
+    turnId: string,
+  ): Promise<CodexPersistedTurnTerminal | undefined> {
+    return this.terminalVerifier.terminalFor(snapshot.rolloutPath, turnId);
   }
 
   async stop(): Promise<void> {
@@ -314,6 +327,7 @@ export function normalizeCodexThreadSnapshot(input: unknown): CodexThreadSnapsho
   }
   return {
     id: raw.id,
+    ...(typeof raw.path === 'string' ? { rolloutPath: raw.path } : {}),
     ...(typeof raw.updatedAt === 'number' ? { updatedAtMs: Math.round(raw.updatedAt * 1000) } : {}),
     turns,
   };

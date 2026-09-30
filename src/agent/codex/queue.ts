@@ -41,10 +41,15 @@ interface QueueRunOptions {
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   clientUserMessageId: string;
+  remote?: string;
   env?: NodeJS.ProcessEnv;
+  /** Test/diagnostic overrides; production uses the conservative defaults. */
+  pollIntervalMs?: number;
+  interruptedSettleMs?: number;
 }
 
 const POLL_INTERVAL_MS = 750;
+const INTERRUPTED_SETTLE_MS = 3_000;
 
 /**
  * Queue follow-up input through the shared Codex daemon, then use a read-only
@@ -65,6 +70,8 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   let selectedTurnId: string | undefined;
   let queuedSubmissionId: string | undefined;
   let provisionalInterruptedTurnId: string | undefined;
+  let interruptedObservedAtMs: number | undefined;
+  let persistedTerminalSeen: string | undefined;
   let settled = false;
   let started = false;
   let settle!: () => void;
@@ -92,7 +99,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
         sandbox: options.sandbox,
         threadId: options.threadId,
         prompt: options.prompt,
-        remote: options.env?.CODEX_QUEUE_REMOTE ?? process.env.CODEX_QUEUE_REMOTE,
+        remote: options.remote ?? options.env?.CODEX_QUEUE_REMOTE ?? process.env.CODEX_QUEUE_REMOTE,
         images: options.images,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
@@ -158,27 +165,63 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
             return;
           }
           if (isInterruptedTurnStatus(selected.status)) {
-            if (isProvisionalInterruptedTurn(snapshot, selected)) {
+            const persistedTerminal = await reader.persistedTurnTerminal(snapshot, selected.id);
+            if (persistedTerminal) {
+              const terminalKey = `${selected.id}:${persistedTerminal}`;
+              if (persistedTerminalSeen !== terminalKey) {
+                // The rollout can advance between thread/read and this check.
+                // Read one more app-server snapshot before sealing the stream
+                // so the last agent-message delta cannot be dropped.
+                persistedTerminalSeen = terminalKey;
+                await abortableDelay(options.pollIntervalMs ?? POLL_INTERVAL_MS, controller.signal);
+                continue;
+              }
+              if (persistedTerminal === 'completed') {
+                yield { type: 'done', threadId: options.threadId, terminationReason: 'normal' };
+                return;
+              }
+              yield interrupted(options.threadId);
+              return;
+            }
+            persistedTerminalSeen = undefined;
+            const observedAtMs = Date.now();
+            interruptedObservedAtMs ??= observedAtMs;
+            const settling = observedAtMs - interruptedObservedAtMs <
+              (options.interruptedSettleMs ?? INTERRUPTED_SETTLE_MS);
+            if (isProvisionalInterruptedTurn(snapshot, selected) || settling) {
               if (provisionalInterruptedTurnId !== selected.id) {
                 provisionalInterruptedTurnId = selected.id;
                 log.info('agent', 'queue-interrupted-provisional', {
                   threadId: options.threadId,
                   turnId: selected.id,
+                  completedAtMs: selected.completedAtMs,
+                  settleMs: options.interruptedSettleMs ?? INTERRUPTED_SETTLE_MS,
                 });
               }
-              await abortableDelay(POLL_INTERVAL_MS, controller.signal);
+              await abortableDelay(options.pollIntervalMs ?? POLL_INTERVAL_MS, controller.signal);
               continue;
             }
+            if (snapshot.rolloutPath) {
+              // `thread/read` from a separate app-server projects a turn owned
+              // by Codex Desktop as interrupted. Without a durable
+              // task_complete or turn_aborted event, that is not terminal.
+              await abortableDelay(options.pollIntervalMs ?? POLL_INTERVAL_MS, controller.signal);
+              continue;
+            }
+            // Older/fake app-servers may omit the rollout path. Preserve the
+            // legacy settle behavior when durable verification is impossible.
             yield interrupted(options.threadId);
             return;
           }
           provisionalInterruptedTurnId = undefined;
+          interruptedObservedAtMs = undefined;
+          persistedTerminalSeen = undefined;
           if (selected.status === 'failed') {
             yield terminalError(selected.error?.message ?? `Codex turn ${selected.status}`);
             return;
           }
         }
-        await abortableDelay(POLL_INTERVAL_MS, controller.signal);
+        await abortableDelay(options.pollIntervalMs ?? POLL_INTERVAL_MS, controller.signal);
       }
 
       yield interrupted(options.threadId);

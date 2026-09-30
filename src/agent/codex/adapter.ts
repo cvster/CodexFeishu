@@ -166,6 +166,7 @@ export class CodexAdapter implements AgentAdapter {
         images: opts.images,
         model: opts.model,
         reasoningEffort: opts.reasoningEffort,
+        ...(this.appServerRemote ? { remote: this.appServerRemote } : {}),
         env: buildLarkChannelEnv(this.larkChannel),
       });
     }

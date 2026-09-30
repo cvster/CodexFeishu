@@ -12,15 +12,22 @@ import {
 } from '../session/codex-origin';
 import {
   CodexThreadReader,
-  type CodexThreadItem,
   type CodexThreadReaderOptions,
   type CodexThreadRevision,
   type CodexThreadSnapshot,
   type CodexThreadTurn,
 } from '../session/codex-thread-reader';
-import { isProvisionalInterruptedTurn } from '../session/codex-turn-status';
+import {
+  isInterruptedTurnStatus,
+  isProvisionalInterruptedTurn,
+} from '../session/codex-turn-status';
+import {
+  codexTurnRunState,
+  codexTurnTerminal,
+  isCodexTurnTerminal,
+} from '../card/codex-turn-state';
 import { renderCard } from '../card/run-renderer';
-import type { Block, RunState, Terminal, ToolEntry } from '../card/run-state';
+import type { Terminal } from '../card/run-state';
 import { sendManagedCard } from '../card/managed';
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -68,6 +75,10 @@ interface StoredState {
 export interface CodexTurnReaderLike {
   readThread(threadId: string): Promise<CodexThreadSnapshot>;
   listRecentThreads?(limit?: number): Promise<CodexThreadRevision[]>;
+  persistedTurnTerminal?(
+    snapshot: CodexThreadSnapshot,
+    turnId: string,
+  ): Promise<'completed' | 'interrupted' | undefined>;
   stop(): Promise<void> | void;
 }
 
@@ -182,6 +193,7 @@ async function syncOnce(
     let snapshot: CodexThreadSnapshot;
     try {
       snapshot = await reader.readThread(threadId);
+      snapshot = await reconcileProjectedInterruptions(reader, snapshot, now());
     } catch (err) {
       log.warn('codex-turn-sync', 'thread-read-failed', {
         threadId,
@@ -207,6 +219,45 @@ async function syncOnce(
   await store.flush();
 }
 
+async function reconcileProjectedInterruptions(
+  reader: CodexTurnReaderLike,
+  snapshot: CodexThreadSnapshot,
+  nowMs: number,
+): Promise<CodexThreadSnapshot> {
+  const latest = snapshot.turns.at(-1);
+  if (!latest || !isInterruptedTurnStatus(latest.status)) return snapshot;
+  if (!reader.persistedTurnTerminal) {
+    return isProvisionalInterruptedTurn(snapshot, latest, nowMs)
+      ? replaceTurnStatus(snapshot, latest.id, 'inProgress')
+      : snapshot;
+  }
+  const terminal = await reader.persistedTurnTerminal(snapshot, latest.id);
+  if (terminal) {
+    // The durable event may have landed immediately after the first
+    // thread/read. Refresh once through app-server so the terminal card also
+    // contains the final message/tool items written just before that event.
+    const refreshed = await reader.readThread(snapshot.id);
+    const refreshedTurn = refreshed.turns.find((turn) => turn.id === latest.id);
+    const current = refreshedTurn ? refreshed : snapshot;
+    if (terminal === 'completed' && isInterruptedTurnStatus(refreshedTurn?.status ?? latest.status)) {
+      return replaceTurnStatus(current, latest.id, 'completed');
+    }
+    return current;
+  }
+  return replaceTurnStatus(snapshot, latest.id, 'inProgress');
+}
+
+function replaceTurnStatus(
+  snapshot: CodexThreadSnapshot,
+  turnId: string,
+  status: string,
+): CodexThreadSnapshot {
+  return {
+    ...snapshot,
+    turns: snapshot.turns.map((turn) => turn.id === turnId ? { ...turn, status } : turn),
+  };
+}
+
 async function syncThreadSnapshot(
   channel: LarkChannel,
   store: CodexTurnSyncStore,
@@ -223,10 +274,7 @@ async function syncThreadSnapshot(
   const replayTurnsByScope = recentReplayTurnsByScope(snapshot, bindings, newScopes);
   thread.bindings = [...new Set([...thread.bindings, ...scopes])];
 
-  for (const rawTurn of snapshot.turns) {
-    const turn = isProvisionalInterruptedTurn(snapshot, rawTurn, nowMs)
-      ? { ...rawTurn, status: 'inProgress' }
-      : rawTurn;
+  for (const turn of snapshot.turns) {
     let stored = thread.turns[turn.id];
     const isNewTurn = !stored;
     if (!stored) {
@@ -253,7 +301,7 @@ async function syncThreadSnapshot(
     // transcript. This avoids replaying months of Desktop history into a new
     // chat. A currently-running external turn is useful live state, so it is
     // mirrored even on the first observation.
-    if (isTerminalStatus(turn.status)) {
+    if (isCodexTurnTerminal(turn.status)) {
       const baselineScopes = firstSnapshot && isNewTurn ? scopes : newScopes;
       for (const scope of baselineScopes) {
         if (replayTurnsByScope.get(scope)?.has(turn.id)) continue;
@@ -303,6 +351,7 @@ function recentReplayTurnsByScope(
   newScopes: string[],
 ): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>();
+  const latestTurnId = snapshot.turns.at(-1)?.id;
   for (const scope of newScopes) {
     const count = Math.max(
       0,
@@ -312,7 +361,10 @@ function recentReplayTurnsByScope(
     );
     if (count === 0) continue;
     const ids = snapshot.turns
-      .filter((turn) => isTerminalStatus(turn.status))
+      // Creation replay includes the current tail as well. A bridge-owned tail
+      // can be projected as interrupted and reconciled to running before this
+      // selection; omitting it would leave its live card undiscoverable.
+      .filter((turn) => isCodexTurnTerminal(turn.status) || turn.id === latestTurnId)
       .slice(-count)
       .map((turn) => turn.id);
     result.set(scope, new Set(ids));
@@ -341,7 +393,7 @@ async function syncTurnToScope(
         markdown: `💻 **来自 Codex 桌面 App**\n\n${truncate(input, 8_000)}`,
       });
     }
-    const state = turnRunState(turn, {
+    const state = codexTurnRunState(turn, {
       firstSeenAtMs: nowMs,
       lastActivityAtMs: nowMs,
       checkedAtMs: nowMs,
@@ -360,7 +412,7 @@ async function syncTurnToScope(
       lastActivityAtMs: nowMs,
       lastPushedAtMs: nowMs,
       lastContentHash: contentHash,
-      terminal: isTerminalStatus(turn.status),
+      terminal: isCodexTurnTerminal(turn.status),
       terminalStatus: state.terminal,
     };
     stored.deliveries[scope] = delivery;
@@ -377,7 +429,7 @@ async function syncTurnToScope(
   if (delivery.status !== 'card') return;
 
   const wasTerminal = delivery.terminal;
-  const nextTerminalStatus = terminalFromStatus(turn.status);
+  const nextTerminalStatus = codexTurnTerminal(turn.status);
   const terminal = nextTerminalStatus !== 'running';
   const changed = contentHash !== delivery.lastContentHash;
   // A turn can be observed as interrupted while Codex Desktop is still
@@ -398,7 +450,7 @@ async function syncTurnToScope(
   // Persist the next CardKit sequence before the API call. If the process dies
   // after Feishu accepts the update, a restart will never reuse that sequence.
   await store.flush();
-  const state = turnRunState(turn, {
+  const state = codexTurnRunState(turn, {
     firstSeenAtMs: delivery.firstSeenAtMs,
     lastActivityAtMs: delivery.lastActivityAtMs,
     checkedAtMs: nowMs,
@@ -419,68 +471,6 @@ async function syncTurnToScope(
     reopened: wasTerminal && !terminal,
     sequence: delivery.sequence,
   });
-}
-
-function turnRunState(
-  turn: CodexThreadTurn,
-  runtime: { firstSeenAtMs: number; lastActivityAtMs: number; checkedAtMs: number },
-): RunState {
-  const blocks: Block[] = [];
-  let reasoning = '';
-  for (const item of turn.items) {
-    if (item.type === 'agentMessage') {
-      const text = stringValue(item.text);
-      if (text) blocks.push({ kind: 'text', content: text, streaming: !isTerminalStatus(turn.status) });
-      continue;
-    }
-    if (item.type === 'reasoning') {
-      reasoning += textFromUnknown(item.summary) || textFromUnknown(item.content);
-      continue;
-    }
-    const tool = toolFromItem(item, isTerminalStatus(turn.status));
-    if (tool) blocks.push({ kind: 'tool', tool });
-  }
-
-  const terminal = terminalFromStatus(turn.status);
-  return {
-    blocks,
-    reasoning: { content: reasoning, active: terminal === 'running' && Boolean(reasoning) },
-    footer: terminal === 'running' ? (blocks.some((block) => block.kind === 'tool' && block.tool.status === 'running') ? 'tool_running' : blocks.length > 0 ? 'streaming' : 'thinking') : null,
-    terminal,
-    ...(terminal === 'error' && turn.error?.message ? { errorMsg: turn.error.message } : {}),
-    runtime: {
-      startedAtMs: runtime.firstSeenAtMs,
-      lastActivityAtMs: runtime.lastActivityAtMs,
-      checkedAtMs: runtime.checkedAtMs,
-      processRunning: terminal === 'running',
-    },
-  };
-}
-
-function toolFromItem(item: CodexThreadItem, terminal: boolean): ToolEntry | undefined {
-  const id = stringValue(item.id);
-  if (!id) return undefined;
-  if (item.type === 'commandExecution') {
-    const exitCode = typeof item.exitCode === 'number' ? item.exitCode : undefined;
-    return {
-      id,
-      name: 'command_execution',
-      input: { command: stringValue(item.command) ?? '' },
-      status: exitCode === undefined && !terminal ? 'running' : exitCode === 0 || exitCode === undefined ? 'done' : 'error',
-      ...(stringValue(item.aggregatedOutput) ? { output: stringValue(item.aggregatedOutput) } : {}),
-    };
-  }
-  if (item.type === 'mcpToolCall') {
-    const status = stringValue(item.status)?.toLowerCase();
-    return {
-      id,
-      name: [stringValue(item.server), stringValue(item.tool)].filter(Boolean).join('/') || 'mcp_tool',
-      input: item.arguments ?? {},
-      status: status === 'failed' ? 'error' : status === 'inprogress' && !terminal ? 'running' : 'done',
-      ...(textFromUnknown(item.result) ? { output: textFromUnknown(item.result) } : {}),
-    };
-  }
-  return undefined;
 }
 
 function externalUserText(turn: CodexThreadTurn): string {
@@ -512,18 +502,6 @@ function textFromUnknown(input: unknown): string {
     })
     .filter(Boolean)
     .join('\n');
-}
-
-function terminalFromStatus(status: string): Terminal {
-  const normalized = status.toLowerCase();
-  if (normalized === 'completed') return 'done';
-  if (normalized === 'failed') return 'error';
-  if (normalized === 'cancelled' || normalized === 'canceled' || normalized === 'interrupted') return 'interrupted';
-  return 'running';
-}
-
-function isTerminalStatus(status: string): boolean {
-  return terminalFromStatus(status) !== 'running';
 }
 
 function turnContentHash(turn: CodexThreadTurn): string {

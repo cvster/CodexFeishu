@@ -217,6 +217,9 @@ async function createHarness(options: {
     access: {
       allowedUsers: ['ou_user'],
     },
+    preferences: {
+      messageReply: 'markdown',
+    },
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },

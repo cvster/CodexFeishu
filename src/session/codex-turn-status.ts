@@ -20,7 +20,11 @@ export function isProvisionalInterruptedTurn(
 ): boolean {
   if (turn.id !== snapshot.turns.at(-1)?.id) return false;
   if (!isInterruptedTurnStatus(turn.status)) return false;
-  if (turn.completedAtMs !== null) return false;
+  // app-server has returned both `null` and an omitted `completedAt` while a
+  // Desktop-owned turn is still being persisted. Treat both shapes as an
+  // unconfirmed terminal state. A concrete timestamp is the only evidence
+  // that the interruption has been committed.
+  if (turn.completedAtMs !== null && turn.completedAtMs !== undefined) return false;
   if (snapshot.updatedAtMs === undefined) return false;
   return nowMs - snapshot.updatedAtMs <= PROVISIONAL_INTERRUPTED_WINDOW_MS;
 }
