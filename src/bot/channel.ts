@@ -79,6 +79,7 @@ import { isSoloUserBotChat } from './group';
 import { syncCodexThreadNameFromChat } from './thread-name';
 import { startAaSessionGroupSync } from './aa-session-groups';
 import { startCodexTurnSync } from './codex-turn-sync';
+import { startCodexUserInput } from './codex-user-input';
 import { registerLiveRunCardRefresh } from '../card/run-refresh';
 import type { AppPaths } from '../config/app-paths';
 import {
@@ -519,6 +520,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     ? (scope, messageId) => codexTurnSync.refreshMessage(scope, messageId)
     : undefined;
   controls.codexReplySync = controls.profileConfig.agentKind === 'codex' ? codexTurnSync : undefined;
+  controls.codexUserInput = controls.profileConfig.agentKind === 'codex' && sessionCatalog && deps.appPaths?.profileDir
+    ? await startCodexUserInput({ channel, controls, sessionCatalog, profileStateDir: deps.appPaths.profileDir })
+    : undefined;
 
   const identity = channel.botIdentity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
@@ -559,6 +563,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       aaSessionGroupSync?.stop();
+      await controls.codexUserInput?.stop();
+      controls.codexUserInput = undefined;
       await codexTurnSync?.stop();
       controls.codexReplySync = undefined;
       controls.refreshMirroredRunCard = undefined;
@@ -1015,6 +1021,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   let runCodexThreadId: string | undefined;
   let runCodexTurnId: string | undefined;
   const recordSession = (evt: AgentEvent): void => {
+    if (evt.type === 'user_input') {
+      controls.codexUserInput?.accept(evt.prompt, handle.run.runId,
+        { scope, replyTo: sendOpts.replyTo, replyInThread: sendOpts.replyInThread });
+      return;
+    }
+    if (evt.type === 'user_input_resolved') {
+      controls.codexUserInput?.resolve(evt.threadId, evt.requestId, handle.run.runId);
+      return;
+    }
+    if (evt.type === 'done' && runCodexThreadId && runCodexTurnId) {
+      controls.codexUserInput?.endTurn(runCodexThreadId, runCodexTurnId);
+    }
     recordRunSessionEvent({
       scopeId: scope,
       botAppId: controls.profileConfig.accounts.app.id,
@@ -1117,7 +1135,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       // Submission/execution monitoring must not render a second reply. The
       // app-server snapshot synchronizer is the sole owner of turn deliveries.
       const finalState = await processAgentStream(handle, eventStream, scope,
-        idleTimeoutMs, recordSession, async () => {});
+        idleTimeoutMs, recordSession, async () => {}, () => Boolean(runCodexThreadId && runCodexTurnId &&
+          controls.codexUserInput?.isWaiting(runCodexThreadId, runCodexTurnId)));
       await controls.codexReplySync.runNow();
       // A failure before turn/start has no turn to mirror (e.g. queue rejected).
       // Surface only that submission error, never duplicate a turn's answer.
@@ -1442,6 +1461,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    if (handle.interrupted && runCodexThreadId && runCodexTurnId) {
+      controls.codexUserInput?.endTurn(runCodexThreadId, runCodexTurnId);
+    }
     if (firstMsg.chatType !== 'p2p' && runCodexThreadId) {
       try {
         await syncCodexThreadNameFromChat({
@@ -1582,6 +1604,7 @@ async function processAgentStream(
   idleTimeoutMs: number | undefined,
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
+  waitingForInput?: () => boolean,
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = startRunRuntime(initialState, runStart);
@@ -1650,12 +1673,14 @@ async function processAgentStream(
   let idleFired = false;
   let timer: NodeJS.Timeout | undefined;
   const inFlightTools = new Set<string>();
+  const blockingInputs = new Set<string | number>();
   const armOrPauseIdle = (): void => {
     if (!idleTimeoutMs) return;
     if (timer) clearTimeout(timer);
     timer = undefined;
-    if (inFlightTools.size > 0) return;
+    if (inFlightTools.size > 0 || blockingInputs.size > 0 || waitingForInput?.()) return;
     timer = setTimeout(() => {
+      if (waitingForInput?.()) { armOrPauseIdle(); return; }
       idleFired = true;
       handle.interrupted = true;
       log.warn('agent', 'idle-timeout', { scope, idleTimeoutMs });
@@ -1684,10 +1709,14 @@ async function processAgentStream(
       } else if (evt.type === 'tool_result') {
         inFlightTools.delete(evt.id);
         log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
+      } else if (evt.type === 'user_input' && evt.prompt.request.isBlocking) {
+        blockingInputs.add(evt.prompt.requestId);
+      } else if (evt.type === 'user_input_resolved') {
+        blockingInputs.delete(evt.requestId);
       }
       armOrPauseIdle();
 
-      if (evt.type === 'system') {
+      if (evt.type === 'system' || evt.type === 'user_input' || evt.type === 'user_input_resolved') {
         recordSession(evt);
         state = reduce(state, evt);
         await enqueueFlush(state);
@@ -1709,6 +1738,7 @@ async function processAgentStream(
       }
 
       const prevTerminal = state.terminal;
+      if (evt.type === 'done' || evt.type === 'error') recordSession(evt);
       const prevFooter = state.footer;
       state = reduce(state, evt);
       if (state.footer !== prevFooter || state.terminal !== prevTerminal) {

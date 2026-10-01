@@ -102,6 +102,30 @@ describe('Codex app-server fresh thread run', () => {
       ],
     });
   });
+
+  it('keeps a blocking request pending and responds on the original RPC connection', async () => {
+    const fake = await createFakeAppServer(true);
+    cleanup.push(fake.dir);
+    const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir,
+      inheritCodexHome: true, stopGraceMs: 50 }).run({ runId: 'interactive', cwd: fake.dir, prompt: 'choose' });
+    const events: AgentEvent[] = [];
+    for await (const event of run.events) {
+      events.push(event);
+      if (event.type === 'user_input') {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const before = JSON.parse(await readFile(fake.recordPath, 'utf8'));
+        expect(before.some((r: { result?: unknown }) => r.result)).toBe(false);
+        expect(event.prompt.request.isBlocking).toBe(true);
+        expect(await event.prompt.respond({ q: { answers: ['A'] } })).toBe(true);
+        expect(await event.prompt.respond({ q: { answers: ['B'] } })).toBe(false);
+      }
+    }
+    expect(events.some((event) => event.type === 'user_input_resolved')).toBe(true);
+    expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    const requests = JSON.parse(await readFile(fake.recordPath, 'utf8'));
+    expect(requests.filter((r: { result?: unknown }) => r.result)).toEqual([{ id: 1, result: { answers: { q: { answers: ['A'] } } } }]);
+    expect(await run.waitForExit(2000)).toBe(true);
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
@@ -110,7 +134,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
   return out;
 }
 
-async function createFakeAppServer(): Promise<{
+async function createFakeAppServer(interactive = false): Promise<{
   dir: string;
   path: string;
   recordPath: string;
@@ -131,6 +155,11 @@ rl.on('line', (line) => {
   const request = JSON.parse(line);
   requests.push(request);
   save();
+  if (${interactive} && request.id === 1 && request.result) {
+    send({ method: 'serverRequest/resolved', params: { threadId: 'thread-visible', requestId: 1 } });
+    send({ method: 'turn/completed', params: { threadId: 'thread-visible', turn: { id: 'turn-1', status: 'completed' } } });
+    return;
+  }
   if (request.method === 'initialize') {
     send({ id: request.id, result: { userAgent: 'fake', codexHome: '.', platformFamily: 'test', platformOs: 'test' } });
     return;
@@ -142,6 +171,12 @@ rl.on('line', (line) => {
   if (request.method !== 'turn/start') return;
   send({ id: request.id, result: { turn: { id: 'turn-1' } } });
   send({ method: 'turn/started', params: { threadId: 'thread-visible', turn: { id: 'turn-1', status: 'inProgress' } } });
+  if (${interactive}) {
+    // Server request ID intentionally collides with client's initialize ID.
+    send({ id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread-visible', turnId: 'turn-1', itemId: 'input-1', isBlocking: true,
+      questions: [{ id: 'q', header: 'Choose', question: 'A or B?', isOther: false, isSecret: false, options: [{ label: 'A', description: 'one' }, { label: 'B', description: 'two' }] }] } });
+    return;
+  }
   send({ method: 'item/started', params: { threadId: 'thread-visible', turnId: 'turn-1', item: { type: 'commandExecution', id: 'command-1', command: 'git status --short' } } });
   send({ method: 'item/completed', params: { threadId: 'thread-visible', turnId: 'turn-1', item: { type: 'commandExecution', id: 'command-1', aggregatedOutput: 'clean', exitCode: 0 } } });
   send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-visible', turnId: 'turn-1', itemId: 'message-1', delta: 'hello from app-server' } });

@@ -4,6 +4,7 @@ import type { Socket } from 'node:net';
 import WebSocket from 'ws';
 import { nextCodexForkName } from './codex-fork-name';
 import { join } from 'node:path';
+import { parseCodexInputRequest, type CodexInputPrompt, type CodexRequestId } from './codex-user-input';
 import {
   mergeProcessEnv,
   type SpawnedProcessByStdio,
@@ -34,6 +35,7 @@ export interface CodexThreadTurn {
 
 export interface CodexThreadSnapshot {
   id: string;
+  status?: { type: string; activeFlags?: string[] };
   rolloutPath?: string;
   updatedAtMs?: number;
   turns: CodexThreadTurn[];
@@ -54,6 +56,11 @@ export interface CodexThreadReaderOptions {
   /** Connect to the writer's shared daemon, never an independent app-server. */
   sharedServer?: boolean;
   remote?: string;
+  /** A subscribed observer must never auto-approve another client's tools. */
+  passive?: boolean;
+  onUserInput?(prompt: CodexInputPrompt): void;
+  onNotification?(method: string, params: Record<string, unknown>): void;
+  onDisconnect?(): void;
 }
 
 interface PendingRequest {
@@ -79,8 +86,33 @@ export class CodexThreadReader {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly terminalVerifier = new CodexTurnTerminalVerifier();
   private stopped = false;
+  private generation = 0;
+  private readonly inputs = new Set<CodexRequestId>();
+  private readonly joined = new Set<string>();
 
   constructor(private readonly options: CodexThreadReaderOptions) {}
+
+  async readThreadStatus(threadId: string): Promise<{ type: string; activeFlags?: string[] } | undefined> {
+    if (!this.options.sharedServer) throw new Error('Live status requires the writer daemon');
+    await this.ensureStarted();
+    const response = await this.request('thread/read', { threadId, includeTurns: false });
+    const status = recordValue(recordValue(recordValue(response.result)?.thread)?.status);
+    if (typeof status?.type !== 'string') return;
+    return { type: status.type, ...(Array.isArray(status.activeFlags)
+      ? { activeFlags: status.activeFlags.filter((value): value is string => typeof value === 'string') } : {}) };
+  }
+
+  /** Rejoin ONLY an already-loaded thread in the SAME daemon. No overrides. */
+  async watchLoadedThread(threadId: string): Promise<boolean> {
+    if (!this.options.sharedServer) throw new Error('Interactive subscription requires the writer daemon');
+    await this.ensureStarted();
+    if (this.joined.has(threadId)) return true;
+    const status = await this.readThreadStatus(threadId);
+    if (status?.type !== 'active') return false;
+    await this.request('thread/resume', { threadId, excludeTurns: true });
+    this.joined.add(threadId);
+    return true;
+  }
 
   async readThread(threadId: string): Promise<CodexThreadSnapshot> {
     if (this.stopped) throw new Error('Codex thread reader is stopped');
@@ -222,6 +254,7 @@ export class CodexThreadReader {
   }
 
   private async ensureStarted(): Promise<void> {
+    if (this.stopped) throw new Error('Codex thread reader is stopped');
     if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) return;
     if (this.starting) return this.starting;
@@ -250,9 +283,10 @@ export class CodexThreadReader {
     this.child = child;
     // Always drain stderr so a chatty app-server cannot block on a full pipe.
     child.stderr.on('data', () => {});
-    child.once('error', (err) => this.handleExit(err));
+    child.stdin.on('error', (err) => { if (this.child === child) this.handleExit(err); });
+    child.once('error', (err) => { if (this.child === child) this.handleExit(err); });
     child.once('exit', (code, signal) => {
-      this.handleExit(new Error(`codex app-server exited with ${code ?? signal ?? 'unknown'}`));
+      if (this.child === child) this.handleExit(new Error(`codex app-server exited with ${code ?? signal ?? 'unknown'}`));
     });
 
     if (this.options.sharedServer) {
@@ -274,8 +308,8 @@ export class CodexThreadReader {
   private async startSharedSocket(socket: WebSocket): Promise<void> {
     this.socket = socket;
     socket.on('message', (data) => this.handleLine(data.toString()));
-    socket.on('error', (error) => this.abortCurrentProcess(error));
-    socket.on('close', () => this.handleExit(new Error('Shared Codex connection closed')));
+    socket.on('error', (error) => { if (this.socket === socket) this.abortCurrentProcess(error); });
+    socket.on('close', () => { if (this.socket === socket) this.handleExit(new Error('Shared Codex connection closed')); });
     await new Promise<void>((resolve, reject) => {
       socket.once('open', resolve);
       socket.once('error', reject);
@@ -367,6 +401,13 @@ export class CodexThreadReader {
       this.handleServerRequest(message);
       return;
     }
+    if (typeof message.method === 'string') {
+      const params = recordValue(message.params) ?? {};
+      if (message.method === 'serverRequest/resolved' &&
+        (typeof params.requestId === 'string' || typeof params.requestId === 'number')) this.inputs.delete(params.requestId);
+      this.options.onNotification?.(message.method, params);
+      return;
+    }
     if (typeof message.id !== 'number') return;
     const pending = this.pending.get(message.id);
     if (!pending) return;
@@ -377,6 +418,20 @@ export class CodexThreadReader {
 
   private handleServerRequest(message: Record<string, unknown>): void {
     const id = message.id;
+    if (message.method === 'item/tool/requestUserInput' && this.options.onUserInput &&
+      (typeof id === 'string' || typeof id === 'number')) {
+      const request = parseCodexInputRequest(message.params);
+      if (!request) return; // A passive observer must not reject another client's request.
+      const generation = this.generation;
+      this.inputs.add(id);
+      this.options.onUserInput({ requestId: id, request, respond: async (answers) => {
+        if (generation !== this.generation || !this.inputs.delete(id)) return false;
+        this.write({ id, result: { answers } });
+        return true;
+      } });
+      return;
+    }
+    if (this.options.passive && message.method !== 'currentTime/read') return;
     switch (message.method) {
       case 'item/commandExecution/requestApproval':
       case 'item/fileChange/requestApproval':
@@ -410,6 +465,10 @@ export class CodexThreadReader {
   }
 
   private reset(error: Error): void {
+    this.generation++;
+    this.inputs.clear();
+    this.joined.clear();
+    this.options.onDisconnect?.();
     const socket = this.socket;
     this.socket = undefined;
     if (socket) {
@@ -431,6 +490,7 @@ export class CodexThreadReader {
 export function normalizeCodexThreadSnapshot(input: unknown): CodexThreadSnapshot | undefined {
   const raw = recordValue(input);
   if (!raw || typeof raw.id !== 'string' || !Array.isArray(raw.turns)) return undefined;
+  const status = recordValue(raw.status);
   const turns: CodexThreadTurn[] = [];
   for (const value of raw.turns) {
     const turn = recordValue(value);
@@ -455,6 +515,9 @@ export function normalizeCodexThreadSnapshot(input: unknown): CodexThreadSnapsho
   }
   return {
     id: raw.id,
+    ...(typeof status?.type === 'string' ? { status: { type: status.type,
+      ...(Array.isArray(status.activeFlags)
+        ? { activeFlags: status.activeFlags.filter((value): value is string => typeof value === 'string') } : {}) } } : {}),
     ...(typeof raw.path === 'string' ? { rolloutPath: raw.path } : {}),
     ...(typeof raw.updatedAt === 'number' ? { updatedAtMs: Math.round(raw.updatedAt * 1000) } : {}),
     turns,

@@ -14,7 +14,7 @@ export type Block =
   | { kind: 'text'; content: string; streaming: boolean }
   | { kind: 'tool'; tool: ToolEntry };
 
-export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | null;
+export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | 'waiting_input' | null;
 export type Terminal = 'running' | 'done' | 'interrupted' | 'error' | 'idle_timeout';
 
 export interface RunRuntimeStatus {
@@ -83,6 +83,10 @@ function closeStreamingText(blocks: Block[]): Block[] {
 
 export function reduce(state: RunState, evt: AgentEvent): RunState {
   switch (evt.type) {
+    case 'user_input':
+      return evt.prompt.request.isBlocking ? { ...state, footer: 'waiting_input' } : state;
+    case 'user_input_resolved':
+      return state.footer === 'waiting_input' ? { ...state, footer: 'thinking' } : state;
     case 'system':
       return {
         ...state,

@@ -18,6 +18,30 @@ describe('Codex desktop turn sync', () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
+  it('updates waiting status without new output and keeps the same answer card', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-waiting-sync-')); cleanup.push(dir);
+    const channel = createFakeChannel(); const controls = controlsForCodex();
+    let waiting = false;
+    controls.codexUserInput = { isWaiting: () => waiting } as unknown as NonNullable<Controls['codexUserInput']>;
+    const entry: SessionCatalogEntry = { key: 'entry', scopeId: 'oc_group', threadId: 'thread', agentId: 'codex',
+      cwdRealpath: dir, policyFingerprint: 'p', status: 'active', updatedAt: 1 };
+    const snapshot: CodexThreadSnapshot = { id: 'thread', turns: [externalTurn('turn', 'inProgress', 'choose', 'partial')] };
+    let now = 10_000;
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
+      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog, profileStateDir: dir,
+      intervalMs: 60_000, now: () => now, reader: { readThread: async () => snapshot, stop: async () => {} } });
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(2);
+    waiting = true; now += 100;
+    await handle.runNow();
+    expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('等待选择');
+    waiting = false; now += 100;
+    await handle.runNow();
+    expect(JSON.stringify(channel.rawClient.requests.at(-1))).not.toContain('等待选择');
+    expect(channel.sent).toHaveLength(2);
+    await handle.stop();
+  });
+
   it('mirrors external turns, skips historical turns, and resumes without duplicates', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-turn-sync-'));
     cleanup.push(dir);

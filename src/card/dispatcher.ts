@@ -84,6 +84,19 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     return;
   }
 
+  // Answer the original app-server request, NOT a new queued chat turn.
+  if (typeof payload.__codex_input === 'string') {
+    try {
+      if (!deps.controls.codexUserInput) throw new Error('交互监听器未启动，请在桌面回答');
+      await deps.controls.codexUserInput.handleAction(scope, deps.evt.messageId, payload.__codex_input, formValue);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '回答提交失败，请在桌面重试';
+      log.warn('codex-input', 'callback-rejected', { scope }); // never log form values
+      await deps.channel.send(chatId, { markdown: `⚠️ ${message}` });
+    }
+    return;
+  }
+
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd) {
     if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {

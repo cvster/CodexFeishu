@@ -1,5 +1,5 @@
 import type { CardActionEvent } from '@larksuite/channel';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
@@ -19,6 +19,26 @@ const cleanups: Array<() => Promise<void>> = [];
 describe('signed card callback dispatch', () => {
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  it('routes Codex form answers to the live request without queueing or launching a run', async () => {
+    const h = await createHarness();
+    const handleAction = vi.fn(async () => {});
+    h.controls.codexUserInput = { handleAction } as unknown as NonNullable<Controls['codexUserInput']>;
+    await h.dispatch({ __codex_input: 'opaque-token' }, { q_0: '1' });
+    expect(handleAction).toHaveBeenCalledWith('oc_group', 'om_card', 'opaque-token', { q_0: '1' });
+    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.agent.runs).toHaveLength(0);
+  });
+
+  it('checks group access before answering an interactive request', async () => {
+    const h = await createHarness();
+    h.controls.profileConfig.access.allowedChats = [];
+    const handleAction = vi.fn(async () => {});
+    h.controls.codexUserInput = { handleAction } as unknown as NonNullable<Controls['codexUserInput']>;
+    await h.dispatch({ __codex_input: 'opaque-token' }, { q_0: '1' });
+    expect(handleAction).not.toHaveBeenCalled();
+    expect(h.pending.cancel('oc_group')).toHaveLength(0);
   });
 
   it('runs built-in command callbacks only when the bridge token verifies', async () => {

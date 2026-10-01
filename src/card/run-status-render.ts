@@ -20,6 +20,8 @@ export function renderRunStatus(state: RunState): string | undefined {
   const phase =
     runtime.processRunning === false
       ? '进程已退出，正在收尾'
+      : state.footer === 'waiting_input'
+        ? '等待选择'
       : state.footer === 'tool_running'
         ? '正在调用工具'
         : state.footer === 'streaming'

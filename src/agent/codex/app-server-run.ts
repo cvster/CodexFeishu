@@ -9,6 +9,7 @@ import {
 } from '../../platform/spawn';
 import { spawnCodexProcess as spawnProcess } from '../../platform/codex-binary';
 import type { AgentEvent, AgentRun } from '../types';
+import { parseCodexInputRequest, type CodexRequestId } from '../../session/codex-user-input';
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -56,6 +57,7 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
   let terminal = false;
   let started = false;
   let lastError: string | undefined;
+  const inputRequests = new Set<CodexRequestId>();
 
   child.stderr.on('data', (chunk: Buffer) => {
     stderrChunks.push(chunk);
@@ -71,6 +73,7 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
   child.once('error', (err) => {
     lastError = err.message;
   });
+  child.stdin.on('error', (err) => { lastError = err.message; });
   child.once('exit', (code, signal) => {
     log.info('agent', 'app-server-exit', { pid: child.pid ?? null, code, signal });
   });
@@ -104,6 +107,37 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
       for await (const line of rl) {
         const message = parseRecord(line);
         if (!message) continue;
+
+        // Request IDs use a separate namespace from our client RPC IDs.
+        // Handle server requests first, even if their numeric IDs collide.
+        if (message.method === 'item/tool/requestUserInput' &&
+          (typeof message.id === 'string' || typeof message.id === 'number')) {
+          const request = parseCodexInputRequest(message.params);
+          if (!request) {
+            writeRequest(child, { id: message.id, error: { code: -32602, message: 'Malformed user input request' } });
+            continue;
+          }
+          const requestId = message.id;
+          inputRequests.add(requestId);
+          yield { type: 'user_input', prompt: { requestId, request, async respond(answers) {
+            if (terminal || !inputRequests.delete(requestId) || child.exitCode !== null || child.signalCode !== null) return false;
+            writeRequest(child, { id: requestId, result: { answers } });
+            return true;
+          } } };
+          continue;
+        }
+        if (message.method && message.id !== undefined) {
+          handleServerRequest(child, message);
+          continue;
+        }
+        if (message.method === 'serverRequest/resolved') {
+          const p = recordValue(message.params);
+          if (typeof p?.requestId === 'string' || typeof p?.requestId === 'number') {
+            inputRequests.delete(p.requestId);
+            yield { type: 'user_input_resolved', threadId: stringValue(p.threadId) ?? threadId ?? '', requestId: p.requestId };
+          }
+          continue;
+        }
 
         if (message.id === INITIALIZE_REQUEST_ID) {
           if (message.error) {
@@ -153,10 +187,6 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
 
         if (typeof message.method !== 'string') continue;
         const params = recordValue(message.params);
-
-        if (message.id !== undefined) {
-          if (handleServerRequest(child, message)) continue;
-        }
 
         switch (message.method) {
           case 'turn/started':
@@ -256,6 +286,7 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
       }
       return;
     } finally {
+      inputRequests.clear();
       rl.close();
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     }

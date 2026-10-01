@@ -105,6 +105,7 @@ import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
+  codexUserInput?: import('../bot/codex-user-input').CodexInputHandle;
   /** Refresh a persisted mirrored CardKit delivery using its original sequence owner. */
   refreshMirroredRunCard?(scope: string, messageId: string): Promise<boolean>;
   /** Codex replies have one owner, keyed by thread/turn/scope, for all input sources. */

@@ -1,9 +1,12 @@
 import type { AgentAvailability } from './preflight';
 import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissions';
+import type { CodexInputPrompt, CodexRequestId } from '../session/codex-user-input';
 
 export type { ClaudePermissionMode } from '../config/permissions';
 
 export type AgentEvent =
+  | { type: 'user_input'; prompt: CodexInputPrompt }
+  | { type: 'user_input_resolved'; threadId: string; requestId: CodexRequestId }
   | { type: 'system'; sessionId?: string; threadId?: string; turnId?: string; cwd?: string; model?: string; reasoningEffort?: string }
   | { type: 'text'; delta: string }
   | { type: 'thinking'; delta: string }

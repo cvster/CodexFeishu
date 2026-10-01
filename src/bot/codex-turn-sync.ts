@@ -215,6 +215,8 @@ async function syncOnce(
     try {
       snapshot = await reader.readThread(threadId);
       snapshot = await reconcileProjectedInterruptions(reader, snapshot, now());
+      const latest = snapshot.turns.at(-1);
+      if (latest && isCodexTurnTerminal(latest.status)) deps.controls.codexUserInput?.endTurn(threadId, latest.id);
     } catch (err) {
       log.warn('codex-turn-sync', 'thread-read-failed', {
         threadId,
@@ -427,7 +429,8 @@ async function syncTurnToScope(
 ): Promise<void> {
   const target = targetFromScope(scope);
   if (!target) return;
-  const contentHash = turnContentHash(turn);
+  const waitingForInput = controls?.codexUserInput?.isWaiting(threadId, turn.id) ?? false;
+  const contentHash = turnContentHash(turn) + (waitingForInput ? ':waiting' : '');
   let delivery = stored.deliveries[scope];
   const replyMode = controls ? getMessageReplyMode(controls.cfg) : 'card';
   if (!delivery && replyMode === 'text' && !isCodexTurnTerminal(turn.status)) return;
@@ -444,6 +447,7 @@ async function syncTurnToScope(
   }
   const renderState = (runtime: { firstSeenAtMs: number; lastActivityAtMs: number; checkedAtMs: number }) => {
     const state = codexTurnRunState(turn, runtime);
+    if (state.terminal === 'running' && waitingForInput) state.footer = 'waiting_input';
     if (projectCwd) state.projectName = projectNameFromCwd(projectCwd);
     if (controls && !getShowToolCalls(controls.cfg)) state.blocks = state.blocks.filter((block) => block.kind !== 'tool');
     return state;
