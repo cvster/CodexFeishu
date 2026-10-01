@@ -9,11 +9,15 @@ import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/c
 import { SessionStore } from '../../../src/session/store.js';
 import { SessionCatalog, type SessionCatalogIdentity } from '../../../src/session/catalog.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
+import { CodexThreadReader } from '../../../src/session/codex-thread-reader.js';
+import { registerLiveRunCardRefresh } from '../../../src/card/run-refresh.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 interface RunOverrides {
+  fromCardAction?: boolean;
+  messageId?: string;
   scope?: string;
   senderId?: string;
   chatId?: string;
@@ -211,6 +215,85 @@ describe('Bridge command contracts', () => {
     expect(JSON.stringify(lastContent(h.channel))).toContain('new.chat.form');
   });
 
+  it('forks a non-AA session into its own group without rebinding the source', async () => {
+    const h = await createHarness();
+    const source = prepareForkSource(h);
+    const forkThread = vi.fn(async () => ({ threadId: 'fork-non-aa', name: 'project (1)', cwd: source.cwdRealpath }));
+    Object.assign(h.agent, { forkThread });
+    await h.run('/fork', { chatMode: 'group' });
+    expect(forkThread).toHaveBeenCalledWith(source.threadId);
+    expect(h.channel.createdChats[0]?.options).toMatchObject({ name: 'project (1)' });
+    expect(h.sessionCatalog.activeFor(source)?.threadId).toBe('source-thread');
+    expect(h.sessionCatalog.entries().find((entry) => entry.scopeId === 'oc_fake_1')?.threadId).toBe('fork-non-aa');
+    expect(h.agent.archivedThreads).toEqual([]);
+  });
+
+  it('retries failed group creation without creating a second fork', async () => {
+    const h = await createHarness();
+    const source = prepareForkSource(h);
+    const forkThread = vi.fn(async () => ({ threadId: 'fork-retry', name: 'retry (1)', cwd: source.cwdRealpath }));
+    Object.assign(h.agent, { forkThread });
+    vi.spyOn(h.channel.rawClient.im.v1.chat, 'create').mockRejectedValueOnce(new Error('network failed'));
+    await h.run('/fork', { chatMode: 'group' });
+    expect(lastMarkdown(h.channel)).toContain('建群尚未完成');
+    await h.run('/fork', { chatMode: 'group' });
+    expect(forkThread).toHaveBeenCalledTimes(1);
+    expect(h.channel.createdChats).toHaveLength(1);
+  });
+
+  it('immediately creates an AA fork group while keeping the scanner paused through binding', async () => {
+    const h = await createHarness();
+    const source = prepareForkSource(h);
+    let paused = false;
+    h.controls.withAaSessionGroupSyncPaused = async (operation) => {
+      paused = true;
+      try { return await operation(); } finally { paused = false; }
+    };
+    const forkThread = vi.fn(async () => {
+      expect(paused).toBe(true);
+      return { threadId: 'fork-aa', name: 'AA-test (1)', cwd: source.cwdRealpath };
+    });
+    Object.assign(h.agent, { forkThread });
+    const create = h.channel.rawClient.im.v1.chat.create;
+    vi.spyOn(h.channel.rawClient.im.v1.chat, 'create').mockImplementation(async (input) => {
+      expect(paused).toBe(true);
+      return create(input);
+    });
+    await h.run('/fork', { chatMode: 'group' });
+    expect(forkThread).toHaveBeenCalledTimes(1);
+    expect(h.channel.createdChats).toHaveLength(1);
+    expect(h.channel.createdChats[0]?.options).toMatchObject({ name: 'AA-test (1)' });
+    expect(h.sessionCatalog.entries().find((entry) => entry.scopeId === 'oc_fake_1'))
+      .toMatchObject({ threadId: 'fork-aa', recentTurnReplayCount: 3 });
+    expect(lastMarkdown(h.channel)).toContain('绑定同名的新会话');
+    expect(h.sessionCatalog.activeFor(source)?.threadId).toBe('source-thread');
+    expect(paused).toBe(false);
+  });
+
+  it('keeps the exact fork title even if a same-name group exists and the title exceeds 48 characters', async () => {
+    const h = await createHarness();
+    const source = prepareForkSource(h);
+    const name = `project-${'x'.repeat(50)} (2)`;
+    h.controls.knownChats = [{ id: 'unrelated-group', name }];
+    Object.assign(h.agent, { forkThread: vi.fn(async () => ({ threadId: 'fork-exact-title', name, cwd: source.cwdRealpath })) });
+    await h.run('/fork', { chatMode: 'group' });
+    expect(h.channel.createdChats[0]?.options).toMatchObject({ name });
+    expect(h.sessionCatalog.entries().find((entry) => entry.scopeId === 'oc_fake_1')?.threadId)
+      .toBe('fork-exact-title');
+    expect(h.sessionCatalog.activeFor(source)?.threadId).toBe('source-thread');
+  });
+
+  it('does not fork a group binding belonging to another bot', async () => {
+    const h = await createHarness();
+    const source = prepareForkSource(h);
+    h.sessionCatalog.upsertActive({ ...source, botAppId: 'other-bot' });
+    const forkThread = vi.fn();
+    Object.assign(h.agent, { forkThread });
+    await h.run('/fork', { chatMode: 'group' });
+    expect(forkThread).not.toHaveBeenCalled();
+    expect(lastMarkdown(h.channel)).toContain('尚未绑定本机器人');
+  });
+
   it('asks for confirmation before starting a new session from the panel', async () => {
     const h = await createHarness();
     h.sessions.set('chat-1', 'session-old', await realpath(h.tmp.workspace));
@@ -294,6 +377,25 @@ describe('Bridge command contracts', () => {
       method: 'im.v1.chat.delete',
       params: { path: { chat_id: 'chat-1' } },
     });
+  });
+
+  it('explains 232017 after archiving and preserves the group workspace on deletion failure', async () => {
+    const h = await createHarness();
+    h.controls.profileConfig.agentKind = 'codex';
+    const cwd = await realpath(h.tmp.workspace);
+    const identity: SessionCatalogIdentity = {
+      scopeId: 'chat-1', agentId: 'codex', cwdRealpath: cwd, policyFingerprint: 'policy-1',
+    };
+    h.sessionCatalog.upsertActive({ ...identity, threadId: 'thread-no-delete-permission' });
+    vi.spyOn(h.channel.rawClient.im.v1.chat, 'delete').mockRejectedValue({
+      response: { data: { code: 232017, msg: 'No permission' } },
+    });
+    await h.run('/finish confirm', { chatMode: 'group', sessionCatalogIdentity: identity });
+    expect(h.agent.archivedThreads).toEqual(['thread-no-delete-permission']);
+    expect(h.sessionCatalog.activeFor(identity)).toBeUndefined();
+    expect(h.workspaces.cwdFor('chat-1')).toBe(cwd);
+    expect(lastMarkdown(h.channel)).toContain('Codex 会话已归档');
+    expect(lastMarkdown(h.channel)).toContain('im:chat:operate_as_owner');
   });
 
   it('can archive the Codex thread while retaining the group and workspace', async () => {
@@ -510,6 +612,61 @@ describe('Bridge command contracts', () => {
     expect(status).toContain('Fake Agent');
   });
 
+  it('refreshes a live clicked reply with no duplicate card', async () => {
+    const h = await createHarness();
+    const refresh = vi.fn(async () => {});
+    const remove = registerLiveRunCardRefresh('om_live_reply', 'chat-1', refresh);
+    try {
+      await h.run('/refresh', { chatMode: 'group', fromCardAction: true, messageId: 'om_live_reply' });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(h.channel.sent).toHaveLength(0);
+      expect(h.channel.rawClient.requests).toHaveLength(0);
+    } finally { remove(); }
+  });
+
+  it('delegates mirrored refresh to its original CardKit sequence owner', async () => {
+    const h = await createHarness();
+    h.controls.refreshMirroredRunCard = vi.fn(async () => true);
+    await h.run('/refresh', { chatMode: 'group', fromCardAction: true, messageId: 'om_mirrored_reply' });
+    expect(h.controls.refreshMirroredRunCard).toHaveBeenCalledWith('chat-1', 'om_mirrored_reply');
+    expect(h.channel.sent).toHaveLength(0);
+  });
+
+  it('updates pre-restart bridge cards in place, retaining typed refresh behavior', async () => {
+    const h = await createHarness();
+    prepareForkSource(h);
+    const read = vi.spyOn(CodexThreadReader.prototype, 'readThread').mockResolvedValue({
+      id: 'thread-source', turns: [{ id: 'turn-refresh', status: 'completed', items: [
+        { type: 'agentMessage', text: 'fresh answer' },
+      ] }],
+    });
+    try {
+      await h.run('/refresh', { chatMode: 'group', fromCardAction: true, messageId: 'om_old_reply' });
+      expect(h.channel.sent).toHaveLength(0);
+      expect(h.channel.rawClient.requests.at(-1)).toMatchObject({
+        method: 'im.v1.message.patch', params: { messageId: 'om_old_reply' },
+      });
+      expect(JSON.stringify(h.channel.rawClient.requests.at(-1))).toContain('fresh answer');
+      await h.run('/refresh', { chatMode: 'group' });
+      expect(h.channel.sent).toHaveLength(1);
+    } finally { read.mockRestore(); }
+  });
+
+  it('never falls back to a duplicate card after refresh delivery failure', async () => {
+    const h = await createHarness();
+    prepareForkSource(h);
+    const read = vi.spyOn(CodexThreadReader.prototype, 'readThread').mockResolvedValue({
+      id: 'thread-source', turns: [{ id: 'turn-refresh', status: 'completed', items: [] }],
+    });
+    vi.spyOn(h.channel, 'updateCard').mockRejectedValue(new Error('timeout'));
+    try {
+      await h.run('/refresh', { chatMode: 'group', fromCardAction: true, messageId: 'om_old_reply' });
+      expect(h.channel.sent).toHaveLength(1);
+      expect(lastMarkdown(h.channel)).toContain('原卡片已保留');
+      expect(h.channel.sent.some((message) => 'card' in (message.content as object))).toBe(false);
+    } finally { read.mockRestore(); }
+  });
+
   it('shows workspace paths in group-visible /status replies', async () => {
     const h = await createHarness();
 
@@ -585,6 +742,17 @@ describe('Bridge command contracts', () => {
   });
 });
 
+function prepareForkSource(h: Harness) {
+  h.controls.profileConfig.agentKind = 'codex';
+  h.controls.profileConfig.codex = { binaryPath: 'codex', inheritCodexHome: true };
+  const source = {
+    scopeId: 'chat-1', agentId: 'codex' as const, cwdRealpath: h.workspaces.cwdFor('chat-1')!,
+    policyFingerprint: 'fork-policy', threadId: 'source-thread', botAppId: 'app-id',
+  };
+  h.sessionCatalog.upsertActive(source);
+  return source;
+}
+
 async function createHarness(): Promise<Harness> {
   const tmp = await createTmpProfile('commands-v1-');
   const channel = createFakeChannel();
@@ -618,11 +786,11 @@ async function createHarness(): Promise<Harness> {
     const scope = overrides.scope ?? chatId;
     return tryHandleCommand({
       channel: channel as unknown as CommandContext['channel'],
-      msg: message(content, {
+      msg: { ...message(content, {
         chatId,
         senderId: overrides.senderId ?? 'ou-admin',
         mentions: overrides.mentions ?? [],
-      }),
+      }), ...(overrides.messageId ? { messageId: overrides.messageId } : {}) },
       scope,
       chatMode: overrides.chatMode ?? 'p2p',
       sessions,
@@ -633,6 +801,7 @@ async function createHarness(): Promise<Harness> {
       activeRuns,
       controls,
       formValue: overrides.formValue,
+      fromCardAction: overrides.fromCardAction,
       dmGroupCreationOnly: overrides.dmGroupCreationOnly,
       codexHistoryProvider: overrides.codexHistoryProvider,
     });

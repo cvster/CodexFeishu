@@ -150,7 +150,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               content:
                 '**消息回复方式**\n' +
                 '_纯文本:agent 跑完一次性发出,不流式,体感最轻_\n' +
-                '_交互卡片:流式显示，并在回答末尾提供停止、控制台和刷新按钮_\n' +
+                '_交互卡片:流式显示，并在回答末尾提供停止、控制台、刷新和分叉按钮_\n' +
                 '_流式消息:轻量 markdown 卡片,飞书原生打字机动画,不支持按钮_',
             },
             {
@@ -210,53 +210,6 @@ export function configFormCard(opts: ConfigFormOpts): object {
               default_value: String(opts.maxConcurrentRuns),
               placeholder: { tag: 'plain_text', content: '10' },
               input_type: 'text',
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**run 探活(分钟)**\n' +
-                '_agent 长时间没输出时自动 kill,防止假死_\n' +
-                '_0 = 关闭(默认),范围 1-120。可被 `/timeout` 在单个 scope 覆盖_',
-            },
-            {
-              tag: 'input',
-              name: 'run_idle_timeout_minutes',
-              default_value: String(opts.runIdleTimeoutMinutes),
-              placeholder: { tag: 'plain_text', content: '0' },
-              input_type: 'text',
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**群里需要 @ bot**\n' +
-                '_是(默认):群和话题群里,不 @ bot 的消息不会触发回复,bot 不接群里聊天_\n' +
-                '_否:任何消息都会发给 agent(0.1.21 及更早版本的行为)_\n' +
-                '_私聊永远不需要 @;`@全员` 永远不响应_',
-            },
-            {
-              tag: 'select_static',
-              name: 'require_mention_in_group',
-              initial_option: opts.requireMentionInGroup ? 'yes' : 'no',
-              options: [
-                { text: { tag: 'plain_text', content: '是(默认)' }, value: 'yes' },
-                { text: { tag: 'plain_text', content: '否' }, value: 'no' },
-              ],
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**lark-cli 身份策略**\n' +
-                '_只允许应用身份:使用 bot/app 能力,不访问个人资源_\n' +
-                '_允许用户身份:保留应用身份,并允许已授权用户访问个人日历、邮箱、云盘等资源_',
-            },
-            {
-              tag: 'select_static',
-              name: 'lark_cli_identity',
-              initial_option: opts.larkCliIdentity,
-              options: [
-                { text: { tag: 'plain_text', content: '只允许应用身份' }, value: 'bot-only' },
-                { text: { tag: 'plain_text', content: '允许用户身份' }, value: 'user-default' },
-              ],
             },
             { tag: 'hr' },
             collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
@@ -337,9 +290,6 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**COT 过程消息**:\`${cotLabel}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
-            `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
-            `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
-            `**lark-cli 身份策略**:\`${opts.larkCliIdentity === 'user-default' ? '允许用户身份' : '只允许应用身份'}\`\n\n` +
             '🔒 **访问控制**\n' +
             `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +

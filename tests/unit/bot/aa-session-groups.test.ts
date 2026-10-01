@@ -8,9 +8,34 @@ import {
   aaSessionVersion,
   isAaSession,
   syncAaSessionGroupsOnce,
+  startAaSessionGroupSync,
 } from '../../../src/bot/aa-session-groups.js';
 
 describe('AA session automatic groups', () => {
+  it('pauses scans during native fork naming and resumes them after an error', async () => {
+    const historyProvider = vi.fn(async () => []);
+    const profileConfig = createDefaultProfileConfig({ agentKind: 'codex',
+      accounts: { app: { id: 'app', secret: 'secret', tenant: 'feishu' } },
+      codex: { binaryPath: 'codex' } });
+    const handle = startAaSessionGroupSync({
+      channel: { listChats: async () => [] } as unknown as LarkChannel,
+      controls: { profileConfig, botOwnerId: 'ou_owner' } as Controls,
+      sessionCatalog: { entries: () => [] } as unknown as SessionCatalog,
+      workspaces: {} as WorkspaceStore,
+      profileStateDir: process.cwd(), historyProvider,
+    });
+    try {
+      await handle.runNow();
+      const calls = historyProvider.mock.calls.length;
+      await expect(handle.withPaused(async () => {
+        await handle.runNow();
+        expect(historyProvider).toHaveBeenCalledTimes(calls);
+        throw new Error('fork failed');
+      })).rejects.toThrow('fork failed');
+      await handle.runNow();
+      expect(historyProvider).toHaveBeenCalledTimes(calls + 1);
+    } finally { handle.stop(); }
+  });
   it('matches only named sessions whose trimmed name starts with uppercase AA', () => {
     const base = {
       threadId: 'thread-1',
@@ -26,6 +51,7 @@ describe('AA session automatic groups', () => {
   });
 
   it('recognizes one or two trailing digits as a session version', () => {
+    expect(aaSessionVersion('AA-脚踝自动标零3 (1)')).toEqual({ family: 'AA-脚踝自动标零3 (1)' });
     expect(aaSessionVersion('AA-脚踝自动标零2')).toEqual({
       family: 'AA-脚踝自动标零',
       version: 2,

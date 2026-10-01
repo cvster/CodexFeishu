@@ -2,16 +2,19 @@ import type { RunState } from './run-state';
 
 export function renderRunStatus(state: RunState): string | undefined {
   const runtime = state.runtime;
-  const execution = state.execution
-    ? `模型 ${state.execution.model ?? 'CLI 默认（待确认）'} · 思考 ${state.execution.reasoningEffort ?? '未知'}`
-    : '';
-  const executionSuffix = execution ? ` · ${execution}` : '';
-  if (!runtime) return execution || undefined;
+  const context = [
+    ...(state.projectName ? [`项目 ${state.projectName}`] : []),
+    ...(state.execution
+      ? [`${state.execution.model ?? 'CLI 默认（待确认）'} · ${state.execution.reasoningEffort ?? '未知'}`]
+      : []),
+  ].join(' · ');
+  const contextSuffix = context ? ` · ${context}` : '';
+  if (!runtime) return context || undefined;
 
   const elapsed = formatDuration(Math.max(0, runtime.checkedAtMs - runtime.startedAtMs));
   const updatedAt = formatClockTime(runtime.checkedAtMs);
   if (state.terminal !== 'running') {
-    return `${terminalLabel(state)} · 用时 ${elapsed} · 最近更新 ${updatedAt}${executionSuffix}`;
+    return `${terminalLabel(state)} · 用时 ${elapsed} · 最近更新 ${updatedAt}${contextSuffix}`;
   }
 
   const phase =
@@ -24,14 +27,15 @@ export function renderRunStatus(state: RunState): string | undefined {
           : '正在思考';
   const inactiveMs = Math.max(0, runtime.checkedAtMs - runtime.lastActivityAtMs);
   const activity = inactiveMs >= 10_000 ? ` · 最近活动 ${formatDuration(inactiveMs)}前` : '';
-  return `运行中 · ${phase} · 已运行 ${elapsed}${activity} · 最近更新 ${updatedAt}${executionSuffix}`;
+  return `运行中 · ${phase} · 已运行 ${elapsed}${activity} · 最近更新 ${updatedAt}${contextSuffix}`;
 }
 
 /** Feishu CardKit markdown supports semantic font colors. */
 export function renderColoredRunStatus(state: RunState): string | undefined {
   const status = renderRunStatus(state);
   if (!status) return undefined;
-  return `<font color='${runStatusColor(state)}'>${status}</font>`;
+  const escaped = status.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<font color='${runStatusColor(state)}'>${escaped}</font>`;
 }
 
 export function runStatusColor(state: RunState): 'green' | 'red' {

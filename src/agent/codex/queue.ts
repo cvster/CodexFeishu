@@ -1,5 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
+import { access } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import {
@@ -59,12 +61,22 @@ const INTERRUPTED_SETTLE_MS = 3_000;
  */
 export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   const controller = new AbortController();
+  const remote = options.remote ?? options.env?.CODEX_QUEUE_REMOTE ?? process.env.CODEX_QUEUE_REMOTE;
   const reader = new CodexThreadReader({
     binary: options.binary,
     profileStateDir: options.profileStateDir,
     ...(options.codexHome ? { codexHome: options.codexHome } : {}),
     inheritCodexHome: options.inheritCodexHome,
     env: options.env,
+  });
+  const settingsClient = new CodexThreadReader({
+    binary: options.binary,
+    profileStateDir: options.profileStateDir,
+    ...(options.codexHome ? { codexHome: options.codexHome } : {}),
+    inheritCodexHome: options.inheritCodexHome,
+    env: options.env,
+    sharedServer: true,
+    remote,
   });
   let activeChild: CodexChild | undefined;
   let selectedTurnId: string | undefined;
@@ -89,6 +101,33 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
         return;
       }
       const knownTurns = new Set(baseline.turns.map((turn) => turn.id));
+      // Queue CLI flags configure the client, not the loaded thread. Update
+      // the actual writer before adding input; never resume a competing server.
+      const codexHome = options.codexHome ?? options.env?.CODEX_HOME ?? process.env.CODEX_HOME ??
+        (options.inheritCodexHome ? join(homedir(), '.codex') : join(options.profileStateDir, 'codex-home'));
+      const sharedEndpointAvailable = Boolean(remote) || await access(
+        join(codexHome, 'app-server-control', 'app-server-control.sock'),
+      ).then(() => true, () => false);
+      if ((options.model || options.reasoningEffort) && sharedEndpointAvailable) {
+        await settingsClient.updateThreadSettings(options.threadId, {
+          model: options.model,
+          reasoningEffort: options.reasoningEffort,
+        });
+        log.info('agent', 'queue-settings-updated', {
+          threadId: options.threadId,
+          model: options.model,
+          reasoningEffort: options.reasoningEffort,
+        });
+      } else if (options.model || options.reasoningEffort) {
+        log.warn('agent', 'queue-settings-unavailable', {
+          threadId: options.threadId,
+          message: 'No shared Codex endpoint; queued input will use the writer’s current model and effort',
+        });
+      }
+      if (controller.signal.aborted) {
+        yield interrupted(options.threadId);
+        return;
+      }
       registerCodexQueuedTurnClaim(
         options.clientUserMessageId,
         options.threadId,
@@ -100,7 +139,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
         sandbox: options.sandbox,
         threadId: options.threadId,
         prompt: options.prompt,
-        remote: options.remote ?? options.env?.CODEX_QUEUE_REMOTE ?? process.env.CODEX_QUEUE_REMOTE,
+        remote,
         images: options.images,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
@@ -122,7 +161,6 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
       });
       yield {
         type: 'system', threadId: options.threadId, cwd: options.cwd,
-        model: options.model, reasoningEffort: options.reasoningEffort,
       };
 
       const emittedText = new Map<string, string>();
@@ -243,6 +281,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
     } finally {
       releaseCodexQueuedTurnClaim(options.clientUserMessageId);
       await reader.stop();
+      await settingsClient.stop();
       settled = true;
       settle();
     }

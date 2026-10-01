@@ -54,6 +54,21 @@ afterEach(async () => {
 });
 
 describe('profile-aware account and config commands', () => {
+  it('hides advanced identity/mention/watchdog options without resetting them on submit', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness({ preferences: { runIdleTimeoutMinutes: 27 } });
+    await h.command('/config');
+    const card = JSON.stringify(h.channel.sent.at(-1)?.content);
+    for (const field of ['require_mention_in_group', 'lark_cli_identity', 'run_idle_timeout_minutes']) {
+      expect(card).not.toContain(field);
+    }
+    for (const label of ['群里需要 @ bot', 'lark-cli 身份策略', 'run 探活']) expect(card).not.toContain(label);
+    await h.command('/config submit', { message_reply: 'text' });
+    const root = await waitForRoot(h.rootDir, (candidate) => candidate.profiles.claude?.preferences.messageReply === 'text');
+    expect(root.profiles.claude?.preferences.runIdleTimeoutMinutes).toBe(27);
+    expect(root.profiles.claude?.access.requireMentionInGroup).toBe(true);
+    expect(root.profiles.claude?.larkCli.identityPreset).toBe('bot-only');
+  });
   it('sends model settings independently before recalling the clicked console', async () => {
     const h = await createHarness();
     const send = vi.spyOn(h.channel, 'send');

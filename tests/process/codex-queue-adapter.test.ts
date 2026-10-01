@@ -1,6 +1,8 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createCodexQueueRun } from '../../src/agent/codex/queue.js';
 import type { AgentEvent } from '../../src/agent/types.js';
@@ -32,6 +34,57 @@ describe('CodexAdapter native queue mode', () => {
       { type: 'text', delta: 'queued response' },
       { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
     ]);
+  });
+
+  it('updates the shared writer before queueing and reports actual model and effort', async () => {
+    const fake = await createQueueCodex();
+    cleanup.push(fake.dir);
+    const run = createCodexQueueRun({
+      runId: 'queue-model-change', binary: fake.path, profileStateDir: fake.dir,
+      inheritCodexHome: true, cwd: fake.dir, sandbox: 'workspace-write',
+      prompt: 'use the selected model', threadId: 'thread-existing',
+      clientUserMessageId: 'lark-channel-bridge:queue-model-change',
+      model: 'gpt-6-sol', reasoningEffort: 'high', remote: 'unix://',
+    });
+    const events = await collect(run.events);
+    expect(events.filter((event) => event.type === 'system')).toEqual([
+      { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'system', threadId: 'thread-existing', model: 'gpt-6-sol', reasoningEffort: 'high' },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    expect(JSON.parse(await readFile(join(fake.dir, 'settings.json'), 'utf8'))).toEqual({
+      threadId: 'thread-existing', model: 'gpt-6-sol', effort: 'high',
+    });
+  });
+
+  it('does not queue when the writer rejects the selected model', async () => {
+    const fake = await createQueueCodex();
+    cleanup.push(fake.dir);
+    const run = createCodexQueueRun({
+      runId: 'queue-invalid-model', binary: fake.path, profileStateDir: fake.dir,
+      inheritCodexHome: true, cwd: fake.dir, sandbox: 'workspace-write',
+      prompt: 'must not run with the old model', threadId: 'thread-existing',
+      clientUserMessageId: 'lark-channel-bridge:queue-invalid-model',
+      model: 'unsupported-model', remote: 'unix://',
+    });
+    expect(await collect(run.events)).toEqual([
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('model unavailable') }),
+    ]);
+    await expect(readFile(join(fake.dir, 'state.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('loads a dormant thread only inside the shared daemon before updating settings', async () => {
+    const fake = await createQueueCodex('completed', true);
+    cleanup.push(fake.dir);
+    const run = createCodexQueueRun({
+      runId: 'queue-dormant', binary: fake.path, profileStateDir: fake.dir,
+      inheritCodexHome: true, cwd: fake.dir, sandbox: 'workspace-write',
+      prompt: 'continue dormant thread', threadId: 'thread-existing',
+      clientUserMessageId: 'lark-channel-bridge:queue-dormant',
+      model: 'gpt-6-sol', reasoningEffort: 'high', remote: 'unix://',
+    });
+    expect((await collect(run.events)).at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    expect(await readFile(join(fake.dir, 'resumed.txt'), 'utf8')).toBe('proxy');
   });
 
   it('finishes an interrupted queued turn instead of polling forever', async () => {
@@ -115,6 +168,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 async function createQueueCodex(
   turnStatus: 'completed' | 'interrupted' | 'provisional-interrupted' |
     'provisional-completed-interrupted' = 'completed',
+  startUnloaded = false,
 ): Promise<{ dir: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-queue-test-'));
   const statePath = join(dir, 'state.json');
@@ -123,9 +177,13 @@ async function createQueueCodex(
   const script = `#!/usr/bin/env node
 import { createInterface } from 'node:readline';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { Duplex } from 'node:stream';
+import WebSocket from ${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve('ws')).href)};
+const { WebSocketServer } = WebSocket;
 const args = process.argv.slice(2);
 const statePath = ${JSON.stringify(statePath)};
 const rolloutPath = ${JSON.stringify(join(dir, 'rollout.jsonl'))};
+const settingsPath = ${JSON.stringify(join(dir, 'settings.json'))};
 let queuedReads = 0;
 let terminalWritten = false;
 if (args[0] === 'queue') {
@@ -134,15 +192,43 @@ if (args[0] === 'queue') {
   writeFileSync(rolloutPath, JSON.stringify({
     type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-queued' }
   }) + '\\n');
+  if (existsSync(settingsPath)) {
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    appendFileSync(rolloutPath, JSON.stringify({
+      type: 'turn_context', payload: { turn_id: 'turn-queued', model: settings.model, effort: settings.effort }
+    }) + '\\n');
+  }
   console.log('Queued message queue-1 for thread thread-existing.');
   process.exit(0);
 }
 if (args[0] !== 'app-server') process.exit(3);
-const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on('line', (line) => {
-  const req = JSON.parse(line);
+let socket;
+let loaded = ${JSON.stringify(!startUnloaded)};
+const send = value => socket ? socket.send(JSON.stringify(value)) : console.log(JSON.stringify(value));
+function handle(req) {
   if (req.method === 'initialize') {
-    console.log(JSON.stringify({ id: req.id, result: { userAgent: 'fake' } }));
+    send({ id: req.id, result: { userAgent: 'fake' } });
+    return;
+  }
+  if (req.method === 'thread/settings/update') {
+    if (args[1] !== 'proxy') process.exit(5);
+    if (!loaded) {
+      send({ id: req.id, error: { code: -32600, message: 'thread not found: thread-existing' } });
+      return;
+    }
+    if (req.params.model === 'unsupported-model') {
+      send({ id: req.id, error: { code: -32600, message: 'model unavailable' } });
+      return;
+    }
+    writeFileSync(settingsPath, JSON.stringify(req.params));
+    send({ id: req.id, result: {} });
+    return;
+  }
+  if (req.method === 'thread/resume') {
+    if (args[1] !== 'proxy') process.exit(6);
+    loaded = true;
+    writeFileSync(${JSON.stringify(join(dir, 'resumed.txt'))}, args[1]);
+    send({ id: req.id, result: {} });
     return;
   }
   if (req.method !== 'thread/read') return;
@@ -186,13 +272,36 @@ rl.on('line', (line) => {
         : [])
     ]
   }] : [];
-  console.log(JSON.stringify({
+  send({
     id: req.id,
     result: { thread: {
       id: 'thread-existing', path: rolloutPath, updatedAt: Date.now() / 1000, turns
     } }
-  }));
-});
+  });
+}
+if (args[1] === 'proxy') {
+  const stream = Duplex.from({ readable: process.stdin, writable: process.stdout });
+  const server = new WebSocketServer({ noServer: true });
+  let handshake = Buffer.alloc(0);
+  const upgrade = chunk => {
+    handshake = Buffer.concat([handshake, chunk]);
+    const end = handshake.indexOf('\\r\\n\\r\\n');
+    if (end < 0) return;
+    stream.removeListener('data', upgrade);
+    const lines = handshake.subarray(0, end).toString().split('\\r\\n');
+    const headers = Object.fromEntries(lines.slice(1).map(line => {
+      const index = line.indexOf(':');
+      return [line.slice(0, index).toLowerCase(), line.slice(index + 1).trim()];
+    }));
+    server.handleUpgrade({ method: 'GET', url: '/', headers }, stream, handshake.subarray(end + 4), ws => {
+      socket = ws;
+      socket.on('message', data => handle(JSON.parse(data.toString())));
+    });
+  };
+  stream.on('data', upgrade);
+} else {
+  createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line => handle(JSON.parse(line)));
+}
 `;
   await writeFile(scriptPath, script, 'utf8');
   if (process.platform === 'win32') {

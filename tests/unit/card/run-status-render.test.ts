@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderCard } from '../../../src/card/run-renderer.js';
 import {
   initialState,
+  projectNameFromCwd,
   reduce,
   startRunRuntime,
   updateRunRuntime,
@@ -15,13 +16,38 @@ import {
 import { renderText } from '../../../src/card/text-renderer.js';
 
 describe('run status rendering', () => {
+  it('derives the project name from Windows and POSIX working directories', () => {
+    expect(projectNameFromCwd('C:\\software\\my-project\\')).toBe('my-project');
+    expect(projectNameFromCwd('/home/pc/code/my-project/')).toBe('my-project');
+    expect(projectNameFromCwd('/')).toBe('/');
+    const state = reduce(initialState, {
+      type: 'system', cwd: '/home/pc/code/my-project',
+      model: 'gpt-6.1-sol', reasoningEffort: 'high',
+    });
+    expect(renderRunStatus(state)).toBe('项目 my-project · gpt-6.1-sol · high');
+    expect(renderText(reduce(state, { type: 'done', terminationReason: 'normal' })))
+      .toContain('项目 my-project');
+  });
+
+  it('escapes project and execution metadata in colored status markdown', () => {
+    const status = renderColoredRunStatus({
+      ...initialState, projectName: '<project>&',
+      execution: { model: '<model>', reasoningEffort: 'high' },
+    });
+    expect(status).toContain('&lt;project&gt;&amp;');
+    expect(status).toContain('&lt;model&gt;');
+    expect(status).not.toContain('<project>');
+  });
+
   it('shows actual per-turn model and effort during streaming and after completion', () => {
     let state = startRunRuntime(initialState, 1_000);
     state = reduce(state, { type: 'system', model: 'gpt-5.6-sol', reasoningEffort: 'high' });
-    expect(renderText(state)).toContain('模型 gpt-5.6-sol · 思考 high');
+    expect(renderText(state)).toContain('gpt-5.6-sol · high');
+    expect(renderText(state)).not.toContain('模型 ');
+    expect(renderText(state)).not.toContain(' · 思考 high');
     state = reduce(state, { type: 'system', model: 'gpt-6-sol', reasoningEffort: 'xhigh' });
     state = reduce(state, { type: 'done', terminationReason: 'normal' });
-    expect(JSON.stringify(renderCard(state))).toContain('模型 gpt-6-sol · 思考 xhigh');
+    expect(JSON.stringify(renderCard(state))).toContain('gpt-6-sol · xhigh');
     expect(renderText(state)).toContain('✅ 已完成');
   });
   it('shows phase, elapsed time, and recent activity for a running task', () => {

@@ -1,6 +1,8 @@
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 import { renderColoredRunStatus } from './run-status-render';
+import type { RunControlIcons } from './run-control-icons';
+import type { RunButtonAction } from './run-button-images';
 
 const REASONING_MAX = 1500;
 const COLLAPSE_TOOL_THRESHOLD = 3;
@@ -15,7 +17,7 @@ interface TextGroup {
 }
 type Group = ToolGroup | TextGroup;
 
-export interface RunCardRenderOptions {
+export interface RunCardRenderOptions extends RunControlIcons {
   signCallback?: (action: string) => string;
   /** External Codex turns have no bridge-owned RunHandle to interrupt. */
   showStopButton?: boolean;
@@ -53,11 +55,11 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     const status = renderColoredRunStatus(state);
     if (status) elements.push(noteMd(status));
     else if (state.footer) elements.push(footerStatus(state.footer));
-    elements.push(controlButtonRow(options, options.showStopButton !== false));
+    elements.push(controlButtonRow(options));
   } else {
     const status = renderColoredRunStatus(state);
     if (status) elements.push(noteMd(status));
-    elements.push(controlButtonRow(options, options.showStopButton !== false));
+    elements.push(controlButtonRow(options));
   }
 
   return {
@@ -186,53 +188,105 @@ function noteMd(content: string): object {
   return { tag: 'markdown', content, text_size: 'notation' };
 }
 
-function stopButton(options: RunCardRenderOptions): object {
+interface RunControl {
+  icon: object;
+  color: string;
+  hover_tips: { tag: 'plain_text'; content: string };
+  behaviors: [{ type: 'callback'; value: Record<string, unknown> }];
+}
+
+function stopButton(options: RunCardRenderOptions): RunControl {
   const value: Record<string, unknown> = { cmd: 'stop' };
   if (options.signCallback) {
     value.__bridge_cb = true;
     value.bridge_token = options.signCallback('stop');
   }
   return {
-    tag: 'button',
-    text: { tag: 'plain_text', content: '停止' },
-    type: 'danger',
+    icon: { tag: 'standard_icon', token: 'stop_outlined', color: 'red' },
+    color: 'red',
+    hover_tips: { tag: 'plain_text', content: '停止当前回复' },
     behaviors: [{ type: 'callback', value }],
   };
 }
 
-function controlButtonRow(options: RunCardRenderOptions, showStop: boolean): object {
+function controlButtonRow(options: RunCardRenderOptions): object {
   const buttons = [
-    ...(showStop ? [stopButton(options)] : []),
-    taskPanelButton(),
-    refreshButton(),
+    ...(options.showStopButton !== false ? [stopButton(options)] : []),
+    iconButton('setting_outlined', 'config', '模型与推理设置'),
+    iconButton('refresh_outlined', 'refresh', '刷新会话状态', 'green'),
+    forkButton(options),
+    archiveButton(),
   ];
   return {
     tag: 'column_set',
     flex_mode: 'none',
     horizontal_spacing: 'small',
-    columns: buttons.map((button) => ({
+    columns: buttons.map((button) => {
+      const action = button.behaviors[0].value.cmd as RunButtonAction;
+      const imageKey = options.buttonImageKeys?.[action];
+      return {
       tag: 'column',
+      // Icon-only controls have no labels to truncate. Equal weighted columns
+      // distribute their centers across the entire card on desktop and mobile.
       width: 'weighted',
       weight: 1,
-      elements: [button],
-    })),
+      horizontal_align: 'center',
+      elements: [{
+        tag: 'interactive_container',
+        width: '32px', height: '32px',
+        // Uploaded images include both the frame and centered glyph. Do not
+        // add a second client-drawn border around them.
+        has_border: !imageKey, border_color: button.color,
+        corner_radius: '3px', padding: '0px',
+        horizontal_align: 'center', vertical_align: 'center',
+        hover_tips: button.hover_tips,
+        behaviors: button.behaviors,
+        elements: imageKey ? [{
+          tag: 'img', img_key: imageKey,
+          size: '32px 32px', scale_type: 'crop_center',
+          margin: '0px', transparent: true, preview: false,
+          alt: button.hover_tips,
+        }] : [{
+          // Markdown prefix icons remain left-anchored even with centered
+          // text. Center a fixed glyph-width column, not an empty text line.
+          tag: 'column_set', flex_mode: 'none', margin: '0px',
+          horizontal_align: 'center', horizontal_spacing: '0px',
+          columns: [{
+            tag: 'column', width: '16px', padding: '0px', margin: '0px',
+            elements: [{
+              tag: 'markdown', content: '', text_size: 'notation',
+              margin: '0px', text_align: 'left', icon: button.icon,
+            }],
+          }],
+        }],
+      }],
+      };
+    }),
   };
 }
 
-function taskPanelButton(): object {
+function iconButton(token: string, cmd: string, label: string, color = 'grey'): RunControl {
   return {
-    tag: 'button',
-    text: { tag: 'plain_text', content: '控制台' },
-    type: 'primary',
-    behaviors: [{ type: 'callback', value: { cmd: 'panel' } }],
+    icon: { tag: 'standard_icon', token, color },
+    color,
+    hover_tips: { tag: 'plain_text', content: label },
+    behaviors: [{ type: 'callback', value: { cmd } }],
   };
 }
 
-function refreshButton(): object {
+function forkButton(options: RunCardRenderOptions): RunControl {
+  const button = iconButton('mindmap-down_outlined', 'fork', '分叉会话并创建新群', 'blue');
+  return options.forkIconKey
+    ? { ...button, icon: { tag: 'custom_icon', img_key: options.forkIconKey } }
+    : button;
+}
+
+function archiveButton(): RunControl {
   return {
-    tag: 'button',
-    text: { tag: 'plain_text', content: '刷新' },
-    behaviors: [{ type: 'callback', value: { cmd: 'refresh' } }],
+    icon: { tag: 'standard_icon', token: 'archive_outlined', color: 'red' },
+    color: 'red',
+    hover_tips: { tag: 'plain_text', content: '归档会话（打开终止任务确认）' },
+    behaviors: [{ type: 'callback', value: { cmd: 'finish' } }],
   };
 }
 

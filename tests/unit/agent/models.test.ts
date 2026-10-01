@@ -16,6 +16,8 @@ describe('agent model catalog', () => {
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
     expect(claude.map((m) => m.value)).toContain('claude-opus-4-8');
     expect(codex.map((m) => m.value)).toContain('gpt-6-astra');
+    expect(codex.map((m) => m.value)).toContain('gpt-6.1-sol');
+    expect(resolveModelArg('codex', 'gpt-6.1-sol')).toBe('gpt-6.1-sol');
     expect(codex.map((m) => m.value)).toContain('gpt-5.6-sol');
     expect(claude.map((m) => m.value)).not.toContain('gpt-5.6-sol');
   });
@@ -43,6 +45,7 @@ describe('agent model catalog', () => {
   });
 
   it('labels a stored value using the picker option text', () => {
+    expect(modelLabel('codex', 'gpt-6.1-sol')).toBe('GPT-6.1-Sol');
     expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8（最新）');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
   });

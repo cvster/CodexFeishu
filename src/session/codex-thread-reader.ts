@@ -1,5 +1,8 @@
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline';
-import type { Readable, Writable } from 'node:stream';
+import { Duplex, type Readable, type Writable } from 'node:stream';
+import type { Socket } from 'node:net';
+import WebSocket from 'ws';
+import { nextCodexForkName } from './codex-fork-name';
 import { join } from 'node:path';
 import {
   mergeProcessEnv,
@@ -48,6 +51,9 @@ export interface CodexThreadReaderOptions {
   inheritCodexHome?: boolean;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Connect to the writer's shared daemon, never an independent app-server. */
+  sharedServer?: boolean;
+  remote?: string;
 }
 
 interface PendingRequest {
@@ -66,6 +72,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  */
 export class CodexThreadReader {
   private child: CodexChild | undefined;
+  private socket: WebSocket | undefined;
   private rl: ReadLineInterface | undefined;
   private starting: Promise<void> | undefined;
   private nextRequestId = 2;
@@ -137,6 +144,69 @@ export class CodexThreadReader {
     await this.request('thread/queue/delete', { threadId, queuedSubmissionId });
   }
 
+  async updateThreadSettings(
+    threadId: string,
+    settings: { model?: string; reasoningEffort?: string },
+  ): Promise<void> {
+    if (!this.options.sharedServer) throw new Error('Thread settings require the shared Codex daemon');
+    await this.ensureStarted();
+    const params = {
+      threadId,
+      ...(settings.model ? { model: settings.model } : {}),
+      ...(settings.reasoningEffort ? { effort: settings.reasoningEffort } : {}),
+    };
+    try {
+      await this.request('thread/settings/update', params);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('thread not found:')) throw error;
+      // Load dormant history only in the SAME writer daemon. Never fall back
+      // to resuming through the read-only/embedded server and competing with App.
+      await this.request('thread/resume', { threadId });
+      await this.request('thread/settings/update', params);
+    }
+  }
+
+  async forkThread(threadId: string): Promise<{ threadId: string; name: string; cwd: string }> {
+    if (this.stopped) throw new Error('Codex thread reader is stopped');
+    await this.ensureStarted();
+    const sourceResponse = await this.request('thread/read', { threadId, includeTurns: false });
+    const source = recordValue(recordValue(sourceResponse.result)?.thread);
+    const sourceName = stringValue(source?.name)?.trim() || 'Codex会话';
+    const response = await this.request('thread/fork', {
+      threadId,
+      excludeTurns: true,
+      deferGoalContinuation: true,
+    });
+    const result = recordValue(response.result);
+    const fork = recordValue(result?.thread);
+    const forkId = stringValue(fork?.id);
+    const cwd = stringValue(fork?.cwd) ?? stringValue(result?.cwd) ?? stringValue(source?.cwd);
+    if (!forkId || !cwd) throw new Error('thread/fork returned malformed thread metadata');
+    let name = stringValue(fork?.name)?.trim();
+    if (!name || name === sourceName) {
+      const names: string[] = [];
+      const base = sourceName.replace(/\s+\(\d+\)$/, '');
+      for (const archived of [false, true]) {
+        let cursor: string | undefined;
+        do {
+          const listed = await this.request('thread/list', {
+            limit: 100, searchTerm: base, archived, ...(cursor ? { cursor } : {}),
+          });
+          const page = recordValue(listed.result);
+          if (!Array.isArray(page?.data)) throw new Error('thread/list returned malformed data for fork naming');
+          for (const value of page.data) {
+            const title = stringValue(recordValue(value)?.name);
+            if (title) names.push(title);
+          }
+          cursor = stringValue(page.nextCursor);
+        } while (cursor);
+      }
+      name = nextCodexForkName(sourceName, names);
+      await this.request('thread/name/set', { threadId: forkId, name });
+    }
+    return { threadId: forkId, name, cwd };
+  }
+
   async persistedTurnTerminal(
     snapshot: CodexThreadSnapshot,
     turnId: string,
@@ -152,6 +222,7 @@ export class CodexThreadReader {
   }
 
   private async ensureStarted(): Promise<void> {
+    if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) return;
     if (this.starting) return this.starting;
     this.starting = this.startProcess().finally(() => {
@@ -161,13 +232,22 @@ export class CodexThreadReader {
   }
 
   private async startProcess(): Promise<void> {
-    const child = spawnProcess(this.options.binary, ['app-server', '--listen', 'stdio://'], {
+    const remote = this.options.remote;
+    if (this.options.sharedServer && remote && !/^(unix|wss?):\/\//.test(remote)) {
+      throw new Error('Unsupported shared Codex endpoint');
+    }
+    if (this.options.sharedServer && remote && /^wss?:\/\//.test(remote)) {
+      await this.startSharedSocket(new WebSocket(remote, { handshakeTimeout: DEFAULT_TIMEOUT_MS }));
+      return;
+    }
+    const args = this.options.sharedServer
+      ? ['app-server', 'proxy', ...(remote && remote !== 'unix://' ? ['--sock', remote.slice(7)] : [])]
+      : ['app-server', '--listen', 'stdio://'];
+    const child = spawnProcess(this.options.binary, args, {
       env: readerEnv(this.options),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as CodexChild;
     this.child = child;
-    this.rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    this.rl.on('line', (line) => this.handleLine(line));
     // Always drain stderr so a chatty app-server cannot block on a full pipe.
     child.stderr.on('data', () => {});
     child.once('error', (err) => this.handleExit(err));
@@ -175,6 +255,36 @@ export class CodexThreadReader {
       this.handleExit(new Error(`codex app-server exited with ${code ?? signal ?? 'unknown'}`));
     });
 
+    if (this.options.sharedServer) {
+      // `proxy` relays raw socket bytes. The control socket speaks WebSocket,
+      // not JSONL; use Codex's cross-platform relay for Windows Unix sockets.
+      const stream = Duplex.from({ readable: child.stdout, writable: child.stdin });
+      await this.startSharedSocket(new WebSocket('ws://localhost/', {
+        createConnection: () => stream as Socket,
+        handshakeTimeout: this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      }));
+      return;
+    }
+    this.rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    this.rl.on('line', (line) => this.handleLine(line));
+
+    await this.initialize();
+  }
+
+  private async startSharedSocket(socket: WebSocket): Promise<void> {
+    this.socket = socket;
+    socket.on('message', (data) => this.handleLine(data.toString()));
+    socket.on('error', (error) => this.abortCurrentProcess(error));
+    socket.on('close', () => this.handleExit(new Error('Shared Codex connection closed')));
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+      socket.once('close', () => reject(new Error('Shared Codex connection closed before initialization')));
+    });
+    await this.initialize();
+  }
+
+  private async initialize(): Promise<void> {
     try {
       const response = await this.requestRaw(1, 'initialize', {
         clientInfo: {
@@ -234,6 +344,10 @@ export class CodexThreadReader {
   }
 
   private write(message: Record<string, unknown>): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
+      return;
+    }
     const child = this.child;
     if (!child || child.exitCode !== null || child.signalCode !== null) {
       throw new Error('codex app-server is not running');
@@ -296,6 +410,12 @@ export class CodexThreadReader {
   }
 
   private reset(error: Error): void {
+    const socket = this.socket;
+    this.socket = undefined;
+    if (socket) {
+      socket.removeAllListeners('close');
+      socket.terminate();
+    }
     this.rl?.close();
     this.rl = undefined;
     this.child?.stderr.removeAllListeners('data');

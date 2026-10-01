@@ -67,6 +67,18 @@ export async function dissolveChat(channel: LarkChannel, chatId: string): Promis
   }
 }
 
+/** Explain management-policy failures without exposing SDK transport details. */
+export function describeChatDeletionError(error: unknown): string {
+  const failure = error as { code?: unknown; msg?: unknown; response?: { data?: { code?: unknown; msg?: unknown } } } | null;
+  const code = Number(failure?.response?.data?.code ?? failure?.code);
+  if (code === 232017) {
+    return '机器人没有解散此群的权限（232017）。如果此群由当前机器人创建，请在该应用的权限管理中开通“更新应用所创建群的群信息”（im:chat:operate_as_owner）并发布新版本；如果由旧机器人或其他人创建，请由群主手动解散。';
+  }
+  const message = failure?.response?.data?.msg ?? failure?.msg;
+  if (typeof message === 'string' && Number.isFinite(code) && code !== 0) return `${message}（${code}）`;
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Rename a group that remains bound while its Codex session advances. */
 export async function renameChat(channel: LarkChannel, chatId: string, name: string): Promise<void> {
   const response = await channel.rawClient.im.v1.chat.update({

@@ -92,7 +92,7 @@ describe('run card renderer snapshots', () => {
       body?: { elements?: CardElement[] };
     };
     const button = card.body?.elements?.flatMap(buttonsIn).find(
-      (element) => element.text?.content === '停止',
+      (element) => element.behaviors?.[0]?.value?.cmd === 'stop',
     );
 
     expect(button?.behaviors?.[0]?.value).toEqual({
@@ -104,8 +104,8 @@ describe('run card renderer snapshots', () => {
 
   it('renders run controls in one horizontal row', () => {
     for (const [state, labels] of [
-      [initialState, ['停止', '控制台', '刷新']],
-      [stateFrom([{ type: 'done', terminationReason: 'normal' }]), ['停止', '控制台', '刷新']],
+      [initialState, ['stop_outlined', 'setting_outlined', 'refresh_outlined', 'mindmap-down_outlined', 'archive_outlined']],
+      [stateFrom([{ type: 'done', terminationReason: 'normal' }]), ['stop_outlined', 'setting_outlined', 'refresh_outlined', 'mindmap-down_outlined', 'archive_outlined']],
     ] as const) {
       const card = renderCard(state) as {
         body?: { elements?: CardElement[] };
@@ -115,16 +115,85 @@ describe('run card renderer snapshots', () => {
       expect(rows[0]).toMatchObject({
         flex_mode: 'none',
         columns: [
-          { width: 'weighted', weight: 1 },
-          { width: 'weighted', weight: 1 },
-          { width: 'weighted', weight: 1 },
+          { width: 'weighted', weight: 1, horizontal_align: 'center', elements: [{ width: '32px', height: '32px' }] },
+          { width: 'weighted', weight: 1, horizontal_align: 'center', elements: [{ width: '32px', height: '32px' }] },
+          { width: 'weighted', weight: 1, horizontal_align: 'center', elements: [{ width: '32px', height: '32px' }] },
+          { width: 'weighted', weight: 1, horizontal_align: 'center', elements: [{ width: '32px', height: '32px' }] },
+          { width: 'weighted', weight: 1, horizontal_align: 'center', elements: [{ width: '32px', height: '32px' }] },
         ],
       });
       const buttons = rows.flatMap(buttonsIn);
-      expect(buttons.map((button) => button.text?.content)).toEqual(labels);
-      expect(buttons.find((button) => button.text?.content === '刷新')?.behaviors?.[0]?.value)
-        .toEqual({ cmd: 'refresh' });
+      expect(buttons.map((button) => button.icon?.token ?? button.text?.content)).toEqual(labels);
+      expect(buttons.map((button) => button.behaviors?.[0]?.value?.cmd))
+        .toEqual(['stop', 'config', 'refresh', 'fork', 'finish']);
+      for (const button of [buttons[0], buttons[4]]) {
+        expect(button).toMatchObject({
+          icon: { tag: 'standard_icon', color: 'red' }, border_color: 'red',
+          hover_tips: { tag: 'plain_text', content: expect.any(String) },
+        });
+        expect(button?.text).toBeUndefined();
+      }
+      for (const button of buttons.slice(1, 4)) {
+        expect(button).toMatchObject({
+          icon: { tag: 'standard_icon' },
+          hover_tips: { tag: 'plain_text', content: expect.any(String) },
+        });
+        expect(button?.text).toBeUndefined();
+      }
+      expect(buttons[2]).toMatchObject({ icon: { color: 'green' } });
+      expect(buttons[3]).toMatchObject({ icon: { color: 'blue' } });
+      for (const button of buttons) {
+        expect(button).toMatchObject({
+          tag: 'interactive_container', has_border: true, width: '32px', height: '32px',
+          border_color: expect.any(String), padding: '0px', vertical_align: 'center',
+          elements: [{
+            tag: 'column_set', flex_mode: 'none', horizontal_align: 'center', horizontal_spacing: '0px',
+            columns: [{ width: '16px', padding: '0px', elements: [{ text_size: 'notation', text_align: 'left' }] }],
+          }],
+        });
+        expect(button.border_color).toEqual(button.icon?.color);
+      }
     }
+  });
+
+  it('can hide stop while retaining all other icon controls', () => {
+    const card = renderCard(initialState, { showStopButton: false }) as {
+      body?: { elements?: CardElement[] };
+    };
+    expect(card.body?.elements?.flatMap(buttonsIn).map((button) => button.icon?.token ?? button.text?.content))
+      .toEqual(['setting_outlined', 'refresh_outlined', 'mindmap-down_outlined', 'archive_outlined']);
+  });
+
+  it('uses the app-scoped custom Git fork image without changing callbacks', () => {
+    const card = renderCard(initialState, { forkIconKey: 'img_test_fork' }) as {
+      body?: { elements?: CardElement[] };
+    };
+    const fork = card.body?.elements?.flatMap(buttonsIn)
+      .find((button) => button.behaviors?.[0]?.value?.cmd === 'fork');
+    expect(fork).toMatchObject({
+      icon: { tag: 'custom_icon', img_key: 'img_test_fork' },
+      width: '32px', height: '32px', border_color: 'blue',
+      behaviors: [{ value: { cmd: 'fork' } }],
+    });
+  });
+
+  it('uses a single framed image per production control without prefix icon alignment', () => {
+    const actions = ['stop', 'config', 'refresh', 'fork', 'finish'] as const;
+    const buttonImageKeys = Object.fromEntries(actions.map((action) => [action, `img_${action}`]));
+    const card = renderCard(initialState, { buttonImageKeys, signCallback: () => 'signed-stop' }) as { body: { elements: CardElement[] } };
+    const controls = card.body.elements.flatMap(buttonsIn);
+    expect(controls).toHaveLength(5);
+    controls.forEach((control, index) => {
+      expect(control).toMatchObject({
+        width: '32px', height: '32px', has_border: false, padding: '0px',
+        elements: [{ tag: 'img', img_key: `img_${actions[index]}`, size: '32px 32px',
+          scale_type: 'crop_center', margin: '0px', transparent: true, preview: false }],
+        behaviors: [{ value: { cmd: actions[index] } }],
+      });
+      expect(control.icon).toBeUndefined();
+    });
+    expect(controls[0]?.behaviors?.[0]?.value?.bridge_token).toBe('signed-stop');
+    expect(JSON.stringify(controls)).not.toContain('markdown');
   });
 
   it('keeps local paths in user-visible cards and text fallbacks', () => {
@@ -153,6 +222,9 @@ function expectCard(state: RunState) {
 
 interface CardElement {
   tag?: string;
+  icon?: { token?: string; color?: string };
+  border_color?: string;
+  elements?: CardElement[];
   text?: { content?: string };
   behaviors?: Array<{ value?: Record<string, unknown> }>;
   columns?: Array<{ elements?: CardElement[] }>;
@@ -160,5 +232,6 @@ interface CardElement {
 
 function buttonsIn(element: CardElement): CardElement[] {
   if (element.tag === 'button') return [element];
+  if (element.tag === 'interactive_container') return [{ ...element, icon: element.elements?.[0]?.columns?.[0]?.elements?.[0]?.icon }];
   return element.columns?.flatMap((column) => column.elements?.flatMap(buttonsIn) ?? []) ?? [];
 }

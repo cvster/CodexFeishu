@@ -19,7 +19,8 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
-import { renderCard } from '../card/run-renderer';
+import { renderCard, type RunCardRenderOptions } from '../card/run-renderer';
+import { prepareRunControlIcons } from '../card/run-control-icons';
 import {
   renderMarkdownContinuation,
   renderMarkdownWindowClosed,
@@ -33,6 +34,7 @@ import {
   reduce,
   startRunRuntime,
   type RunState,
+  projectNameFromCwd,
   updateRunRuntime,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
@@ -77,6 +79,7 @@ import { isSoloUserBotChat } from './group';
 import { syncCodexThreadNameFromChat } from './thread-name';
 import { startAaSessionGroupSync } from './aa-session-groups';
 import { startCodexTurnSync } from './codex-turn-sync';
+import { registerLiveRunCardRefresh } from '../card/run-refresh';
 import type { AppPaths } from '../config/app-paths';
 import {
   clearCardStreamProgress,
@@ -461,6 +464,27 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   });
 
   await channel.connect();
+  // Clear keys on account changes: Feishu image keys belong to one app only.
+  controls.runControlIcons = undefined;
+  if (deps.appPaths?.profileDir && channel.rawClient.im?.v1?.image?.create) {
+    try {
+      controls.runControlIcons = await prepareRunControlIcons({
+        appId: cfg.accounts.app.id,
+        cachePath: join(deps.appPaths.profileDir, 'run-control-icons.json'),
+        upload: async (png) => {
+          const response = await channel.rawClient.im.v1.image.create({
+            data: { image_type: 'message', image: png },
+          });
+          const key = response?.image_key;
+          if (!key) throw new Error('Image upload returned no key');
+          return key;
+        },
+      });
+      log.info('card-icons', 'ready', { fork: 'git-double-branch' });
+    } catch (err) {
+      log.warn('card-icons', 'upload-failed', { error: String(err) });
+    }
+  }
   const ownerRefresh = createOwnerRefreshController({
     controls,
     source: channel,
@@ -478,6 +502,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           profileStateDir: deps.appPaths.profileDir,
         })
       : undefined;
+  controls.withAaSessionGroupSyncPaused = aaSessionGroupSync
+    ? (operation) => aaSessionGroupSync.withPaused(operation)
+    : undefined;
   const codexTurnSync =
     sessionCatalog && deps.appPaths?.profileDir
       ? await startCodexTurnSync({
@@ -487,6 +514,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           profileStateDir: deps.appPaths.profileDir,
         })
       : undefined;
+
+  controls.refreshMirroredRunCard = codexTurnSync
+    ? (scope, messageId) => codexTurnSync.refreshMessage(scope, messageId)
+    : undefined;
 
   const identity = channel.botIdentity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
@@ -528,6 +559,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       knownChatsRefresh.stop();
       aaSessionGroupSync?.stop();
       await codexTurnSync?.stop();
+      controls.refreshMirroredRunCard = undefined;
       keepalive.stop();
       pending.cancelAll();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
@@ -1044,11 +1076,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
   const filterForPrefs = (state: RunState): RunState => {
+    state = { ...state, projectName: state.projectName ?? projectNameFromCwd(cwd) };
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
   const cardRenderOptions = callbackAuth
     ? {
+        ...controls.runControlIcons,
         signCallback: (action: string) =>
           callbackAuth.sign({
             runId: execution.runId,
@@ -1060,7 +1094,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             ttlMs: 24 * 60 * 60 * 1000,
           }),
       }
-    : {};
+    : { ...controls.runControlIcons };
 
   // For non-card modes Claude's output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
@@ -1110,7 +1144,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           channel,
           chatId,
           scope,
-          state: finalAnswerOnlyState(finalState),
+          state: filterForPrefs(finalAnswerOnlyState(finalState)),
           replyMode,
           sendOpts,
           cardRenderOptions,
@@ -1147,8 +1181,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             producer: async (ctrl) => {
               producerStarted = true;
               cardCtrl = ctrl;
-              await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
-              await renderDone;
+              const unregisterRefresh = registerLiveRunCardRefresh(ctrl.messageId, scope, async () => {
+                const runtime = latestState.runtime;
+                const refreshed = runtime
+                  ? { ...latestState, runtime: { ...runtime, checkedAtMs: Date.now() } }
+                  : latestState;
+                await ctrl.update(renderCard(filterForPrefs(refreshed), cardRenderOptions));
+              });
+              try {
+                await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+                await renderDone;
+              } finally {
+                unregisterRefresh();
+              }
             },
           },
         },
@@ -1205,7 +1250,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           reasoning: { content: '', active: false },
           footer: null,
         };
-        const meaningfulBody = renderText({ ...finalOnly, runtime: undefined });
+        const meaningfulBody = renderText({
+          ...finalOnly, runtime: undefined, execution: undefined, projectName: undefined,
+        });
         if (!meaningfulBody.trim()) return;
         const body = renderText(finalOnly);
         if (body.trim()) {
@@ -1409,7 +1456,7 @@ async function sendFinalReply(input: {
   state: RunState;
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
-  cardRenderOptions: { signCallback?: (action: string) => string };
+  cardRenderOptions: RunCardRenderOptions;
 }): Promise<void> {
   const body = renderText(input.state);
 

@@ -13,10 +13,10 @@ importers:
         version: 1.4.0
       '@larksuite/channel':
         specifier: ^0.3.0
-        version: 0.3.0
+        version: 0.3.0(debug@4.4.3)
       '@larksuiteoapi/node-sdk':
         specifier: 1.67.0
-        version: 1.67.0
+        version: 1.67.0(debug@4.4.3)
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -32,6 +32,9 @@ importers:
       qrcode-terminal:
         specifier: ^0.12.0
         version: 0.12.0
+      ws:
+        specifier: 8.20.0
+        version: 8.20.0
     devDependencies:
       '@types/cross-spawn':
         specifier: ^6.0.6
@@ -48,6 +51,9 @@ importers:
       '@types/qrcode-terminal':
         specifier: ^0.12.2
         version: 0.12.2
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
       tsup:
         specifier: ^8.3.5
         version: 8.5.1(postcss@8.5.10)(typescript@5.9.3)
@@ -570,6 +576,9 @@ packages:
 
   '@types/retry@0.12.5':
     resolution: {integrity: sha512-3xSjTp3v03X/lSQLkczaN9UIEwJMoMCA1+Nb5HfbJEQWogdeQIyVtTvxPXDQjZ5zws8rFQfVfRdz03ARihPJgw==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@vitest/expect@2.1.9':
     resolution: {integrity: sha512-UJCIkTBenHeKT1TTlKMJWy1laZewsRIzYighyYiJKZreqtdxSos/S1t+ktRMQWu2CKqaarrkeszJx1cgC5tGZw==}
@@ -1336,9 +1345,9 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@larksuite/channel@0.3.0':
+  '@larksuite/channel@0.3.0(debug@4.4.3)':
     dependencies:
-      '@larksuiteoapi/node-sdk': 1.67.0
+      '@larksuiteoapi/node-sdk': 1.67.0(debug@4.4.3)
       https-proxy-agent: 9.0.0
     transitivePeerDependencies:
       - bufferutil
@@ -1346,9 +1355,9 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@larksuiteoapi/node-sdk@1.67.0':
+  '@larksuiteoapi/node-sdk@1.67.0(debug@4.4.3)':
     dependencies:
-      axios: 1.13.6
+      axios: 1.13.6(debug@4.4.3)
       lodash.identity: 3.0.0
       lodash.merge: 4.6.2
       lodash.pickby: 4.6.0
@@ -1480,6 +1489,10 @@ snapshots:
 
   '@types/retry@0.12.5': {}
 
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.19.17
+
   '@vitest/expect@2.1.9':
     dependencies:
       '@vitest/spy': 2.1.9
@@ -1530,9 +1543,9 @@ snapshots:
 
   asynckit@0.4.0: {}
 
-  axios@1.13.6:
+  axios@1.13.6(debug@4.4.3):
     dependencies:
-      follow-redirects: 1.16.0
+      follow-redirects: 1.16.0(debug@4.4.3)
       form-data: 4.0.5
       proxy-from-env: 1.1.0
     transitivePeerDependencies:
@@ -1699,7 +1712,9 @@ snapshots:
       mlly: 1.8.2
       rollup: 4.60.2
 
-  follow-redirects@1.16.0: {}
+  follow-redirects@1.16.0(debug@4.4.3):
+    optionalDependencies:
+      debug: 4.4.3
 
   form-data@4.0.5:
     dependencies:

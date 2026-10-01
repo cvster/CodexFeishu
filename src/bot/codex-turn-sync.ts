@@ -27,7 +27,8 @@ import {
   isCodexTurnTerminal,
 } from '../card/codex-turn-state';
 import { renderCard } from '../card/run-renderer';
-import type { Terminal } from '../card/run-state';
+import type { RunControlIcons } from '../card/run-control-icons';
+import { projectNameFromCwd, type Terminal } from '../card/run-state';
 import { sendManagedCard } from '../card/managed';
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -95,6 +96,7 @@ export interface CodexTurnSyncDeps {
 
 export interface CodexTurnSyncHandle {
   runNow(): Promise<void>;
+  refreshMessage(scope: string, messageId: string): Promise<boolean>;
   stop(): Promise<void>;
 }
 
@@ -108,7 +110,7 @@ export interface CodexTurnSyncHandle {
 export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<CodexTurnSyncHandle> {
   const codex = deps.controls.profileConfig.codex;
   if (deps.controls.profileConfig.agentKind !== 'codex' || !codex?.binaryPath) {
-    return { runNow: async () => {}, stop: async () => {} };
+    return { runNow: async () => {}, refreshMessage: async () => false, stop: async () => {} };
   }
 
   const reader = deps.reader ?? new CodexThreadReader(readerOptions(deps, codex));
@@ -123,7 +125,7 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
 
   const runNow = async (): Promise<void> => {
     if (stopped) return;
-    if (running) return running;
+    if (running) return running.catch((err) => log.fail('codex-turn-sync', err, { step: 'poll' }));
     running = syncOnce(deps, reader, store, now, needsInitialRevalidation)
       .then(() => {
         needsInitialRevalidation = false;
@@ -141,6 +143,33 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
 
   return {
     runNow,
+    async refreshMessage(scope, messageId) {
+      // Use the same lock as polling: concurrent refreshes and periodic pushes
+      // must never race to allocate a CardKit sequence or overwrite newer output.
+      while (running) await running.catch(() => {});
+      if (stopped) return false;
+      let refreshed = false;
+      running = (async () => {
+        for (const [threadId, thread] of Object.entries(store.state.threads)) {
+          for (const [turnId, stored] of Object.entries(thread.turns)) {
+            const delivery = stored.deliveries[scope];
+            if (delivery?.status !== 'card' || delivery.messageId !== messageId) continue;
+            const binding = activeCodexBindings(deps.sessionCatalog.entries()).get(threadId)
+              ?.find((entry) => entry.scopeId === scope);
+            if (!binding) throw new Error('Card conversation is no longer bound to this group');
+            const snapshot = await reconcileProjectedInterruptions(reader, await reader.readThread(threadId), now());
+            const turn = snapshot.turns.find((item) => item.id === turnId);
+            if (!turn) throw new Error('Original card turn is unavailable');
+            await syncTurnToScope(deps.channel, store, threadId, turn, stored, scope, now(),
+              binding.cwdRealpath, deps.controls.runControlIcons, true);
+            refreshed = true;
+            return;
+          }
+        }
+      })().finally(() => { running = undefined; });
+      await running;
+      return refreshed;
+    },
     async stop() {
       stopped = true;
       clearInterval(timer);
@@ -201,7 +230,7 @@ async function syncOnce(
       });
       continue;
     }
-    await syncThreadSnapshot(deps.channel, store, snapshot, entries, now());
+    await syncThreadSnapshot(deps.channel, store, snapshot, entries, now(), deps.controls.runControlIcons);
     let consumedCreationReplay = false;
     for (const entry of entries) {
       if (!entry.recentTurnReplayCount) continue;
@@ -264,6 +293,7 @@ async function syncThreadSnapshot(
   snapshot: CodexThreadSnapshot,
   bindings: SessionCatalogEntry[],
   nowMs: number,
+  icons?: RunControlIcons,
 ): Promise<void> {
   const existing = store.state.threads[snapshot.id];
   const firstSnapshot = !existing;
@@ -317,7 +347,8 @@ async function syncThreadSnapshot(
       const delivery = stored.deliveries[scope];
       if (delivery?.status === 'skipped') continue;
       try {
-        await syncTurnToScope(channel, store, snapshot.id, turn, stored, scope, nowMs);
+        await syncTurnToScope(channel, store, snapshot.id, turn, stored, scope, nowMs,
+          bindings.find((entry) => entry.scopeId === scope)?.cwdRealpath, icons);
       } catch (err) {
         log.warn('codex-turn-sync', 'delivery-failed', {
           threadId: snapshot.id,
@@ -380,6 +411,9 @@ async function syncTurnToScope(
   stored: StoredTurn,
   scope: string,
   nowMs: number,
+  projectCwd?: string,
+  icons?: RunControlIcons,
+  forceUpdate = false,
 ): Promise<void> {
   const target = targetFromScope(scope);
   if (!target) return;
@@ -401,7 +435,7 @@ async function syncTurnToScope(
     const sent = await sendManagedCard(
       channel,
       target.chatId,
-      renderCard(state),
+      renderCard({ ...state, ...(projectCwd ? { projectName: projectNameFromCwd(projectCwd) } : {}) }, icons),
     );
     delivery = {
       status: 'card',
@@ -438,8 +472,8 @@ async function syncTurnToScope(
   // a later snapshot differs. Unchanged terminal cards still remain idle.
   const terminalKindChanged = delivery.terminalStatus !== undefined &&
     delivery.terminalStatus !== nextTerminalStatus;
-  if (delivery.terminal && terminal && !terminalKindChanged) return;
-  if (!changed && !terminal && nowMs - delivery.lastPushedAtMs < STATUS_HEARTBEAT_MS) return;
+  if (!forceUpdate && delivery.terminal && terminal && !terminalKindChanged) return;
+  if (!forceUpdate && !changed && !terminal && nowMs - delivery.lastPushedAtMs < STATUS_HEARTBEAT_MS) return;
 
   if (changed) delivery.lastActivityAtMs = nowMs;
   delivery.sequence += 1;
@@ -457,7 +491,7 @@ async function syncTurnToScope(
   });
   await channel.updateCardById(
     delivery.cardId,
-    renderCard(state),
+    renderCard({ ...state, ...(projectCwd ? { projectName: projectNameFromCwd(projectCwd) } : {}) }, icons),
     delivery.sequence,
   );
   delivery.terminal = terminal;

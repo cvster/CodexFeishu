@@ -22,6 +22,7 @@ import { createCodexQueueRun } from './queue';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { archiveCodexThread, setCodexThreadName } from '../../session/codex-history';
 import { codexBridgeClientMessageId } from '../../session/codex-origin';
+import { CodexThreadReader } from '../../session/codex-thread-reader';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -125,6 +126,23 @@ export class CodexAdapter implements AgentAdapter {
       inheritCodexHome: this.inheritCodexHome,
       remote: this.appServerRemote,
     });
+  }
+
+  async forkThread(threadId: string): Promise<{ threadId: string; name: string; cwd: string }> {
+    const reader = new CodexThreadReader({
+      binary: this.binary,
+      profileStateDir: this.profileStateDir,
+      ...(this.codexHome ? { codexHome: this.codexHome } : {}),
+      inheritCodexHome: this.inheritCodexHome,
+      sharedServer: Boolean(this.appServerRemote),
+      ...(this.appServerRemote ? { remote: this.appServerRemote } : {}),
+      timeoutMs: 60_000,
+    });
+    try {
+      return await reader.forkThread(threadId);
+    } finally {
+      await reader.stop();
+    }
   }
 
   run(opts: AgentRunOptions): AgentRun {

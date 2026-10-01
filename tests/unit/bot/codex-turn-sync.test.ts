@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LarkChannel } from '@larksuite/channel';
 import type { Controls } from '../../../src/commands/index.js';
@@ -80,7 +80,8 @@ describe('Codex desktop turn sync', () => {
       markdown: expect.stringContaining('desktop prompt'),
     });
     expect(JSON.stringify(channel.sent[1]?.content)).toContain('运行中');
-    expect(JSON.stringify(channel.sent[1]?.content)).not.toContain('终止');
+    expect(JSON.stringify(channel.sent[1]?.content)).toContain(`项目 ${basename(dir)}`);
+    expect(JSON.stringify(channel.sent[1]?.content)).not.toContain('"content":"终止"');
 
     snapshot = {
       id: 'thread-1',
@@ -100,6 +101,7 @@ describe('Codex desktop turn sync', () => {
     expect(cardUpdates).toHaveLength(1);
     expect(updateSpy).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(cardUpdates[0])).toContain('desktop answer');
+    expect(JSON.stringify(cardUpdates[0])).toContain(`项目 ${basename(dir)}`);
     await handle.stop();
 
     const secondReader = {
@@ -121,7 +123,30 @@ describe('Codex desktop turn sync', () => {
     expect(channel.rawClient.requests.filter(
       (request) => request.method === 'cardkit.v1.card.update',
     )).toHaveLength(1);
+    // Completed cards remain refreshable after a bridge restart. Refreshes
+    // must reuse the original message/card and serialize their stored sequence.
+    expect(await restarted.refreshMessage('oc_other', 'om_fake_2')).toBe(false);
+    expect(await restarted.refreshMessage('oc_group', 'om_unknown')).toBe(false);
+    expect(await Promise.all([
+      restarted.refreshMessage('oc_group', 'om_fake_2'),
+      restarted.refreshMessage('oc_group', 'om_fake_2'),
+    ])).toEqual([true, true]);
+    await restarted.runNow();
+    expect(channel.sent).toHaveLength(2);
+    const refreshedUpdates = channel.rawClient.requests.filter(
+      (request) => request.method === 'cardkit.v1.card.update',
+    );
+    expect(refreshedUpdates.map((request) => (request.params as { sequence: number }).sequence))
+      .toEqual([2, 3, 4]);
+    updateSpy.mockRejectedValueOnce(new Error('refresh transient'));
+    await expect(restarted.refreshMessage('oc_group', 'om_fake_2')).rejects.toThrow('refresh transient');
+    expect(await restarted.refreshMessage('oc_group', 'om_fake_2')).toBe(true);
+    expect(channel.sent).toHaveLength(2);
+    expect(channel.rawClient.requests.at(-1)).toMatchObject({
+      method: 'cardkit.v1.card.update', params: { sequence: 6 },
+    });
     await restarted.stop();
+    expect(await restarted.refreshMessage('oc_group', 'om_fake_2')).toBe(false);
   });
 
   it('replays only the configured recent completed turns into a newly attached AA group', async () => {

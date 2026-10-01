@@ -85,6 +85,7 @@ export interface AgentAdapter {
   run(opts: AgentRunOptions): AgentRun;
   setThreadName?(threadId: string, name: string): Promise<void>;
   archiveThread?(threadId: string): Promise<void>;
+  forkThread?(threadId: string): Promise<{ threadId: string; name: string; cwd: string }>;
   /**
    * Late-bound identity injection: the adapter is constructed before the
    * channel connects, so the channel calls this once botIdentity is known.

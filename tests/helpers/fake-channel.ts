@@ -55,6 +55,7 @@ export interface FakeChannel {
   };
   createCard(cardJson: unknown): Promise<{ cardId: string }>;
   updateCardById(cardId: string, cardJson: unknown, sequence: number): Promise<void>;
+  updateCard(messageId: string, cardJson: unknown): Promise<void>;
   createChat(options: unknown): Promise<{ chatId: string }>;
   send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
@@ -166,6 +167,9 @@ export function createFakeChannel(): FakeChannel {
     },
     async updateCardById(cardId: string, cardJson: unknown, sequence: number): Promise<void> {
       requests.push({ method: 'cardkit.v1.card.update', params: { cardId, cardJson, sequence } });
+    },
+    async updateCard(messageId: string, cardJson: unknown): Promise<void> {
+      requests.push({ method: 'im.v1.message.patch', params: { messageId, cardJson } });
     },
     async createChat(options: unknown): Promise<{ chatId: string }> {
       const chatId = `oc_fake_${createdChats.length + 1}`;

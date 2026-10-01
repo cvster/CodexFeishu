@@ -71,11 +71,14 @@ import { setSecret } from '../config/keystore';
 import { buildEncryptedAccountConfig, saveConfig } from '../config/store';
 import { log, reportMetric } from '../core/logger';
 import { renderCard } from '../card/run-renderer';
+import type { RunControlIcons } from '../card/run-control-icons';
+import { refreshLiveRunCard } from '../card/run-refresh';
 import { codexTurnRunState } from '../card/codex-turn-state';
 import {
   finalizeIfRunning,
   initialState,
   markInterrupted,
+  projectNameFromCwd,
   reduce,
   type RunState,
 } from '../card/run-state';
@@ -97,11 +100,14 @@ import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
-import { createBoundChat, defaultChatName, dissolveChat, isDefaultChatName } from '../bot/group';
+import { createBoundChat, defaultChatName, describeChatDeletionError, dissolveChat, isDefaultChatName, renameChat } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
+  /** Refresh a persisted mirrored CardKit delivery using its original sequence owner. */
+  refreshMirroredRunCard?(scope: string, messageId: string): Promise<boolean>;
+  runControlIcons?: RunControlIcons;
   profile: string;
   profileConfig: ProfileConfig;
   botOwnerId?: string;
@@ -124,6 +130,8 @@ export interface Controls {
   processId: string;
   /** Groups the bot currently belongs to, used to render and bulk-manage access. */
   knownChats?: KnownChat[];
+  /** Pause AA reconciliation until a fork has its final name and group binding. */
+  withAaSessionGroupSyncPaused?<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 export interface CommandContext {
@@ -202,6 +210,8 @@ const resumeCandidates = new Map<string, ResumeCandidate>();
 const PANEL_CANDIDATE_TTL_MS = 15 * 60 * 1000;
 const PANEL_PAGE_SIZE = 6;
 const panelCandidates = new Map<string, PanelCandidate>();
+const pendingForks = new Set<string>();
+const unboundForks = new Map<string, { threadId: string; name: string; cwd: string }>();
 const AUDIT_SAFE_COMMAND_REPLY = '命令已处理。';
 const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
 
@@ -213,6 +223,7 @@ const handlers: Record<string, Handler> = {
   '/resume': handleResume,
   '/status': handleStatus,
   '/refresh': handleRefresh,
+  '/fork': handleFork,
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
@@ -679,33 +690,46 @@ async function showManagedGroupsPanel(ctx: CommandContext, page: number): Promis
   await showPanelCard(ctx, managedGroupsCard(entries, page, chats.length > start + PANEL_PAGE_SIZE));
 }
 
-async function createGroupForPanelSession(ctx: CommandContext, token: string): Promise<void> {
+async function createGroupForPanelSession(
+  ctx: CommandContext,
+  token: string,
+  options: { exactName?: boolean; forked?: boolean; recentTurnReplayCount?: number } = {},
+): Promise<boolean> {
   const target = panelCandidate(ctx, token, 'session');
   if (!target) {
     await reply(ctx, '此会话操作已过期，请刷新“现有会话”后重试。');
-    return;
+    return false;
   }
   const alreadyBound = ctx.sessionCatalog?.entries().find(
-    (entry) => entry.status === 'active' && entry.agentId === 'codex' && entry.threadId === target.threadId,
+    (entry) => entry.status === 'active' && entry.agentId === 'codex' && entry.threadId === target.threadId &&
+      entry.botAppId === ctx.controls.profileConfig.accounts.app.id,
   );
   if (alreadyBound && ctx.controls.knownChats?.some((chat) => chat.id === alreadyBound.scopeId)) {
     const group = ctx.controls.knownChats.find((chat) => chat.id === alreadyBound.scopeId);
+    if (options.exactName && target.name && group && group.name !== target.name) {
+      await renameChat(ctx.channel, group.id, target.name);
+      group.name = target.name;
+    }
     await reply(ctx, `此会话已经绑定工作群 **${group?.name ?? alreadyBound.scopeId}**，未重复创建。`);
-    return;
+    return true;
   }
   const workspace = await resolveWorkingDirectory(target.cwd);
   if (!workspace.ok) {
     await reply(ctx, workspace.userVisible);
-    return;
+    return false;
   }
-  const chats = await refreshKnownChatsForNaming(ctx);
-  const name = uniqueSessionGroupName(target.name || target.preview, chats.map((chat) => chat.name));
+  // A fork's app-server title is authoritative. Feishu permits same-name
+  // groups, so never append another suffix or truncate that title here.
+  const name = options.exactName && target.name
+    ? target.name
+    : uniqueSessionGroupName(target.name || target.preview,
+      (await refreshKnownChatsForNaming(ctx)).map((chat) => chat.name));
   let created;
   try {
     created = await createBoundChat({ channel: ctx.channel, name, inviteOpenId: ctx.msg.senderId });
   } catch (err) {
     await reply(ctx, `❌ 创建群失败：${errorText(err)}`);
-    return;
+    return false;
   }
   ctx.workspaces.setCwd(created.chatId, workspace.cwdRealpath);
   await saveAccessConfig(ctx, (current) => ({
@@ -719,12 +743,13 @@ async function createGroupForPanelSession(ctx: CommandContext, token: string): P
   const identity = panelGroupIdentity(ctx, created.chatId, workspace.cwdRealpath);
   if (!identity || !ctx.sessionCatalog) {
     await reply(ctx, '⚠️ 群已创建，但会话绑定失败；请在新群中使用“恢复会话”重新绑定。');
-    return;
+    return false;
   }
   ctx.sessionCatalog.upsertActive({
     ...identity,
     threadId: target.threadId,
     botAppId: ctx.controls.profileConfig.accounts.app.id,
+    ...(options.recentTurnReplayCount ? { recentTurnReplayCount: options.recentTurnReplayCount } : {}),
   });
   await Promise.all([ctx.workspaces.flush(), ctx.sessionCatalog.flush()]);
   await sendManagedCard(
@@ -732,7 +757,10 @@ async function createGroupForPanelSession(ctx: CommandContext, token: string): P
     created.chatId,
     newChatWorkspaceCard(created.name, { threadId: target.threadId, existing: true }),
   ).catch((err) => log.warn('command', 'existing-session-welcome-failed', { err: errorText(err) }));
-  await reply(ctx, `✓ 已创建群 **${created.name}**，并绑定原会话 \`${target.threadId.slice(0, 8)}…\`。`);
+  await reply(ctx, options.forked
+    ? `✓ 已创建分叉工作群 **${created.name}**，并绑定同名的新会话。原会话和原群保持不变。`
+    : `✓ 已创建群 **${created.name}**，并绑定原会话 \`${target.threadId.slice(0, 8)}…\`。`);
+  return true;
 }
 
 function managedKnownChats(ctx: CommandContext, chats: KnownChat[]): KnownChat[] {
@@ -1469,7 +1497,69 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
+async function handleFork(_args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.controls.profileConfig.agentKind !== 'codex' || !ctx.agent.forkThread || !ctx.sessionCatalog) {
+    return reply(ctx, '当前适配器不支持 Codex 会话分叉。');
+  }
+  const botAppId = ctx.controls.profileConfig.accounts.app.id;
+  const exact = ctx.sessionCatalogIdentity ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity) : undefined;
+  const source = exact ?? ctx.sessionCatalog.entries()
+    .filter((entry) => entry.status === 'active' && entry.agentId === 'codex' &&
+      entry.scopeId === ctx.scope && entry.botAppId === botAppId)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  if (!source?.threadId || source.botAppId !== botAppId) {
+    return reply(ctx, '当前群尚未绑定本机器人的 Codex 会话，无法分叉。');
+  }
+  const key = `${botAppId}:${source.threadId}`;
+  if (pendingForks.has(key)) return reply(ctx, '正在创建分叉，请稍候。');
+  pendingForks.add(key);
+  try {
+    const createForkAndGroup = async () => {
+      const fork = unboundForks.get(key) ?? await ctx.agent.forkThread!(source.threadId!);
+      // A group-creation retry must not create another native fork.
+      unboundForks.set(key, fork);
+      const token = issuePanelCandidate(ctx, { kind: 'session', ...fork, preview: fork.name });
+      try {
+        const bound = await createGroupForPanelSession(ctx, token, {
+          exactName: true, forked: true,
+          // Preserve the existing creation-time history replay for AA groups.
+          ...(fork.name.startsWith('AA') ? { recentTurnReplayCount: 3 } : {}),
+        });
+        if (bound) unboundForks.delete(key);
+        else await reply(ctx, `⚠️ 分叉 **${fork.name}** 已创建，建群尚未完成。再次点击“分叉”可重试建群，不会重复分叉。`);
+      } finally { panelCandidates.delete(token); }
+    };
+    // Cover naming AND direct binding: the periodic AA scanner must not
+    // discover the new thread in the gap and create a competing group.
+    if (ctx.controls.withAaSessionGroupSyncPaused) {
+      await ctx.controls.withAaSessionGroupSyncPaused(createForkAndGroup);
+    } else {
+      await createForkAndGroup();
+    }
+  } catch (err) {
+    const fork = unboundForks.get(key);
+    await reply(ctx, fork
+      ? `⚠️ 分叉 **${fork.name}** 已创建，建群失败：${errorText(err)}。再次点击可重试建群。`
+      : `❌ 分叉失败：${errorText(err)}`);
+  } finally {
+    pendingForks.delete(key);
+  }
+}
+
 async function handleRefresh(_args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.fromCardAction) {
+    try {
+      if (await refreshLiveRunCard(ctx.msg.messageId, ctx.scope) ||
+          await ctx.controls.refreshMirroredRunCard?.(ctx.scope, ctx.msg.messageId)) {
+        log.info('command', 'refresh-card-in-place', { scope: ctx.scope, messageId: ctx.msg.messageId });
+        return;
+      }
+    } catch (err) {
+      log.warn('command', 'refresh-card-failed', { scope: ctx.scope, message: errorText(err) });
+      await reply(ctx, '⚠️ 刷新失败，请稍后重试。原卡片已保留。');
+      return;
+    }
+  }
   const codex = ctx.controls.profileConfig.agentKind === 'codex'
     ? ctx.controls.profileConfig.codex
     : undefined;
@@ -1485,6 +1575,10 @@ async function handleRefresh(_args: string, ctx: CommandContext): Promise<void> 
     )
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
   if (!codex?.binaryPath || !entry?.threadId) {
+    if (ctx.fromCardAction) {
+      await reply(ctx, '当前卡片没有可刷新的 Codex 会话。');
+      return;
+    }
     await handleStatus('', ctx);
     return;
   }
@@ -1501,6 +1595,10 @@ async function handleRefresh(_args: string, ctx: CommandContext): Promise<void> 
     const snapshot = await reader.readThread(entry.threadId);
     const rawTurn = snapshot.turns.at(-1);
     if (!rawTurn) {
+      if (ctx.fromCardAction) {
+        await reply(ctx, '当前会话没有可刷新的回复。');
+        return;
+      }
       await handleStatus('', ctx);
       return;
     }
@@ -1514,20 +1612,25 @@ async function handleRefresh(_args: string, ctx: CommandContext): Promise<void> 
       lastActivityAtMs: snapshot.updatedAtMs ?? startedAtMs,
       checkedAtMs: nowMs,
     });
-    await ctx.channel.send(
-      ctx.msg.chatId,
-      { card: renderCard(state) },
-      commandReplyOptions(ctx),
-    );
+    const card = renderCard({ ...state, projectName: projectNameFromCwd(entry.cwdRealpath) }, ctx.controls.runControlIcons);
+    if (ctx.fromCardAction) {
+      // Ordinary bridge replies are message-id cards, including those sent
+      // before a restart. Never send a second card when an in-place update fails.
+      await ctx.channel.updateCard(ctx.msg.messageId, card);
+    } else {
+      await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+    }
     log.info('command', 'refresh-turn', {
       scope: ctx.scope,
       threadId: entry.threadId,
       turnId: turn.id,
       status: turn.status,
+      inPlace: ctx.fromCardAction === true,
     });
   } catch (err) {
     log.warn('command', 'refresh-turn-failed', { scope: ctx.scope, message: errorText(err) });
-    await handleStatus('', ctx);
+    if (ctx.fromCardAction) await reply(ctx, '⚠️ 刷新失败，请稍后重试。原卡片已保留。');
+    else await handleStatus('', ctx);
   } finally {
     await reader.stop();
   }
@@ -1660,7 +1763,7 @@ async function handleFinish(args: string, ctx: CommandContext): Promise<void> {
     log.fail('command', err, { cmd: 'finish', step: 'dissolve-chat' });
     await reply(
       ctx,
-      `⚠️ Codex 会话已归档，但群解散失败：${err instanceof Error ? err.message : String(err)}`,
+      `⚠️ Codex 会话已归档，但群解散失败：${describeChatDeletionError(err)}`,
     );
   }
 }
@@ -2005,13 +2108,13 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
         ctx.msg.chatId,
         {
           card: {
-            initial: renderCard(withDoctorReport(initialState, doctorReport('pending'))),
+            initial: renderCard(withDoctorReport(initialState, doctorReport('pending')), ctx.controls.runControlIcons),
             producer: async (ctrl) => {
               let state: RunState = initialState;
               let echoText = '';
               const echoStatus = (): string => formatDoctorEchoStatus(echoText, state);
               const flush = (): Promise<void> =>
-                ctrl.update(renderCard(withDoctorReport(state, doctorReport(echoStatus()))));
+                ctrl.update(renderCard(withDoctorReport(state, doctorReport(echoStatus())), ctx.controls.runControlIcons));
               for await (const evt of execution.subscribe()) {
                 if (execution.handle.interrupted) break;
                 // /doctor runs are session-less: skip 'system' so we don't
@@ -2057,6 +2160,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
       await ctx.channel.send(ctx.msg.senderId, {
         card: renderCard(
           withDoctorReport(state, doctorReport(formatDoctorEchoStatus(echoText, state))),
+          ctx.controls.runControlIcons,
         ),
       });
     }

@@ -30,14 +30,16 @@ export interface AaSessionGroupSyncDeps {
 
 export interface AaSessionGroupSyncHandle {
   runNow(): Promise<void>;
+  withPaused<T>(operation: () => Promise<T>): Promise<T>;
   stop(): void;
 }
 
 export function startAaSessionGroupSync(deps: AaSessionGroupSyncDeps): AaSessionGroupSyncHandle {
   let stopped = false;
   let running: Promise<void> | undefined;
+  let paused = 0;
   const runNow = async (): Promise<void> => {
-    if (stopped) return;
+    if (stopped || paused > 0) return;
     if (running) return running;
     running = syncAaSessionGroupsOnce(deps)
       .catch((err) => log.fail('aa-session-groups', err, { step: 'sync' }))
@@ -51,6 +53,15 @@ export function startAaSessionGroupSync(deps: AaSessionGroupSyncDeps): AaSession
   timer.unref?.();
   return {
     runNow,
+    async withPaused<T>(operation: () => Promise<T>): Promise<T> {
+      paused++;
+      try {
+        await running;
+        return await operation();
+      } finally {
+        paused--;
+      }
+    },
     stop() {
       stopped = true;
       clearInterval(timer);

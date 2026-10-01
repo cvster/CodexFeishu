@@ -25,6 +25,7 @@ export interface RunRuntimeStatus {
 }
 
 export interface RunState {
+  projectName?: string;
   blocks: Block[];
   reasoning: { content: string; active: boolean };
   footer: FooterStatus;
@@ -85,6 +86,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     case 'system':
       return {
         ...state,
+        ...(evt.cwd ? { projectName: projectNameFromCwd(evt.cwd) } : {}),
         execution: {
           ...state.execution,
           ...(evt.model ? { model: evt.model } : {}),
@@ -182,6 +184,10 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     default:
       return state;
   }
+}
+
+export function projectNameFromCwd(cwd: string): string {
+  return cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || cwd;
 }
 
 export function markInterrupted(state: RunState): RunState {
