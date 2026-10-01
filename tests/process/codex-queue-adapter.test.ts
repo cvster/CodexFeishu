@@ -31,6 +31,7 @@ describe('CodexAdapter native queue mode', () => {
 
     expect(await collect(run.events)).toEqual([
       { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'system', threadId: 'thread-existing', turnId: 'turn-queued' },
       { type: 'text', delta: 'queued response' },
       { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
     ]);
@@ -50,6 +51,7 @@ describe('CodexAdapter native queue mode', () => {
     expect(events.filter((event) => event.type === 'system')).toEqual([
       { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
       { type: 'system', threadId: 'thread-existing', model: 'gpt-6-sol', reasoningEffort: 'high' },
+      { type: 'system', threadId: 'thread-existing', turnId: 'turn-queued' },
     ]);
     expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
     expect(JSON.parse(await readFile(join(fake.dir, 'settings.json'), 'utf8'))).toEqual({
@@ -106,6 +108,7 @@ describe('CodexAdapter native queue mode', () => {
 
     expect(await collect(run.events)).toEqual([
       { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'system', threadId: 'thread-existing', turnId: 'turn-queued' },
       { type: 'text', delta: 'queued response' },
       { type: 'done', threadId: 'thread-existing', terminationReason: 'interrupted' },
     ]);
@@ -129,6 +132,7 @@ describe('CodexAdapter native queue mode', () => {
 
     expect(await collect(run.events)).toEqual([
       { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'system', threadId: 'thread-existing', turnId: 'turn-queued' },
       { type: 'text', delta: 'queued response' },
       { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
     ]);
@@ -153,6 +157,7 @@ describe('CodexAdapter native queue mode', () => {
 
     expect(await collect(run.events)).toEqual([
       { type: 'system', threadId: 'thread-existing', cwd: fake.dir },
+      { type: 'system', threadId: 'thread-existing', turnId: 'turn-queued' },
       { type: 'text', delta: 'queued response' },
       { type: 'done', threadId: 'thread-existing', terminationReason: 'normal' },
     ]);

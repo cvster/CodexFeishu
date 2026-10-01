@@ -12,7 +12,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - **Streaming card**: text replies and tool calls update on one Lark card in real time.
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
-- **Codex Desktop sync**: when a Codex thread bound to a Lark chat is continued from the desktop app, new user messages, run status, and replies are mirrored back to chat; old history is not replayed on first enablement.
+- **Unified Codex reply sync**: Feishu submits input; one app-server snapshot synchronizer delivers replies from both Desktop and Feishu turns. Each bound chat/thread/turn has one persistent card, checked every two seconds and reused by refresh and restart. Desktop input is echoed; Feishu input is not. Initial history is skipped except the configured creation-time replay. Existing duplicate cards are not automatically recalled.
 - **Clean Codex input**: ordinary Lark text is sent to Codex unchanged. Bridge rules are installed once when the thread is created, and only quotes, files, cards, or other rich cases add a compact context block.
 - **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
@@ -228,7 +228,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/active-profile` | Last selected profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
-| `~/.lark-channel/profiles/<profile>/codex-turn-sync.json` | Codex Desktop sync cursors and card state |
+| `~/.lark-channel/profiles/<profile>/codex-turn-sync.json` | Unified Codex reply cursors, card IDs and update sequences (v2 migrates old state) |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |

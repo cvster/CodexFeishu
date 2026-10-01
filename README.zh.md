@@ -12,7 +12,7 @@
 - **流式卡片**：文本回复和工具调用实时更新在同一张卡片上。
 - **COT 过程消息**：可选先发一条过程消息展示 agent 的阶段性文本和工具调用，再单独发送最终答案。
 - **会话延续**：每个聊天、话题或文档评论有自己的会话，不会互相串。
-- **Codex 桌面同步**：绑定到飞书群的 Codex 会话如果从桌面 App 发起新任务，新的用户消息、运行状态和回复也会同步回群里；首次启用不会回放旧历史。
+- **Codex 统一回复同步**：飞书发送端只提交消息；桌面 App 和飞书发起的轮次都由同一个 app-server 快照同步器回复。每个群中的同一会话、同一轮次只对应一张持久化卡片，每 2 秒检查变化；刷新和重启继续更新原卡片。桌面输入会回显到群里，飞书输入不重复回显；首次启用不回放旧历史（建群时配置的最近三轮补同步除外）。旧版双路径留下的卡片不会自动撤回。
 - **排队与消息合并**：短时间连续发送的消息会合并处理；任务运行中收到的普通消息会排队到下一轮，`/new`、`/cd`、`/ws use`、`/stop` 这类命令可以中断当前任务。
 - **多工作空间**：用 `/cd` 切换当前项目，用 `/ws` 保存和复用常用项目目录。
 - **图片 / 文件**：直接发给 bot，bridge 下载到本地后交给本机 agent 处理。
@@ -227,7 +227,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/active-profile` | 最近选择的 profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
-| `~/.lark-channel/profiles/<profile>/codex-turn-sync.json` | Codex 桌面消息同步游标和卡片状态 |
+| `~/.lark-channel/profiles/<profile>/codex-turn-sync.json` | Codex 统一回复的轮次游标、卡片 ID 和更新序号（v2 自动迁移旧状态） |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |

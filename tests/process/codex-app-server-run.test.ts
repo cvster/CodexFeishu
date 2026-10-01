@@ -44,6 +44,7 @@ describe('Codex app-server fresh thread run', () => {
         model: 'gpt-5.6-sol',
         reasoningEffort: 'high',
       },
+      { type: 'system', threadId: 'thread-visible', turnId: 'turn-1' },
       {
         type: 'tool_use',
         id: 'command-1',

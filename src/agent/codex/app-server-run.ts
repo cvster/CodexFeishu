@@ -96,6 +96,7 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
     const messageDeltaItems = new Set<string>();
     const startedToolItems = new Set<string>();
     let latestUsage: AgentEvent | undefined;
+    let emittedTurnId: string | undefined;
 
     try {
       writeRequest(child, initializeRequest());
@@ -143,6 +144,10 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
             return;
           }
           turnId = nestedString(message, ['result', 'turn', 'id']) ?? turnId;
+          if (threadId && turnId && emittedTurnId !== turnId) {
+            emittedTurnId = turnId;
+            yield { type: 'system', threadId, turnId };
+          }
           continue;
         }
 
@@ -156,6 +161,10 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
         switch (message.method) {
           case 'turn/started':
             turnId = stringValue(recordValue(params?.turn)?.id) ?? turnId;
+            if (threadId && turnId && emittedTurnId !== turnId) {
+              emittedTurnId = turnId;
+              yield { type: 'system', threadId, turnId };
+            }
             break;
           case 'item/agentMessage/delta': {
             if (!belongsToTurn(params, threadId, turnId)) break;

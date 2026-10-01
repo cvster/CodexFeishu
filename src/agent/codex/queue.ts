@@ -198,6 +198,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
           if (!selectedTurnId) {
             selectedTurnId = selected.id;
             bindCodexQueuedTurnClaim(options.clientUserMessageId, selected.id);
+            yield { type: 'system', threadId: options.threadId, turnId: selected.id };
           }
           for (const item of selected.items) {
             const message = agentMessage(item);

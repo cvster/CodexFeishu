@@ -107,6 +107,11 @@ import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lar
 export interface Controls {
   /** Refresh a persisted mirrored CardKit delivery using its original sequence owner. */
   refreshMirroredRunCard?(scope: string, messageId: string): Promise<boolean>;
+  /** Codex replies have one owner, keyed by thread/turn/scope, for all input sources. */
+  codexReplySync?: {
+    observeTurn(scope: string, threadId: string, turnId: string, replyTo: string, replyInThread?: boolean): void;
+    runNow(): Promise<void>;
+  };
   runControlIcons?: RunControlIcons;
   profile: string;
   profileConfig: ProfileConfig;

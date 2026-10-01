@@ -4,7 +4,7 @@ import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissio
 export type { ClaudePermissionMode } from '../config/permissions';
 
 export type AgentEvent =
-  | { type: 'system'; sessionId?: string; threadId?: string; cwd?: string; model?: string; reasoningEffort?: string }
+  | { type: 'system'; sessionId?: string; threadId?: string; turnId?: string; cwd?: string; model?: string; reasoningEffort?: string }
   | { type: 'text'; delta: string }
   | { type: 'thinking'; delta: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }

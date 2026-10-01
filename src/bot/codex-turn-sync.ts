@@ -30,10 +30,13 @@ import { renderCard } from '../card/run-renderer';
 import type { RunControlIcons } from '../card/run-control-icons';
 import { projectNameFromCwd, type Terminal } from '../card/run-state';
 import { sendManagedCard } from '../card/managed';
+import { getMessageReplyMode, getShowToolCalls } from '../config/schema';
+import { renderText } from '../card/text-renderer';
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const STATUS_HEARTBEAT_MS = 15_000;
-const STATE_VERSION = 1;
+const TERMINAL_TAIL_SETTLE_MS = 60_000;
+const STATE_VERSION = 2;
 const MAX_TURNS_PER_THREAD = 300;
 
 interface SkippedDelivery {
@@ -51,13 +54,18 @@ interface CardDelivery {
   lastContentHash: string;
   terminal: boolean;
   terminalStatus?: Terminal;
+  terminalObservedAtMs?: number;
 }
 
-type TurnDelivery = SkippedDelivery | CardDelivery;
+interface TextDelivery { status: 'text'; messageId: string }
+type TurnDelivery = SkippedDelivery | CardDelivery | TextDelivery;
 
 interface StoredTurn {
   origin: 'bridge' | 'external';
   discoveredAtMs: number;
+  lastStatus?: string;
+  userEchoed?: Record<string, boolean>;
+  replyTargets?: Record<string, { replyTo: string; replyInThread?: boolean }>;
   deliveries: Record<string, TurnDelivery>;
 }
 
@@ -69,7 +77,7 @@ interface StoredThread {
 }
 
 interface StoredState {
-  version: 1;
+  version: 2;
   threads: Record<string, StoredThread>;
 }
 
@@ -96,21 +104,21 @@ export interface CodexTurnSyncDeps {
 
 export interface CodexTurnSyncHandle {
   runNow(): Promise<void>;
+  observeTurn(scope: string, threadId: string, turnId: string, replyTo: string, replyInThread?: boolean): void;
   refreshMessage(scope: string, messageId: string): Promise<boolean>;
   stop(): Promise<void>;
 }
 
 /**
- * Mirror turns that originate outside the bridge (notably Codex Desktop) into
- * their bound Feishu chats. Bridge-originated turns keep using the existing
- * low-latency event stream and are positively identified by their persisted
- * client user-message id, preventing duplicate replies while both paths
- * coexist. The old prompt marker remains a migration fallback.
+ * The sole Codex reply writer, regardless of where input originated. Delivery
+ * identity is (thread id, turn id, bound scope); source only controls input echo.
+ * Native submitters supply exact turn IDs so even a fast first turn is delivered
+ * rather than mistaken for pre-existing history on a newly bound thread.
  */
 export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<CodexTurnSyncHandle> {
   const codex = deps.controls.profileConfig.codex;
   if (deps.controls.profileConfig.agentKind !== 'codex' || !codex?.binaryPath) {
-    return { runNow: async () => {}, refreshMessage: async () => false, stop: async () => {} };
+    return { runNow: async () => {}, observeTurn: () => {}, refreshMessage: async () => false, stop: async () => {} };
   }
 
   const reader = deps.reader ?? new CodexThreadReader(readerOptions(deps, codex));
@@ -121,15 +129,12 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
   const now = deps.now ?? Date.now;
   let stopped = false;
   let running: Promise<void> | undefined;
-  let needsInitialRevalidation = true;
+  const submitted = new Map<string, SubmittedTurn>();
 
   const runNow = async (): Promise<void> => {
     if (stopped) return;
     if (running) return running.catch((err) => log.fail('codex-turn-sync', err, { step: 'poll' }));
-    running = syncOnce(deps, reader, store, now, needsInitialRevalidation)
-      .then(() => {
-        needsInitialRevalidation = false;
-      })
+    running = syncOnce(deps, reader, store, now, submitted)
       .catch((err) => log.fail('codex-turn-sync', err, { step: 'poll' }))
       .finally(() => {
         running = undefined;
@@ -143,6 +148,12 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
 
   return {
     runNow,
+    observeTurn(scope, threadId, turnId, replyTo, replyInThread) {
+      if (stopped) return;
+      submitted.set(submissionKey(threadId, turnId, scope),
+        { scope, threadId, turnId, replyTo, replyInThread });
+      void runNow();
+    },
     async refreshMessage(scope, messageId) {
       // Use the same lock as polling: concurrent refreshes and periodic pushes
       // must never race to allocate a CardKit sequence or overwrite newer output.
@@ -161,7 +172,7 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
             const turn = snapshot.turns.find((item) => item.id === turnId);
             if (!turn) throw new Error('Original card turn is unavailable');
             await syncTurnToScope(deps.channel, store, threadId, turn, stored, scope, now(),
-              binding.cwdRealpath, deps.controls.runControlIcons, true);
+              binding.cwdRealpath, deps.controls.runControlIcons, true, deps.controls);
             refreshed = true;
             return;
           }
@@ -180,45 +191,26 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
   };
 }
 
+interface SubmittedTurn {
+  scope: string; threadId: string; turnId: string; replyTo: string; replyInThread?: boolean;
+}
+function submissionKey(threadId: string, turnId: string, scope: string): string {
+  return JSON.stringify([threadId, turnId, scope]);
+}
+
 async function syncOnce(
   deps: CodexTurnSyncDeps,
   reader: CodexTurnReaderLike,
   store: CodexTurnSyncStore,
   now: () => number,
-  forceRead: boolean,
+  submitted: Map<string, SubmittedTurn>,
 ): Promise<void> {
   const bindings = activeCodexBindings(deps.sessionCatalog.entries());
-  let revisions: Map<string, number> | undefined;
-  if (reader.listRecentThreads) {
-    try {
-      revisions = new Map(
-        (await reader.listRecentThreads(Math.max(100, bindings.size))).map((thread) => [
-          thread.id,
-          thread.updatedAtMs,
-        ]),
-      );
-    } catch (err) {
-      log.warn('codex-turn-sync', 'thread-list-failed', { err: errorText(err) });
-    }
-  }
   for (const [threadId, entries] of bindings) {
-    const stored = store.state.threads[threadId];
-    const revision = revisions?.get(threadId);
-    const hasRunningMirroredTurn = stored
-      ? Object.values(stored.turns).some((turn) =>
-          Object.values(turn.deliveries).some(
-            (delivery) => delivery.status === 'card' && !delivery.terminal,
-          ))
-      : false;
-    if (
-      !forceRead &&
-      stored &&
-      !hasRunningMirroredTurn &&
-      revisions &&
-      (revision === undefined || revision <= (stored.lastObservedUpdatedAtMs ?? 0))
-    ) {
-      continue;
-    }
+    // thread/list timestamps have coarse resolution and may advance before
+    // items are persisted. They are not a safe message cursor: a fast Desktop
+    // turn can start and finish without changing the observed watermark.
+    // Read every bound thread; persistent turn/item identity deduplicates it.
     let snapshot: CodexThreadSnapshot;
     try {
       snapshot = await reader.readThread(threadId);
@@ -230,7 +222,8 @@ async function syncOnce(
       });
       continue;
     }
-    await syncThreadSnapshot(deps.channel, store, snapshot, entries, now(), deps.controls.runControlIcons);
+    await syncThreadSnapshot(deps.channel, store, snapshot, entries, now(),
+      deps.controls.runControlIcons, submitted, deps.controls);
     let consumedCreationReplay = false;
     for (const entry of entries) {
       if (!entry.recentTurnReplayCount) continue;
@@ -239,11 +232,6 @@ async function syncOnce(
         consumedCreationReplay;
     }
     if (consumedCreationReplay) await deps.sessionCatalog.flush();
-    const synced = store.state.threads[threadId];
-    if (synced && revision !== undefined && synced.lastObservedUpdatedAtMs !== revision) {
-      synced.lastObservedUpdatedAtMs = revision;
-      store.dirty = true;
-    }
   }
   await store.flush();
 }
@@ -294,6 +282,8 @@ async function syncThreadSnapshot(
   bindings: SessionCatalogEntry[],
   nowMs: number,
   icons?: RunControlIcons,
+  submitted = new Map<string, SubmittedTurn>(),
+  controls?: Controls,
 ): Promise<void> {
   const existing = store.state.threads[snapshot.id];
   const firstSnapshot = !existing;
@@ -304,7 +294,8 @@ async function syncThreadSnapshot(
   const replayTurnsByScope = recentReplayTurnsByScope(snapshot, bindings, newScopes);
   thread.bindings = [...new Set([...thread.bindings, ...scopes])];
 
-  for (const turn of snapshot.turns) {
+  // Never rediscover pruned history as new output on the next poll.
+  for (const turn of snapshot.turns.slice(-MAX_TURNS_PER_THREAD)) {
     let stored = thread.turns[turn.id];
     const isNewTurn = !stored;
     if (!stored) {
@@ -321,11 +312,26 @@ async function syncThreadSnapshot(
     const replayScopesForTurn = new Set(
       scopes.filter((scope) => replayTurnsByScope.get(scope)?.has(turn.id)),
     );
-    const mirroredBridgeScopes = new Set(
-      scopes.filter((scope) =>
-        replayScopesForTurn.has(scope) || stored.deliveries[scope]?.status === 'card'),
-    );
-    if (stored.origin === 'bridge' && mirroredBridgeScopes.size === 0) continue;
+    // The initial snapshot may have no userMessage yet. Re-evaluate source as
+    // items hydrate, but never let that reclassification create another card.
+    if (stored.origin !== 'bridge' && isBridgeTurn(snapshot.id, turn)) {
+      stored.origin = 'bridge';
+      store.dirty = true;
+    }
+    if (stored.lastStatus !== turn.status) {
+      stored.lastStatus = turn.status;
+      store.dirty = true;
+    }
+    for (const scope of scopes) {
+      const request = submitted.get(submissionKey(snapshot.id, turn.id, scope));
+      if (!request) continue;
+      store.dirty = true;
+      stored.origin = 'bridge';
+      (stored.replyTargets ??= {})[scope] = {
+        replyTo: request.replyTo, replyInThread: request.replyInThread,
+      };
+      if (stored.deliveries[scope]?.status === 'skipped') delete stored.deliveries[scope];
+    }
 
     // A newly attached group starts at the current end of a completed
     // transcript. This avoids replaying months of Desktop history into a new
@@ -335,6 +341,7 @@ async function syncThreadSnapshot(
       const baselineScopes = firstSnapshot && isNewTurn ? scopes : newScopes;
       for (const scope of baselineScopes) {
         if (replayTurnsByScope.get(scope)?.has(turn.id)) continue;
+        if (submitted.has(submissionKey(snapshot.id, turn.id, scope))) continue;
         if (!stored.deliveries[scope]) {
           stored.deliveries[scope] = { status: 'skipped' };
           store.dirty = true;
@@ -343,12 +350,13 @@ async function syncThreadSnapshot(
     }
 
     for (const scope of scopes) {
-      if (stored.origin === 'bridge' && !mirroredBridgeScopes.has(scope)) continue;
       const delivery = stored.deliveries[scope];
       if (delivery?.status === 'skipped') continue;
       try {
         await syncTurnToScope(channel, store, snapshot.id, turn, stored, scope, nowMs,
-          bindings.find((entry) => entry.scopeId === scope)?.cwdRealpath, icons);
+          bindings.find((entry) => entry.scopeId === scope)?.cwdRealpath, icons, false, controls,
+          replayScopesForTurn.has(scope));
+        if (stored.deliveries[scope]) submitted.delete(submissionKey(snapshot.id, turn.id, scope));
       } catch (err) {
         log.warn('codex-turn-sync', 'delivery-failed', {
           threadId: snapshot.id,
@@ -414,28 +422,51 @@ async function syncTurnToScope(
   projectCwd?: string,
   icons?: RunControlIcons,
   forceUpdate = false,
+  controls?: Controls,
+  creationReplay = false,
 ): Promise<void> {
   const target = targetFromScope(scope);
   if (!target) return;
   const contentHash = turnContentHash(turn);
   let delivery = stored.deliveries[scope];
+  const replyMode = controls ? getMessageReplyMode(controls.cfg) : 'card';
+  if (!delivery && replyMode === 'text' && !isCodexTurnTerminal(turn.status)) return;
+  // Input echo is independent from answer delivery and can be filled in after
+  // turn/started's empty item list. Feishu-origin inputs are already in chat.
+  const input = externalUserText(turn);
+  if ((stored.origin === 'external' || creationReplay) && input && !stored.userEchoed?.[scope]) {
+    await channel.send(target.chatId, {
+      markdown: `${stored.origin === 'bridge' ? '💬 **历史消息**' : '💻 **来自 Codex 桌面 App**'}\n\n${truncate(input, 8_000)}`,
+    });
+    (stored.userEchoed ??= {})[scope] = true;
+    store.dirty = true;
+    await store.flush();
+  }
+  const renderState = (runtime: { firstSeenAtMs: number; lastActivityAtMs: number; checkedAtMs: number }) => {
+    const state = codexTurnRunState(turn, runtime);
+    if (projectCwd) state.projectName = projectNameFromCwd(projectCwd);
+    if (controls && !getShowToolCalls(controls.cfg)) state.blocks = state.blocks.filter((block) => block.kind !== 'tool');
+    return state;
+  };
 
   if (!delivery) {
-    const input = externalUserText(turn);
-    if (input) {
-      await channel.send(target.chatId, {
-        markdown: `💻 **来自 Codex 桌面 App**\n\n${truncate(input, 8_000)}`,
-      });
-    }
-    const state = codexTurnRunState(turn, {
+    const state = renderState({
       firstSeenAtMs: nowMs,
       lastActivityAtMs: nowMs,
       checkedAtMs: nowMs,
     });
+    if (replyMode === 'text') {
+      const sent = await channel.send(target.chatId, { markdown: renderText(state) }, stored.replyTargets?.[scope]);
+      stored.deliveries[scope] = { status: 'text', messageId: sent.messageId };
+      store.dirty = true;
+      await store.flush();
+      return;
+    }
     const sent = await sendManagedCard(
       channel,
       target.chatId,
-      renderCard({ ...state, ...(projectCwd ? { projectName: projectNameFromCwd(projectCwd) } : {}) }, icons),
+      renderCard(state, icons),
+      stored.replyTargets?.[scope],
     );
     delivery = {
       status: 'card',
@@ -448,15 +479,17 @@ async function syncTurnToScope(
       lastContentHash: contentHash,
       terminal: isCodexTurnTerminal(turn.status),
       terminalStatus: state.terminal,
+      ...(isCodexTurnTerminal(turn.status) ? { terminalObservedAtMs: nowMs } : {}),
     };
     stored.deliveries[scope] = delivery;
     store.dirty = true;
     await store.flush();
-    log.info('codex-turn-sync', 'external-turn-created', {
+    log.info('codex-turn-sync', 'turn-card-created', {
       threadId,
       turnId: turn.id,
       scope,
       messageId: sent.messageId,
+      origin: stored.origin,
     });
     return;
   }
@@ -472,7 +505,12 @@ async function syncTurnToScope(
   // a later snapshot differs. Unchanged terminal cards still remain idle.
   const terminalKindChanged = delivery.terminalStatus !== undefined &&
     delivery.terminalStatus !== nextTerminalStatus;
-  if (!forceUpdate && delivery.terminal && terminal && !terminalKindChanged) return;
+  const settlingFinalItems = delivery.terminalObservedAtMs !== undefined &&
+    nowMs - delivery.terminalObservedAtMs <= TERMINAL_TAIL_SETTLE_MS;
+  // Catch a newly completed turn's final persisted items without rewriting
+  // long-closed historical cards merely because CLI projection metadata changed.
+  if (!forceUpdate && delivery.terminal && terminal && !terminalKindChanged &&
+    (!changed || !settlingFinalItems)) return;
   if (!forceUpdate && !changed && !terminal && nowMs - delivery.lastPushedAtMs < STATUS_HEARTBEAT_MS) return;
 
   if (changed) delivery.lastActivityAtMs = nowMs;
@@ -484,17 +522,19 @@ async function syncTurnToScope(
   // Persist the next CardKit sequence before the API call. If the process dies
   // after Feishu accepts the update, a restart will never reuse that sequence.
   await store.flush();
-  const state = codexTurnRunState(turn, {
+  const state = renderState({
     firstSeenAtMs: delivery.firstSeenAtMs,
     lastActivityAtMs: delivery.lastActivityAtMs,
     checkedAtMs: nowMs,
   });
   await channel.updateCardById(
     delivery.cardId,
-    renderCard({ ...state, ...(projectCwd ? { projectName: projectNameFromCwd(projectCwd) } : {}) }, icons),
+    renderCard(state, icons),
     delivery.sequence,
   );
   delivery.terminal = terminal;
+  if (terminal && !wasTerminal) delivery.terminalObservedAtMs = nowMs;
+  if (!terminal) delete delivery.terminalObservedAtMs;
   store.dirty = true;
   await store.flush();
   log.info('codex-turn-sync', 'external-turn-updated', {
@@ -590,9 +630,22 @@ class CodexTurnSyncStore {
 
   async load(): Promise<void> {
     try {
-      const raw = JSON.parse(await readFile(this.path, 'utf8')) as Partial<StoredState>;
-      if (raw.version === STATE_VERSION && raw.threads && typeof raw.threads === 'object') {
-        this.state = raw as StoredState;
+      const raw = JSON.parse(await readFile(this.path, 'utf8')) as { version?: number; threads?: StoredState['threads'] };
+      if ((raw.version === 1 || raw.version === STATE_VERSION) && raw.threads && typeof raw.threads === 'object') {
+        this.state = { version: STATE_VERSION, threads: raw.threads };
+        if (raw.version === 1) {
+          // Old bridge turns were answered by the former streaming path. Do
+          // not replay those answers on upgrade. Existing mirror cards retain
+          // ownership and keep receiving updates, including active turns.
+          for (const thread of Object.values(raw.threads)) {
+            for (const turn of Object.values(thread.turns)) {
+              turn.userEchoed = Object.fromEntries(Object.keys(turn.deliveries).map((scope) => [scope, true]));
+              if (turn.origin !== 'bridge') continue;
+              for (const scope of thread.bindings) turn.deliveries[scope] ??= { status: 'skipped' };
+            }
+          }
+          this.dirty = true;
+        }
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {

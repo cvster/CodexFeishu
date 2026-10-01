@@ -518,6 +518,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   controls.refreshMirroredRunCard = codexTurnSync
     ? (scope, messageId) => codexTurnSync.refreshMessage(scope, messageId)
     : undefined;
+  controls.codexReplySync = controls.profileConfig.agentKind === 'codex' ? codexTurnSync : undefined;
 
   const identity = channel.botIdentity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
@@ -559,6 +560,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       knownChatsRefresh.stop();
       aaSessionGroupSync?.stop();
       await codexTurnSync?.stop();
+      controls.codexReplySync = undefined;
       controls.refreshMirroredRunCard = undefined;
       keepalive.stop();
       pending.cancelAll();
@@ -1011,6 +1013,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.info('session', 'fresh', { cwd });
   }
   let runCodexThreadId: string | undefined;
+  let runCodexTurnId: string | undefined;
   const recordSession = (evt: AgentEvent): void => {
     recordRunSessionEvent({
       scopeId: scope,
@@ -1036,6 +1039,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
     if (evt.type === 'system' && evt.threadId) {
       runCodexThreadId = evt.threadId;
+      if (evt.turnId) {
+        runCodexTurnId = evt.turnId;
+        controls.codexReplySync?.observeTurn(scope, evt.threadId, evt.turnId,
+          sendOpts.replyTo, sendOpts.replyInThread);
+      }
       log.info('session', 'set-thread', { threadId: evt.threadId });
       if (firstMsg.chatType !== 'p2p') {
         void syncCodexThreadNameFromChat({
@@ -1101,10 +1109,23 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Add a "Typing" reaction to the triggering message as an instant ack, but
   // never let that outbound API call block agent event draining.
   const reactionPromise =
-    cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
+    !controls.codexReplySync && (cotEnabled || replyMode === 'card')
+      ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
   try {
-    if (cotEnabled) {
+    if (controls.codexReplySync) {
+      // Submission/execution monitoring must not render a second reply. The
+      // app-server snapshot synchronizer is the sole owner of turn deliveries.
+      const finalState = await processAgentStream(handle, eventStream, scope,
+        idleTimeoutMs, recordSession, async () => {});
+      await controls.codexReplySync.runNow();
+      // A failure before turn/start has no turn to mirror (e.g. queue rejected).
+      // Surface only that submission error, never duplicate a turn's answer.
+      if (!runCodexTurnId && finalState.terminal === 'error') {
+        await channel.send(chatId, { markdown: `⚠️ 消息提交失败：${finalState.errorMsg ?? 'Codex 未创建新轮次'}` }, sendOpts);
+      }
+      return;
+    } else if (cotEnabled) {
       const cotPublisher = new CotPublisher({
         client: cotClient,
         chatId,

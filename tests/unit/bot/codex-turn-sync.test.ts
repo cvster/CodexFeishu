@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +18,7 @@ describe('Codex desktop turn sync', () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  it('mirrors external turns, ignores bridge turns, and resumes without duplicates', async () => {
+  it('mirrors external turns, skips historical turns, and resumes without duplicates', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-turn-sync-'));
     cleanup.push(dir);
     const channel = createFakeChannel();
@@ -39,7 +39,7 @@ describe('Codex desktop turn sync', () => {
     let nowMs = 10_000;
     let snapshot: CodexThreadSnapshot = {
       id: 'thread-1',
-      turns: [externalTurn('old-turn', 'completed', 'old prompt', 'old answer')],
+      turns: [externalTurn('old-turn', 'completed', 'old prompt', 'old answer'), bridgeTurn('bridge-turn')],
     };
     const reader = {
       readThread: vi.fn(async () => snapshot),
@@ -63,7 +63,6 @@ describe('Codex desktop turn sync', () => {
       id: 'thread-1',
       turns: [
         ...snapshot.turns,
-        bridgeTurn('bridge-turn'),
         externalTurn('desktop-turn', 'inProgress', 'desktop prompt', ''),
       ],
     };
@@ -269,7 +268,7 @@ describe('Codex desktop turn sync', () => {
     await handle.stop();
   });
 
-  it('does not mirror a raw prompt claimed by native codex queue', async () => {
+  it('delivers a raw native queue turn once without echoing its Feishu input', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-turn-sync-queue-claim-'));
     cleanup.push(dir);
     const channel = createFakeChannel();
@@ -319,7 +318,175 @@ describe('Codex desktop turn sync', () => {
     };
     await handle.runNow();
 
+    expect(channel.sent).toHaveLength(1);
+    expect(channel.streams).toHaveLength(0);
+    expect(JSON.stringify(channel.sent)).not.toContain('原样飞书消息');
+    await handle.stop();
+  });
+
+  it('reuses one card when an initially empty turn later hydrates as bridge-origin', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-unified-empty-turn-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = { key: 'entry', scopeId: 'oc_group', agentId: 'codex', cwdRealpath: dir,
+      policyFingerprint: 'policy', status: 'active', updatedAt: 1, threadId: 'thread-empty' } satisfies SessionCatalogEntry;
+    let snapshot: CodexThreadSnapshot = { id: entry.threadId, turns: [] };
+    let nowMs = 10_000;
+    const reader = { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) };
+    const deps = { channel: channel as unknown as LarkChannel, controls: controlsForCodex(),
+      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      profileStateDir: dir, intervalMs: 60_000, reader, now: () => nowMs };
+    const handle = await startCodexTurnSync(deps);
+    await handle.runNow();
+    registerCodexQueuedTurnClaim('lark-channel-bridge:late-user', entry.threadId, '迟到的输入', []);
+    snapshot = { id: entry.threadId, turns: [{ id: 'turn-late', status: 'inProgress', items: [] }] };
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(1);
+    snapshot = { id: entry.threadId, turns: [externalTurn('turn-late', 'inProgress', '迟到的输入', 'partial')] };
+    handle.observeTurn(entry.scopeId, entry.threadId, 'turn-late', 'om_input');
+    await handle.runNow();
+    snapshot = { id: entry.threadId, turns: [externalTurn('turn-late', 'completed', '迟到的输入', 'final answer')] };
+    nowMs += 2_000;
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(1);
+    expect(JSON.stringify(channel.sent)).not.toContain('迟到的输入');
+    expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('final answer');
+    await handle.stop();
+    const restarted = await startCodexTurnSync(deps);
+    await restarted.runNow();
+    expect(channel.sent).toHaveLength(1);
+    expect(await restarted.refreshMessage(entry.scopeId, 'om_fake_1')).toBe(true);
+    expect(channel.sent).toHaveLength(1);
+    await restarted.stop();
+  });
+
+  it('delivers an explicitly submitted fast first turn even if initially seen as completed history', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-unified-fast-turn-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = { key: 'entry', scopeId: 'oc_fast', agentId: 'codex', cwdRealpath: dir,
+      policyFingerprint: 'policy', status: 'active', updatedAt: 1, threadId: 'thread-fast' } satisfies SessionCatalogEntry;
+    const snapshot: CodexThreadSnapshot = { id: entry.threadId, turns: [bridgeTurn('fast')] };
+    const reader = { readThread: vi.fn(async () => snapshot),
+      listRecentThreads: vi.fn(async () => [{ id: entry.threadId, updatedAtMs: 1 }]), stop: vi.fn(async () => {}) };
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      profileStateDir: dir, intervalMs: 60_000, reader });
+    await handle.runNow();
     expect(channel.sent).toHaveLength(0);
+    handle.observeTurn(entry.scopeId, entry.threadId, 'fast', 'om_trigger', true);
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(1);
+    expect(channel.sent[0]?.options).toEqual({ replyTo: 'om_trigger', replyInThread: true });
+    handle.observeTurn(entry.scopeId, entry.threadId, 'fast', 'om_trigger', true);
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(1);
+    await handle.stop();
+  });
+
+  it('upgrades old state without replaying streaming replies and retains existing cards', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-unified-migration-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = { key: 'entry', scopeId: 'oc_migrate', agentId: 'codex', cwdRealpath: dir,
+      policyFingerprint: 'policy', status: 'active', updatedAt: 1, threadId: 'thread-migrate' } satisfies SessionCatalogEntry;
+    const statePath = join(dir, 'codex-turn-sync.json');
+    await writeFile(statePath, JSON.stringify({ version: 1, threads: { [entry.threadId]: {
+      bindings: [entry.scopeId], turnOrder: ['old'], turns: {
+        old: { origin: 'bridge', discoveredAtMs: 1, deliveries: {} },
+      },
+    } } }));
+    let snapshot: CodexThreadSnapshot = { id: entry.threadId, turns: [bridgeTurn('old')] };
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      profileStateDir: dir, intervalMs: 60_000,
+      reader: { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) } });
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(0);
+    snapshot = { id: entry.threadId, turns: [...snapshot.turns, bridgeTurn('new')] };
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(1);
+    await handle.stop();
+    expect(JSON.parse(await readFile(statePath, 'utf8')).version).toBe(2);
+  });
+
+  it('finds fast Desktop turns under an unchanged list watermark and catches the final item tail', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-unified-watermark-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = { key: 'entry', scopeId: 'oc_watermark', agentId: 'codex', cwdRealpath: dir,
+      policyFingerprint: 'policy', status: 'active', updatedAt: 1, threadId: 'thread-watermark' } satisfies SessionCatalogEntry;
+    let snapshot: CodexThreadSnapshot = { id: entry.threadId, turns: [] };
+    let nowMs = 10_000;
+    const reader = { readThread: vi.fn(async () => snapshot),
+      listRecentThreads: vi.fn(async () => [{ id: entry.threadId, updatedAtMs: 1 }]), stop: vi.fn(async () => {}) };
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      profileStateDir: dir, intervalMs: 60_000, reader, now: () => nowMs });
+    await handle.runNow();
+    snapshot = { id: entry.threadId, turns: [externalTurn('quick', 'completed', 'desktop input', 'partial tail')] };
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(2);
+    snapshot = { id: entry.threadId, turns: [externalTurn('quick', 'completed', 'desktop input', 'complete final tail')] };
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(2);
+    expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('complete final tail');
+    const updateCount = channel.rawClient.requests.filter((request) => request.method === 'cardkit.v1.card.update').length;
+    nowMs += 61_000;
+    snapshot.turns[0]!.model = 'later projection model';
+    await handle.runNow();
+    expect(channel.rawClient.requests.filter((request) => request.method === 'cardkit.v1.card.update')).toHaveLength(updateCount);
+    expect(await handle.refreshMessage(entry.scopeId, 'om_fake_2')).toBe(true);
+    expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('later projection model');
+    await handle.stop();
+  });
+
+  it('does not replay pruned historical turns when the transcript exceeds its cursor limit', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-unified-pruned-history-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const entry = { key: 'entry', scopeId: 'oc_long', agentId: 'codex', cwdRealpath: dir,
+      policyFingerprint: 'policy', status: 'active', updatedAt: 1, threadId: 'thread-long' } satisfies SessionCatalogEntry;
+    const snapshot: CodexThreadSnapshot = { id: entry.threadId,
+      turns: Array.from({ length: 320 }, (_, index) => bridgeTurn(`old-${index}`)) };
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      profileStateDir: dir, intervalMs: 60_000,
+      reader: { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) } });
+    await handle.runNow();
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(0);
+    snapshot.turns.push(bridgeTurn('newest'));
+    await handle.runNow();
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(1);
+    await handle.stop();
+  });
+
+  it('keeps plain-text preference terminal-only without invoking the legacy writer', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-unified-text-'));
+    cleanup.push(dir);
+    const channel = createFakeChannel();
+    const controls = controlsForCodex();
+    controls.cfg.preferences = { messageReply: 'text', messageReplyMigrated: true };
+    const entry = { key: 'entry', scopeId: 'oc_text', agentId: 'codex', cwdRealpath: dir,
+      policyFingerprint: 'policy', status: 'active', updatedAt: 1, threadId: 'thread-text' } satisfies SessionCatalogEntry;
+    let snapshot: CodexThreadSnapshot = { id: entry.threadId, turns: [] };
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
+      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      profileStateDir: dir, intervalMs: 60_000,
+      reader: { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) } });
+    await handle.runNow();
+    snapshot = { id: entry.threadId, turns: [{ ...bridgeTurn('text-turn'), status: 'inProgress' }] };
+    handle.observeTurn(entry.scopeId, entry.threadId, 'text-turn', 'om_input');
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(0);
+    snapshot = { id: entry.threadId, turns: [bridgeTurn('text-turn')] };
+    await handle.runNow();
+    await handle.runNow();
+    expect(channel.sent).toHaveLength(1);
+    expect(JSON.stringify(channel.sent[0]?.content)).toContain('already delivered');
+    expect(channel.streams).toHaveLength(0);
     await handle.stop();
   });
 
