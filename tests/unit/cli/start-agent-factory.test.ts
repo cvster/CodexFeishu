@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assertReconnectAgentKindUnchanged,
   createRuntimeAgent,
@@ -10,6 +10,13 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema.j
 import { createRuntimeProfileConfig } from '../../../src/runtime/profile-runtime.js';
 
 describe('start runtime agent factory', () => {
+  beforeEach(() => {
+    // The host's service override must not change the default-path fixture.
+    vi.stubEnv('LARK_CHANNEL_CODEX_BIN', undefined);
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
   it('keeps Claude as the default runtime agent', () => {
     const agent = createRuntimeAgent(
       createDefaultProfileConfig({
@@ -67,6 +74,25 @@ describe('start runtime agent factory', () => {
     });
 
     expect(profile.codex?.binaryPath).toBe('codex');
+  });
+
+  it('uses the environment binary override when no binary is configured', () => {
+    vi.stubEnv('LARK_CHANNEL_CODEX_BIN', '/fixture/codex-override');
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'codex', accounts: appAccount(),
+    });
+
+    expect(profile.codex?.binaryPath).toBe('/fixture/codex-override');
+  });
+
+  it('preserves an explicitly configured binary ahead of the environment default', () => {
+    vi.stubEnv('LARK_CHANNEL_CODEX_BIN', '/fixture/codex-override');
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'codex', accounts: appAccount(),
+      codex: { binaryPath: '/fixture/configured-codex' },
+    });
+
+    expect(profile.codex?.binaryPath).toBe('/fixture/configured-codex');
   });
 
   it('updates the process registry before releasing the old app lock during reconnect', async () => {

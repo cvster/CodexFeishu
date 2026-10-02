@@ -2,7 +2,7 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp } from 'node:fs/promises';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   materializeEnvSecretForService,
   resolveProfileRuntime,
@@ -52,6 +52,13 @@ const app = {
 };
 
 describe('profile runtime resolver', () => {
+  beforeEach(() => {
+    // Migration tests discover their fixture on PATH, not the host's service CLI.
+    vi.stubEnv('LARK_CHANNEL_CODEX_BIN', undefined);
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
   it('recovers a crashed legacy lark-cli source overlay before loading the root config', async () => {
     const root = await tmpRoot();
     const configFile = join(root, 'config.json');
