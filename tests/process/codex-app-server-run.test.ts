@@ -126,6 +126,31 @@ describe('Codex app-server fresh thread run', () => {
     expect(requests.filter((r: { result?: unknown }) => r.result)).toEqual([{ id: 1, result: { answers: { q: { answers: ['A'] } } } }]);
     expect(await run.waitForExit(2000)).toBe(true);
   });
+  it('answers a fresh async question through its existing stdio writer and waits for steer acknowledgement', async () => {
+    const fake = await createFakeAppServer('async'); cleanup.push(fake.dir);
+    const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir,
+      inheritCodexHome: true, stopGraceMs: 50 }).run({ runId: 'async', cwd: fake.dir, prompt: 'choose' });
+    let questions = 0;
+    for await (const event of run.events) {
+      if (event.type !== 'user_input') continue;
+      questions++;
+      expect(event.prompt.request.kind).toBe('async');
+      expect(event.prompt.request.isBlocking).toBe(false);
+      const id = event.prompt.request.questions[0]!.id;
+      expect(await event.prompt.respond({ [id]: { answers: ['B'] } })).toBe(true);
+      expect(await event.prompt.respond({ [id]: { answers: ['A'] } })).toBe(false);
+    }
+    expect(questions).toBe(1);
+    const requests = JSON.parse(await readFile(fake.recordPath, 'utf8'));
+    expect(requests.filter((r: { method: string }) => r.method === 'turn/steer')).toEqual([
+      expect.objectContaining({ params: { threadId: 'thread-visible', expectedTurnId: 'turn-1',
+        clientUserMessageId: expect.stringMatching(/^lark-channel-bridge:async:/), input: [
+        { type: 'text', text: expect.stringContaining('"answer":"B"'), text_elements: [] },
+      ] } }),
+    ]);
+    expect(requests.some((r: { method: string }) => ['thread/resume', 'thread/queue/add'].includes(r.method))).toBe(false);
+    expect(await run.waitForExit(2000)).toBe(true);
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
@@ -134,7 +159,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
   return out;
 }
 
-async function createFakeAppServer(interactive = false): Promise<{
+async function createFakeAppServer(interactive: boolean | 'async' = false): Promise<{
   dir: string;
   path: string;
   recordPath: string;
@@ -155,8 +180,13 @@ rl.on('line', (line) => {
   const request = JSON.parse(line);
   requests.push(request);
   save();
-  if (${interactive} && request.id === 1 && request.result) {
+  if (${interactive === true} && request.id === 1 && request.result) {
     send({ method: 'serverRequest/resolved', params: { threadId: 'thread-visible', requestId: 1 } });
+    send({ method: 'turn/completed', params: { threadId: 'thread-visible', turn: { id: 'turn-1', status: 'completed' } } });
+    return;
+  }
+  if (${interactive === 'async'} && request.method === 'turn/steer') {
+    send({ id: request.id, result: { turnId: 'turn-1' } });
     send({ method: 'turn/completed', params: { threadId: 'thread-visible', turn: { id: 'turn-1', status: 'completed' } } });
     return;
   }
@@ -171,7 +201,14 @@ rl.on('line', (line) => {
   if (request.method !== 'turn/start') return;
   send({ id: request.id, result: { turn: { id: 'turn-1' } } });
   send({ method: 'turn/started', params: { threadId: 'thread-visible', turn: { id: 'turn-1', status: 'inProgress' } } });
-  if (${interactive}) {
+  if (${interactive === 'async'}) {
+    const item = { type: 'agentMessage', id: 'async-question', delivery: 'async', text: 'Choose: A or B',
+      questions: [{ title: 'Choose', options: ['A', 'B'] }] };
+    send({ method: 'item/completed', params: { threadId: 'thread-visible', turnId: 'turn-1', item } });
+    send({ method: 'item/completed', params: { threadId: 'thread-visible', turnId: 'turn-1', item } });
+    return;
+  }
+  if (${interactive === true}) {
     // Server request ID intentionally collides with client's initialize ID.
     send({ id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread-visible', turnId: 'turn-1', itemId: 'input-1', isBlocking: true,
       questions: [{ id: 'q', header: 'Choose', question: 'A or B?', isOther: false, isSecret: false, options: [{ label: 'A', description: 'one' }, { label: 'B', description: 'two' }] }] } });

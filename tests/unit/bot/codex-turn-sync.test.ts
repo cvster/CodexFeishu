@@ -18,6 +18,24 @@ describe('Codex desktop turn sync', () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
+  it('passes reconciled turn snapshots to async question UI on the existing polling path', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-async-sync-')); cleanup.push(dir);
+    const channel = createFakeChannel(); const controls = controlsForCodex();
+    const observeSnapshot = vi.fn(); const endTurn = vi.fn();
+    controls.codexUserInput = { observeSnapshot, endTurn, isWaiting: () => false } as unknown as NonNullable<Controls['codexUserInput']>;
+    const entry: SessionCatalogEntry = { key: 'entry', scopeId: 'oc_group', threadId: 'thread', agentId: 'codex',
+      cwdRealpath: dir, policyFingerprint: 'p', status: 'active', updatedAt: 1 };
+    const snapshot: CodexThreadSnapshot = { id: 'thread', turns: [externalTurn('turn', 'inProgress', 'choose', 'partial')] };
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
+      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog, profileStateDir: dir,
+      intervalMs: 60_000, reader: { readThread: async () => snapshot, stop: async () => {} } });
+    await handle.runNow();
+    expect(observeSnapshot).toHaveBeenCalledWith(snapshot);
+    snapshot.turns[0]!.status = 'completed'; await handle.runNow();
+    expect(endTurn).toHaveBeenCalledWith('thread', 'turn');
+    await handle.stop();
+  });
+
   it('updates waiting status without new output and keeps the same answer card', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-waiting-sync-')); cleanup.push(dir);
     const channel = createFakeChannel(); const controls = controlsForCodex();

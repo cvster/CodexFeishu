@@ -84,7 +84,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     return;
   }
 
-  // Answer the original app-server request, NOT a new queued chat turn.
+  // Native replies use their original RPC; async replies steer the exact turn.
   if (typeof payload.__codex_input === 'string') {
     try {
       if (!deps.controls.codexUserInput) throw new Error('交互监听器未启动，请在桌面回答');

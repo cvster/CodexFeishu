@@ -215,6 +215,7 @@ async function syncOnce(
     try {
       snapshot = await reader.readThread(threadId);
       snapshot = await reconcileProjectedInterruptions(reader, snapshot, now());
+      deps.controls.codexUserInput?.observeSnapshot?.(snapshot);
       const latest = snapshot.turns.at(-1);
       if (latest && isCodexTurnTerminal(latest.status)) deps.controls.codexUserInput?.endTurn(threadId, latest.id);
     } catch (err) {

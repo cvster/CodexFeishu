@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
@@ -10,6 +11,7 @@ import {
 import { spawnCodexProcess as spawnProcess } from '../../platform/codex-binary';
 import type { AgentEvent, AgentRun } from '../types';
 import { parseCodexInputRequest, type CodexRequestId } from '../../session/codex-user-input';
+import { parseCodexAsyncInput, serializeCodexAsyncAnswers, CodexAsyncAnswerUnconfirmedError } from '../../session/codex-async-input';
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -58,6 +60,10 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
   let started = false;
   let lastError: string | undefined;
   const inputRequests = new Set<CodexRequestId>();
+  const asyncInputs = new Set<string>();
+  const emittedAsyncInputs = new Set<string>();
+  const steerReplies = new Map<number, { resolve(message: Record<string, unknown>): void; reject(error: Error): void }>();
+  let nextSteerId = 1000;
 
   child.stderr.on('data', (chunk: Buffer) => {
     stderrChunks.push(chunk);
@@ -96,6 +102,13 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
     }
 
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    // Resolve acknowledgements independently of the event consumer. It may be
+    // awaiting prompt.respond() while the async iterator is paused at a yield.
+    rl.on('line', (line) => {
+      const message = parseRecord(line);
+      if (typeof message?.id !== 'number' || message.method) return;
+      steerReplies.get(message.id)?.resolve(message);
+    });
     const messageDeltaItems = new Set<string>();
     const startedToolItems = new Set<string>();
     let latestUsage: AgentEvent | undefined;
@@ -226,6 +239,38 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
             const item = recordValue(params?.item);
             const itemId = stringValue(item?.id);
             if (item?.type === 'agentMessage') {
+              const request = threadId && turnId ? parseCodexAsyncInput(threadId, turnId, item) : undefined;
+              if (request && !emittedAsyncInputs.has(request.itemId)) {
+                emittedAsyncInputs.add(request.itemId);
+                asyncInputs.add(request.itemId);
+                yield { type: 'user_input', prompt: { requestId: request.itemId, request, async respond(answers) {
+                  if (terminal || turnId !== request.turnId || !asyncInputs.delete(request.itemId) ||
+                    child.exitCode !== null || child.signalCode !== null) return false;
+                  const text = serializeCodexAsyncAnswers(request, answers);
+                  const id = nextSteerId++;
+                  const reply = await new Promise<Record<string, unknown>>((resolve, reject) => {
+                    const timer = setTimeout(() => {
+                      steerReplies.delete(id);
+                      reject(new CodexAsyncAnswerUnconfirmedError());
+                    }, 15_000);
+                    steerReplies.set(id, { resolve(message) {
+                      clearTimeout(timer); steerReplies.delete(id); resolve(message);
+                    }, reject(error) { clearTimeout(timer); steerReplies.delete(id); reject(error); } });
+                    try { writeRequest(child, { id, method: 'turn/steer', params: {
+                      threadId: request.threadId, expectedTurnId: request.turnId,
+                      clientUserMessageId: `lark-channel-bridge:async:${randomUUID()}`,
+                      input: [{ type: 'text', text, text_elements: [] }],
+                    } }); }
+                    catch (error) { steerReplies.get(id)?.reject(error instanceof Error ? error : new Error(String(error))); }
+                  });
+                  if (reply.error) {
+                    asyncInputs.add(request.itemId); // Explicit rejection may be safely retried.
+                    throw new Error(responseError(reply, '异步回答提交失败'));
+                  }
+                  if (nestedString(reply, ['result', 'turnId']) !== request.turnId) throw new CodexAsyncAnswerUnconfirmedError();
+                  return true;
+                } } };
+              }
               if (!itemId || !messageDeltaItems.has(itemId)) {
                 const text = stringValue(item.text);
                 if (text) yield { type: 'text', delta: text };
@@ -287,6 +332,8 @@ export function createCodexAppServerRun(options: CodexAppServerRunOptions): Agen
       return;
     } finally {
       inputRequests.clear();
+      asyncInputs.clear();
+      for (const pending of steerReplies.values()) pending.reject(new CodexAsyncAnswerUnconfirmedError());
       rl.close();
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     }

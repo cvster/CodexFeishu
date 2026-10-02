@@ -9,6 +9,8 @@ export interface CodexInputQuestion {
   options: Array<{ label: string; description: string }> | null;
 }
 export interface CodexInputRequest {
+  kind?: 'async';
+  answeredQuestionIds?: string[];
   threadId: string;
   turnId: string;
   itemId: string;
@@ -19,7 +21,7 @@ export type CodexInputAnswers = Record<string, { answers: string[] }>;
 export interface CodexInputPrompt {
   requestId: CodexRequestId;
   request: CodexInputRequest;
-  /** Respond on the ORIGINAL connection; false means no longer pending. */
+  /** Native: original RPC; async: steer the exact active turn. False means stale. */
   respond(answers: CodexInputAnswers): Promise<boolean>;
 }
 
@@ -41,6 +43,9 @@ export function parseCodexInputRequest(value: unknown): CodexInputRequest | unde
       options: Array.isArray(q.options) ? q.options.map((o) => ({ label: o.label, description: o.description })) : null });
   }
   return { threadId: p.threadId, turnId: p.turnId, itemId: p.itemId, questions,
+    ...(p.kind === 'async' ? { kind: 'async' as const } : {}),
+    ...(p.kind === 'async' && Array.isArray(p.answeredQuestionIds) ? { answeredQuestionIds:
+      p.answeredQuestionIds.filter((id): id is string => typeof id === 'string' && questions.some((q) => q.id === id)) } : {}),
     // Older protocol versions didn't send isBlocking (synchronous tool).
     isBlocking: p.isBlocking !== false };
 }

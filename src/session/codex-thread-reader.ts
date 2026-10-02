@@ -4,7 +4,9 @@ import type { Socket } from 'node:net';
 import WebSocket from 'ws';
 import { nextCodexForkName } from './codex-fork-name';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { parseCodexInputRequest, type CodexInputPrompt, type CodexRequestId } from './codex-user-input';
+import { CodexAsyncAnswerUnconfirmedError } from './codex-async-input';
 import {
   mergeProcessEnv,
   type SpawnedProcessByStdio,
@@ -68,6 +70,8 @@ interface PendingRequest {
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
 }
+
+class CodexRpcError extends Error {}
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -168,6 +172,23 @@ export class CodexThreadReader {
     if (this.stopped) return;
     await this.ensureStarted();
     await this.request('turn/interrupt', { threadId, turnId });
+  }
+
+  /** Never resume/queue as a fallback: answers belong to this already-active turn. */
+  async steerTurn(threadId: string, expectedTurnId: string, text: string): Promise<void> {
+    if (!this.options.sharedServer) throw new Error('Steering requires the writer app-server');
+    if (!expectedTurnId) throw new Error('expectedTurnId is required');
+    await this.ensureStarted();
+    try {
+      const response = await this.request('turn/steer', {
+        threadId, expectedTurnId, clientUserMessageId: `lark-channel-bridge:async:${randomUUID()}`,
+        input: [{ type: 'text', text, text_elements: [] }],
+      });
+      if (recordValue(response.result)?.turnId !== expectedTurnId) throw new CodexAsyncAnswerUnconfirmedError();
+    } catch (error) {
+      if (error instanceof CodexRpcError) throw error; // Explicit server rejection: not delivered.
+      throw new CodexAsyncAnswerUnconfirmedError(); // Any transport loss after sending is ambiguous.
+    }
   }
 
   async deleteQueuedTurn(threadId: string, queuedSubmissionId: string): Promise<void> {
@@ -350,7 +371,7 @@ export class CodexThreadReader {
     const response = await this.requestRaw(id, method, params);
     if (response.error) {
       const error = recordValue(response.error);
-      throw new Error(stringValue(error?.message) ?? `${method} rejected`);
+      throw new CodexRpcError(stringValue(error?.message) ?? `${method} rejected`);
     }
     return response;
   }

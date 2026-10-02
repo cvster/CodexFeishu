@@ -31,7 +31,7 @@ describe('Codex input cards', () => {
     }
     expect(() => codexAnswersFromForm(request, { q_0: '0' })).toThrow('第 2');
   });
-  it.each(['submitted', 'resolved', 'disconnected'] as const)('removes callbacks when %s', (status) => {
+  it.each(['submitting', 'submitted', 'resolved', 'disconnected', 'unconfirmed'] as const)('removes callbacks when %s', (status) => {
     const json = JSON.stringify(codexInputCard(request, 'token', status));
     expect(json).not.toContain('__codex_input');
     expect(json).not.toContain('"tag":"form"');

@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import type { LarkChannel } from '@larksuite/channel';
 import type { Controls } from '../commands';
 import type { SessionCatalog } from '../session/catalog';
-import { CodexThreadReader } from '../session/codex-thread-reader';
+import { CodexThreadReader, type CodexThreadSnapshot } from '../session/codex-thread-reader';
+import { codexAsyncAnsweredIds, parseCodexAsyncInput, serializeCodexAsyncAnswers, CodexAsyncAnswerUnconfirmedError } from '../session/codex-async-input';
 import { codexInputKey, parseCodexInputRequest, type CodexInputPrompt, type CodexInputRequest, type CodexRequestId } from '../session/codex-user-input';
 import { codexAnswersFromForm, codexInputCard, type InputCardStatus } from '../card/codex-input';
 import { sendManagedCard } from '../card/managed';
@@ -23,6 +24,7 @@ interface StoredInput {
 type InputTarget = { scope: string; replyTo?: string; replyInThread?: boolean };
 interface LiveInput { source: string; prompt: CodexInputPrompt; target?: InputTarget }
 export interface CodexInputHandle {
+  observeSnapshot(snapshot: CodexThreadSnapshot): void;
   accept(prompt: CodexInputPrompt, source: string, target?: { scope: string; replyTo?: string; replyInThread?: boolean }): void;
   resolve(threadId: string, requestId: CodexRequestId, source: string): void;
   endTurn(threadId: string, turnId: string): void;
@@ -35,7 +37,7 @@ export interface CodexInputDeps {
   profileStateDir: string;
   /** Test seam. Real watcher ONLY uses the shared writer daemon. */
   readerFactory?: (options: ConstructorParameters<typeof CodexThreadReader>[0]) =>
-    Pick<CodexThreadReader, 'watchLoadedThread' | 'stop'> & Partial<Pick<CodexThreadReader, 'readThreadStatus'>>;
+    Pick<CodexThreadReader, 'watchLoadedThread' | 'stop'> & Partial<Pick<CodexThreadReader, 'readThreadStatus' | 'readThread' | 'steerTurn'>>;
   intervalMs?: number;
 }
 
@@ -93,6 +95,49 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
     void enqueue(async () => { await persist(); await render(record); });
   };
   const handle: CodexInputHandle = {
+    observeSnapshot(snapshot) {
+      if (stopped) return;
+      // Old/history questions are never resurrected. Async controls live only
+      // in the current in-flight turn, just as they do in Desktop.
+      const latest = snapshot.turns.at(-1);
+      const active = latest?.status === 'inProgress' ? latest : undefined;
+      const answered = active ? codexAsyncAnsweredIds(active) : new Set<string>();
+      for (const [key, record] of stored) {
+        if (record.request.kind !== 'async' || record.request.threadId !== snapshot.id) continue;
+        if (record.request.turnId !== active?.id || !active.items.some((item) => item.id === record.request.itemId) ||
+          answered.has(record.request.itemId) || record.request.questions.every((q) => answered.has(q.id))) end(key, 'resolved');
+      }
+      if (!active) return;
+      for (const item of active.items) {
+        const request = parseCodexAsyncInput(snapshot.id, active.id, item);
+        if (!request) continue;
+        const key = codexInputKey(request);
+        const previous = stored.get(key)?.request.answeredQuestionIds ?? [];
+        request.answeredQuestionIds = request.questions.filter((q) => previous.includes(q.id) ||
+          answered.has(q.id) || answered.has(request.itemId)).map((q) => q.id);
+        if (request.questions.every((q) => request.answeredQuestionIds!.includes(q.id))) { end(key, 'resolved'); continue; }
+        // A fresh bridge turn already has its actual stdio writer callback.
+        // Never replace it with a different server's connection.
+        const existing = live.get(key);
+        if (existing && existing.source !== 'async-snapshot') {
+          handle.accept({ ...existing.prompt, request }, existing.source, existing.target);
+          continue;
+        }
+        handle.accept({ requestId: request.itemId, request, async respond(answers) {
+          if (!reader?.readThread || !reader.steerTurn) throw new Error('当前连接不支持异步回答，请在 Codex 桌面回答');
+          let current: CodexThreadSnapshot;
+          try { current = await reader.readThread(request.threadId); }
+          catch { throw new Error('无法连接正在运行任务的公开 app-server，请在 Codex 桌面回答；不会排队新开一轮'); }
+          const turn = current.turns.at(-1);
+          if (turn?.id !== request.turnId || turn.status !== 'inProgress' ||
+            !turn.items.some((value) => value.id === request.itemId) ||
+            codexAsyncAnsweredIds(turn).has(request.itemId) ||
+            Object.keys(answers).some((id) => codexAsyncAnsweredIds(turn).has(id))) return false;
+          await reader.steerTurn(request.threadId, request.turnId, serializeCodexAsyncAnswers(request, answers));
+          return true;
+        } }, 'async-snapshot');
+      }
+    },
     accept(prompt, source, target) {
       if (stopped) return;
       const allowed = bindings(prompt.request.threadId);
@@ -101,8 +146,10 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
       const key = codexInputKey(prompt.request);
       const previous = stored.get(key);
       // Replay may race a response we already sent. Never resurrect it.
-      if (previous?.status === 'resolved' || previous?.status === 'submitted') return;
+      if (previous?.status === 'resolved' || previous?.status === 'submitted' || previous?.status === 'submitting' || previous?.status === 'unconfirmed') return;
       live.set(key, { source, prompt, target });
+      const requestChanged = previous?.request.kind === 'async' && JSON.stringify(previous.request) !== JSON.stringify(prompt.request);
+      if (requestChanged) for (const delivery of previous.deliveries) delivery.lastStatus = undefined;
       if (previous?.status === 'waiting' && targets.every((entry) => previous.deliveries.some((delivery) =>
         delivery.scope === entry.scopeId && delivery.lastStatus === 'waiting'))) return;
       const record = previous ?? { request: prompt.request, status: 'waiting', deliveries: [] };
@@ -151,13 +198,22 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
       const answers = codexAnswersFromForm(record.request, form ?? {});
       // Synchronous reservation: simultaneous colleague clicks cannot both win.
       const input = live.get(key)!;
-      record.status = 'submitted';
+      record.status = record.request.kind === 'async' ? 'submitting' : 'submitted';
       live.delete(key);
       try {
+        // Async delivery must survive a restart between sending and receiving
+        // its acknowledgement without automatically submitting it twice.
+        if (record.request.kind === 'async') await enqueue(persist);
         const sent = await input.prompt.respond(answers);
         if (!sent) record.status = 'resolved';
+        else if (record.request.kind === 'async') record.status = 'submitted';
       } catch (err) {
-        record.status = 'disconnected';
+        if (record.request.kind === 'async' && record.status === 'resolved') {
+          // Completion/another client's answer may arrive while the RPC is in flight.
+        } else {
+          record.status = err instanceof CodexAsyncAnswerUnconfirmedError ? 'unconfirmed' : 'disconnected';
+          if (record.request.kind === 'async' && record.status === 'disconnected' && !stopped) live.set(key, input);
+        }
         void enqueue(async () => { await persist(); await render(record); });
         throw err;
       }
@@ -187,7 +243,8 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
       if (!record.deliveries.every((d) => typeof d.scope === 'string' && typeof d.token === 'string' &&
         typeof d.cardId === 'string' && typeof d.messageId === 'string' && Number.isSafeInteger(d.sequence))) continue;
       stored.set(codexInputKey(request), { ...record, request,
-        status: record.status === 'submitted' || record.status === 'resolved' ? record.status : 'disconnected' });
+        status: record.status === 'submitted' || record.status === 'resolved' || record.status === 'unconfirmed' ? record.status
+          : request.kind === 'async' && record.status === 'submitting' ? 'unconfirmed' : 'disconnected' });
     }
   } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log.fail('codex-input', err, { step: 'load' }); }
   const codex = deps.controls.profileConfig.codex;

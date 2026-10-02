@@ -1,11 +1,13 @@
 import type { CodexInputRequest, CodexInputAnswers } from '../session/codex-user-input';
 
-export type InputCardStatus = 'waiting' | 'submitted' | 'resolved' | 'disconnected';
+export type InputCardStatus = 'waiting' | 'submitting' | 'submitted' | 'resolved' | 'disconnected' | 'unconfirmed';
 
 export function codexInputCard(request: CodexInputRequest, token: string, status: InputCardStatus): object {
   const secret = request.questions.some((q) => q.isSecret);
   const enabled = status === 'waiting' && !secret;
-  const notice = status === 'submitted' ? '✅ 回答已发送；若多端同时回答，以 Codex 首次接收的答案为准'
+  const notice = status === 'submitted' ? request.kind === 'async' ? '✅ 回答已补充给当前任务' : '✅ 回答已发送；若多端同时回答，以 Codex 首次接收的答案为准'
+    : status === 'submitting' ? '⏳ 正在提交回答，请勿重复点击'
+    : status === 'unconfirmed' ? '回答发送状态尚未确认，请在 Codex 桌面查看，暂勿重复提交。'
     : status === 'resolved' ? '✅ 已在其他端回答，或问题已结束'
     : status === 'disconnected' ? '连接已断开，等待重连；也可以在 Codex 桌面回答。'
     : secret ? '🔒 包含敏感输入，请在 Codex 桌面回答，不要在群内填写。'
@@ -16,6 +18,10 @@ export function codexInputCard(request: CodexInputRequest, token: string, status
   request.questions.forEach((q, index) => {
     inputs.push({ tag: 'markdown', content: `**${escapeMd(q.header || `问题 ${index + 1}`)}**\n\n${escapeMd(q.question)}` });
     if (!enabled) return;
+    if (request.kind === 'async' && request.answeredQuestionIds?.includes(q.id)) {
+      inputs.push({ tag: 'markdown', content: '✅ 已在其他端回答' });
+      return;
+    }
     if (q.options?.length) {
       inputs.push({ tag: 'select_static', name: `q_${index}`,
         placeholder: { tag: 'plain_text', content: '请选择' },
@@ -24,7 +30,7 @@ export function codexInputCard(request: CodexInputRequest, token: string, status
           text: { tag: 'plain_text', content: o.label }, value: String(option),
         })) });
       inputs.push({ tag: 'markdown', content: q.options.map((o) =>
-        `• **${escapeMd(o.label)}**：${escapeMd(o.description)}`).join('\n') });
+        `• **${escapeMd(o.label)}**${o.description ? `：${escapeMd(o.description)}` : ''}`).join('\n') });
     }
     if (q.isOther || !q.options?.length) {
       inputs.push({ tag: 'input', name: `custom_${index}`,
@@ -47,6 +53,7 @@ export function codexAnswersFromForm(request: CodexInputRequest, form: Record<st
   if (request.questions.some((q) => q.isSecret)) throw new Error('敏感问题请在 Codex 桌面回答');
   const answers: CodexInputAnswers = Object.create(null) as CodexInputAnswers;
   request.questions.forEach((q, index) => {
+    if (request.kind === 'async' && request.answeredQuestionIds?.includes(q.id)) return;
     const custom = typeof form[`custom_${index}`] === 'string' ? (form[`custom_${index}`] as string).trim() : '';
     let answer: string | undefined;
     if (custom && (q.isOther || !q.options?.length)) {
