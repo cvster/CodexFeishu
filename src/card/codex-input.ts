@@ -1,6 +1,6 @@
 import type { CodexInputRequest, CodexInputAnswers } from '../session/codex-user-input';
 
-export type InputCardStatus = 'waiting' | 'submitting' | 'submitted' | 'resolved' | 'disconnected' | 'unconfirmed';
+export type InputCardStatus = 'waiting' | 'checking' | 'unavailable' | 'submitting' | 'submitted' | 'resolved' | 'disconnected' | 'unconfirmed';
 
 export function codexInputCard(request: CodexInputRequest, token: string, status: InputCardStatus): object {
   const secret = request.questions.some((q) => q.isSecret);
@@ -8,6 +8,8 @@ export function codexInputCard(request: CodexInputRequest, token: string, status
   const notice = status === 'submitted' ? request.kind === 'async' ? '✅ 回答已补充给当前任务' : '✅ 回答已发送；若多端同时回答，以 Codex 首次接收的答案为准'
     : status === 'submitting' ? '⏳ 正在提交回答，请勿重复点击'
     : status === 'unconfirmed' ? '回答发送状态尚未确认，请在 Codex 桌面查看，暂勿重复提交。'
+    : status === 'checking' ? '⏳ 正在检测公开共享 app-server，确认连接后才能在飞书提交；也可在 Codex 桌面回答。'
+    : status === 'unavailable' ? '⚠️ 未检测到承载当前任务的可用公开共享 app-server，飞书暂不能回传答案。请在 Codex 桌面回答；连接恢复后会自动启用选项。'
     : status === 'resolved' ? '✅ 已在其他端回答，或问题已结束'
     : status === 'disconnected' ? '连接已断开，等待重连；也可以在 Codex 桌面回答。'
     : secret ? '🔒 包含敏感输入，请在 Codex 桌面回答，不要在群内填写。'
@@ -17,7 +19,12 @@ export function codexInputCard(request: CodexInputRequest, token: string, status
   const inputs: object[] = [];
   request.questions.forEach((q, index) => {
     inputs.push({ tag: 'markdown', content: `**${escapeMd(q.header || `问题 ${index + 1}`)}**\n\n${escapeMd(q.question)}` });
-    if (!enabled) return;
+    if (!enabled) {
+      if ((status === 'checking' || status === 'unavailable') && q.options?.length) {
+        inputs.push({ tag: 'markdown', content: q.options.map((o) => `• ${escapeMd(o.label)}`).join('\n') });
+      }
+      return;
+    }
     if (request.kind === 'async' && request.answeredQuestionIds?.includes(q.id)) {
       inputs.push({ tag: 'markdown', content: '✅ 已在其他端回答' });
       return;

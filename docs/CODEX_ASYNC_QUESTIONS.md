@@ -42,6 +42,16 @@ state can resolve it, but reconnect/restart never automatically resends it.
 
 ## Operational boundary
 
+Both deployments use the same platform-independent capability detection. For
+snapshot-derived questions, probe the shared writer with public `thread/read`:
+the thread must be active and its current in-progress turn must match the
+question. An accessible but unloaded/history-only server is not sufficient.
+While checking, or when unavailable, display the questions and an explanatory
+warning without submission controls. Retry every ten seconds and update the
+same card when capability changes. A disconnect immediately disables the
+controls. Submission forces a fresh check; endpoint availability is not saved
+across restarts. Direct stdio callbacks are unaffected.
+
 A Desktop launched with a private stdio server may have no public endpoint for
 an additional bridge client. Reading saved questions is still possible, but
 answers cannot be steered into that running process through a separate server.

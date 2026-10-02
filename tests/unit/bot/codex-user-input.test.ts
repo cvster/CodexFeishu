@@ -22,7 +22,7 @@ describe('Codex user input lifecycle', () => {
   async function setup(dir?: string, liveStatus = 'notLoaded', writer?: {
     readThread: (id: string) => Promise<CodexThreadSnapshot>;
     steerTurn: (threadId: string, turnId: string, text: string) => Promise<void>;
-  }) {
+  }, sharedProbeIntervalMs = 10_000) {
     dir ??= await mkdtemp(join(tmpdir(), 'codex-input-'));
     if (!dirs.includes(dir)) dirs.push(dir);
     const channel = createFakeChannel();
@@ -31,12 +31,16 @@ describe('Codex user input lifecycle', () => {
     const controls = { profileConfig, codexReplySync: { runNow: vi.fn(async () => {}) } } as unknown as Controls;
     const entries = [{ status: 'active', agentId: 'codex', threadId: 'thread', scopeId: 'oc_group', botAppId: 'cli_ours' },
       { status: 'active', agentId: 'codex', threadId: 'thread', scopeId: 'oc_other', botAppId: 'cli_other' }];
+    let onDisconnect: (() => void) | undefined;
     const handle = await startCodexUserInput({ channel: channel as unknown as LarkChannel, controls,
-      sessionCatalog: { entries: () => entries } as unknown as SessionCatalog, profileStateDir: dir, intervalMs: 60_000,
-      readerFactory: () => ({ watchLoadedThread: vi.fn(async () => false), stop: vi.fn(async () => {}),
-        readThreadStatus: vi.fn(async () => ({ type: liveStatus, activeFlags: [] })), ...writer }) });
+      sessionCatalog: { entries: () => entries } as unknown as SessionCatalog, profileStateDir: dir, intervalMs: 60_000, sharedProbeIntervalMs,
+      readerFactory: (options) => {
+        onDisconnect = options.onDisconnect;
+        return { watchLoadedThread: vi.fn(async () => false), stop: vi.fn(async () => {}),
+          readThreadStatus: vi.fn(async () => ({ type: liveStatus, activeFlags: [] })), ...writer };
+      } });
     handles.push(handle);
-    return { handle, channel, dir };
+    return { handle, channel, dir, disconnect: () => onDisconnect?.() };
   }
   const prompt = (): CodexInputPrompt => ({ requestId: 7, request: {
     threadId: 'thread', turnId: 'turn', itemId: 'item', isBlocking: true,
@@ -137,7 +141,7 @@ describe('Codex user input lifecycle', () => {
 
   const asyncItem = { type: 'agentMessage', id: 'async-item', delivery: 'async',
     questions: [{ title: '继续哪个方案？', options: ['A', 'B'] }], text: '继续哪个方案？' };
-  const asyncSnapshot = (): CodexThreadSnapshot => ({ id: 'thread', turns: [{ id: 'turn', status: 'inProgress', items: [asyncItem] }] });
+  const asyncSnapshot = (): CodexThreadSnapshot => ({ id: 'thread', status: { type: 'active' }, turns: [{ id: 'turn', status: 'inProgress', items: [asyncItem] }] });
   it('delivers async questions once and steers the exact live turn, not a queued turn', async () => {
     let snapshot = asyncSnapshot();
     const steerTurn = vi.fn(async () => {});
@@ -169,14 +173,14 @@ describe('Codex user input lifecycle', () => {
     const { handle, dir } = await setup(undefined, 'active', { readThread: async () => live, steerTurn });
     handle.observeSnapshot(live); const d = await delivery(dir);
     live = { id: 'thread', turns: [{ id: 'next', status: 'inProgress', items: [] }] };
-    await handle.handleAction('oc_group', d.messageId, d.token, { q_0: '0' });
+    await expect(handle.handleAction('oc_group', d.messageId, d.token, { q_0: '0' })).rejects.toThrow('公开共享 app-server');
     expect(steerTurn).not.toHaveBeenCalled();
   });
   it('reports unavailable public writer, keeps card identity on retry and never silently queues', async () => {
     const writer = { readThread: vi.fn(async () => { throw new Error('no endpoint'); }), steerTurn: vi.fn(async () => {}) };
     const { handle, channel, dir } = await setup(undefined, 'active', writer);
     const snapshot = asyncSnapshot(); handle.observeSnapshot(snapshot); const d = await delivery(dir);
-    await expect(handle.handleAction('oc_group', d.messageId, d.token, { q_0: '0' })).rejects.toThrow('公开 app-server');
+    await expect(handle.handleAction('oc_group', d.messageId, d.token, { q_0: '0' })).rejects.toThrow('公开共享 app-server');
     handle.observeSnapshot(snapshot);
     expect(channel.sent).toHaveLength(1);
     expect(writer.steerTurn).not.toHaveBeenCalled();
@@ -235,5 +239,58 @@ describe('Codex user input lifecycle', () => {
     await expect(two.handle.handleAction('oc_group', d.messageId, d.token, { q_0: '1' })).rejects.toThrow('已回答');
     expect(writer.steerTurn).toHaveBeenCalledTimes(1);
     finish(); await submission;
+  });
+  it('dynamically warns without a shared writer, enables after recovery and disables after loss on the same card', async () => {
+    let available = false;
+    const writer = { readThread: vi.fn(async () => { if (!available) throw new Error('no daemon'); return asyncSnapshot(); }),
+      steerTurn: vi.fn(async () => {}) };
+    const { handle, channel, dir } = await setup(undefined, 'notLoaded', writer, 0);
+    handle.observeSnapshot(asyncSnapshot()); const d = await delivery(dir);
+    await vi.waitFor(() => {
+      const card = JSON.stringify(channel.rawClient.requests.at(-1));
+      expect(card).toContain('未检测到'); expect(card).not.toContain('__codex_input');
+      expect(card).toContain('• A');
+    });
+    available = true; handle.observeSnapshot(asyncSnapshot());
+    await vi.waitFor(() => expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('__codex_input'));
+    available = false; handle.observeSnapshot(asyncSnapshot());
+    await vi.waitFor(() => expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('未检测到'));
+    await expect(handle.handleAction('oc_group', d.messageId, d.token, { q_0: '0' })).rejects.toThrow('公开共享 app-server');
+    expect(writer.steerTurn).not.toHaveBeenCalled();
+    expect(channel.sent).toHaveLength(1);
+  });
+  it('does not treat an accessible daemon owning a different/unloaded task as the live writer', async () => {
+    const writer = { readThread: async () => ({ ...asyncSnapshot(), status: { type: 'notLoaded' } }), steerTurn: vi.fn(async () => {}) };
+    const { handle, channel, dir } = await setup(undefined, 'notLoaded', writer);
+    handle.observeSnapshot(asyncSnapshot()); const d = await delivery(dir);
+    await vi.waitFor(() => expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('未检测到'));
+    await expect(handle.handleAction('oc_group', d.messageId, d.token, { q_0: '0' })).rejects.toThrow('公开共享 app-server');
+    expect(writer.steerTurn).not.toHaveBeenCalled();
+  });
+  it('disables controls immediately on disconnect without waiting for the next probe', async () => {
+    const writer = { readThread: async () => asyncSnapshot(), steerTurn: vi.fn(async () => {}) };
+    const { handle, channel, dir, disconnect } = await setup(undefined, 'active', writer);
+    handle.observeSnapshot(asyncSnapshot()); await delivery(dir);
+    await vi.waitFor(() => expect(JSON.stringify(channel.rawClient.requests.at(-1))).toContain('__codex_input'));
+    disconnect();
+    await vi.waitFor(() => {
+      const card = JSON.stringify(channel.rawClient.requests.at(-1));
+      expect(card).toContain('未检测到'); expect(card).not.toContain('__codex_input');
+    });
+    expect(channel.sent).toHaveLength(1);
+  });
+  it('coalesces simultaneous submission probes but reserves the answer only once', async () => {
+    const writer = { readThread: vi.fn(async () => asyncSnapshot()), steerTurn: vi.fn(async () => {}) };
+    const { handle, dir } = await setup(undefined, 'active', writer);
+    handle.observeSnapshot(asyncSnapshot()); const d = await delivery(dir);
+    let release!: (snapshot: CodexThreadSnapshot) => void;
+    writer.readThread.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const first = handle.handleAction('oc_group', d.messageId, d.token, { q_0: '0' });
+    const second = handle.handleAction('oc_group', d.messageId, d.token, { q_0: '1' });
+    const rejected = expect(second).rejects.toThrow('已回答');
+    release(asyncSnapshot());
+    await Promise.all([first, rejected]);
+    expect(writer.steerTurn).toHaveBeenCalledTimes(1);
+    expect(writer.steerTurn).toHaveBeenCalledWith('thread', 'turn', expect.stringContaining('"answer":"A"'));
   });
 });

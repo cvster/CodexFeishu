@@ -39,6 +39,8 @@ export interface CodexInputDeps {
   readerFactory?: (options: ConstructorParameters<typeof CodexThreadReader>[0]) =>
     Pick<CodexThreadReader, 'watchLoadedThread' | 'stop'> & Partial<Pick<CodexThreadReader, 'readThreadStatus' | 'readThread' | 'steerTurn'>>;
   intervalMs?: number;
+  /** Detection is independent of platform; unavailable endpoints are retried. */
+  sharedProbeIntervalMs?: number;
 }
 
 /** Interactive prompts are separate UI, never an extra assistant-answer writer. */
@@ -47,6 +49,8 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
   const stored = new Map<string, StoredInput>();
   const live = new Map<string, LiveInput>();
   const deliveryQueued = new Set<string>();
+  const writerAvailability = new Map<string, { available: boolean; checkedAt: number }>();
+  const writerProbes = new Map<string, Promise<boolean>>();
   let tail = Promise.resolve();
   let stopped = false;
   let watcherRunning = false;
@@ -65,16 +69,25 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
       const index = entries.findIndex(([, record]) => record.status === 'resolved' || record.status === 'submitted');
       if (index < 0) break;
       const [removed] = entries.splice(index, 1);
-      if (removed) stored.delete(removed[0]);
+      if (removed) {
+        stored.delete(removed[0]);
+        writerAvailability.delete(removed[0]);
+      }
     }
     await writeFileAtomic(path, JSON.stringify({ version: 1, entries }, null, 2) + '\n');
   };
+  const displayStatus = (record: StoredInput): InputCardStatus => {
+    const key = codexInputKey(record.request);
+    if (record.request.kind !== 'async' || live.get(key)?.source !== 'async-snapshot' || record.status !== 'waiting') return record.status;
+    const capability = writerAvailability.get(key);
+    return capability?.available ? 'waiting' : capability ? 'unavailable' : 'checking';
+  };
   const render = async (record: StoredInput) => {
     for (const delivery of record.deliveries) {
-      if (delivery.lastStatus === record.status) continue;
+      const pushedStatus = displayStatus(record);
+      if (delivery.lastStatus === pushedStatus) continue;
       delivery.sequence++;
       await persist(); // sequence reserved before remote update
-      const pushedStatus = record.status;
       try {
         await deps.channel.updateCardById(delivery.cardId,
           codexInputCard(record.request, delivery.token, pushedStatus), delivery.sequence);
@@ -89,10 +102,40 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
     /^oc_[A-Za-z0-9]+(?::.+)?$/.test(entry.scopeId));
   const end = (key: string, status: InputCardStatus) => {
     live.delete(key);
+    writerAvailability.delete(key);
     const record = stored.get(key);
     if (!record || record.status === 'resolved' || record.status === 'submitted') return;
     record.status = status;
     void enqueue(async () => { await persist(); await render(record); });
+  };
+  const probeWriter = (request: CodexInputRequest, force = false): Promise<boolean> => {
+    const key = codexInputKey(request);
+    const inFlight = writerProbes.get(key);
+    if (inFlight) return inFlight;
+    const previous = writerAvailability.get(key);
+    if (!force && previous && Date.now() - previous.checkedAt < (deps.sharedProbeIntervalMs ?? 10_000)) {
+      return Promise.resolve(previous.available);
+    }
+    const probing = (async () => {
+      let available = false;
+      try {
+        // Public read only: no resume, task start, daemon creation or private IPC.
+        const current = await reader?.readThread?.(request.threadId);
+        const turn = current?.turns.at(-1);
+        available = Boolean(reader?.steerTurn && current?.status?.type === 'active' &&
+          turn?.id === request.turnId && turn.status === 'inProgress');
+      } catch { /* Warn on the card, never expose endpoint details/credentials. */ }
+      if (stopped) return false;
+      const record = stored.get(key);
+      if (!record || record.status !== 'waiting' || live.get(key)?.source !== 'async-snapshot') return available;
+      writerAvailability.set(key, { available, checkedAt: Date.now() });
+      if (record && (previous?.available !== available || record.deliveries.some((d) => d.lastStatus !== displayStatus(record)))) {
+        void enqueue(() => render(record));
+      }
+      return available;
+    })().finally(() => writerProbes.delete(key));
+    writerProbes.set(key, probing);
+    return probing;
   };
   const handle: CodexInputHandle = {
     observeSnapshot(snapshot) {
@@ -136,6 +179,7 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
           await reader.steerTurn(request.threadId, request.turnId, serializeCodexAsyncAnswers(request, answers));
           return true;
         } }, 'async-snapshot');
+        if (stored.get(key)?.status === 'waiting' && live.get(key)?.source === 'async-snapshot') void probeWriter(request);
       }
     },
     accept(prompt, source, target) {
@@ -151,7 +195,7 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
       const requestChanged = previous?.request.kind === 'async' && JSON.stringify(previous.request) !== JSON.stringify(prompt.request);
       if (requestChanged) for (const delivery of previous.deliveries) delivery.lastStatus = undefined;
       if (previous?.status === 'waiting' && targets.every((entry) => previous.deliveries.some((delivery) =>
-        delivery.scope === entry.scopeId && delivery.lastStatus === 'waiting'))) return;
+        delivery.scope === entry.scopeId && delivery.lastStatus === displayStatus(previous)))) return;
       const record = previous ?? { request: prompt.request, status: 'waiting', deliveries: [] };
       record.request = prompt.request;
       record.status = 'waiting';
@@ -165,7 +209,7 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
             if (record.deliveries.some((delivery) => delivery.scope === entry.scopeId)) continue;
             const token = randomBytes(24).toString('hex');
             const chatId = entry.scopeId.split(':')[0]!;
-            const pushedStatus = record.status;
+            const pushedStatus = displayStatus(record);
             const sent = await sendManagedCard(deps.channel, chatId,
               codexInputCard(record.request, token, pushedStatus), target);
             record.deliveries.push({ scope: entry.scopeId, token, ...sent, sequence: 0, lastStatus: pushedStatus });
@@ -195,6 +239,11 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
       const [key, record] = recordEntry;
       if (!bindings(record.request.threadId).some((entry) => entry.scopeId === scope)) throw new Error('群已不再绑定此会话');
       if (record.status !== 'waiting' || !live.has(key)) throw new Error('问题已回答、失效或正在重连，请刷新后重试');
+      if (record.request.kind === 'async' && live.get(key)?.source === 'async-snapshot') {
+        if (!await probeWriter(record.request, true)) throw new Error('未检测到承载当前任务的可用公开共享 app-server，请在 Codex 桌面回答');
+        // A simultaneous click or Desktop answer can win while probing.
+        if (record.status !== 'waiting' || !live.has(key)) throw new Error('问题已回答、失效或正在重连，请刷新后重试');
+      }
       const answers = codexAnswersFromForm(record.request, form ?? {});
       // Synchronous reservation: simultaneous colleague clicks cannot both win.
       const input = live.get(key)!;
@@ -229,6 +278,7 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
       stopped = true;
       clearInterval(timer);
       await reader?.stop();
+      await Promise.allSettled(writerProbes.values());
       await tail;
       await persist();
     },
@@ -263,14 +313,20 @@ export async function startCodexUserInput(deps: CodexInputDeps): Promise<CodexIn
     },
     onDisconnect() {
       for (const [key, input] of live) if (input.source === 'shared') end(key, 'disconnected');
+      for (const [key, input] of live) if (input.source === 'async-snapshot') {
+        writerAvailability.set(key, { available: false, checkedAt: Date.now() });
+        const record = stored.get(key);
+        if (record) void enqueue(() => render(record));
+      }
     },
   }) : undefined;
   const poll = async () => {
     if (stopped || watcherRunning) return;
     // Retry question delivery independently of shared endpoint availability.
     for (const input of live.values()) handle.accept(input.prompt, input.source, input.target);
+    for (const input of live.values()) if (input.source === 'async-snapshot') void probeWriter(input.prompt.request);
     for (const [key, record] of stored) if (!deliveryQueued.has(key) &&
-      record.deliveries.some((delivery) => delivery.lastStatus !== record.status)) {
+      record.deliveries.some((delivery) => delivery.lastStatus !== displayStatus(record))) {
       deliveryQueued.add(key);
       void enqueue(async () => { try { await render(record); } finally { deliveryQueued.delete(key); } });
     }
