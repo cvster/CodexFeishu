@@ -26,6 +26,7 @@ describe('Codex app-server fresh thread run', () => {
       profileStateDir: fake.dir,
       inheritCodexHome: true,
       sandbox: 'danger-full-access',
+      useQueueForExistingThreads: false,
       stopGraceMs: 50,
     }).run({
       runId: 'run-app-server',
@@ -107,7 +108,7 @@ describe('Codex app-server fresh thread run', () => {
     const fake = await createFakeAppServer(true);
     cleanup.push(fake.dir);
     const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir,
-      inheritCodexHome: true, stopGraceMs: 50 }).run({ runId: 'interactive', cwd: fake.dir, prompt: 'choose' });
+      inheritCodexHome: true, stopGraceMs: 50, useQueueForExistingThreads: false }).run({ runId: 'interactive', cwd: fake.dir, prompt: 'choose' });
     const events: AgentEvent[] = [];
     for await (const event of run.events) {
       events.push(event);
@@ -129,7 +130,7 @@ describe('Codex app-server fresh thread run', () => {
   it('answers a fresh async question through its existing stdio writer and waits for steer acknowledgement', async () => {
     const fake = await createFakeAppServer('async'); cleanup.push(fake.dir);
     const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir,
-      inheritCodexHome: true, stopGraceMs: 50 }).run({ runId: 'async', cwd: fake.dir, prompt: 'choose' });
+      inheritCodexHome: true, stopGraceMs: 50, useQueueForExistingThreads: false }).run({ runId: 'async', cwd: fake.dir, prompt: 'choose' });
     let questions = 0;
     for await (const event of run.events) {
       if (event.type !== 'user_input') continue;

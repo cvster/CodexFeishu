@@ -560,6 +560,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
+      await activeRuns.disconnectAll();
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       aaSessionGroupSync?.stop();
@@ -570,17 +571,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       controls.refreshMirroredRunCard = undefined;
       keepalive.stop();
       pending.cancelAll();
-      const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
+      const [disconnectResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
-        activeRuns.stopAll(),
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
       ]);
-      if (stopAllResult.status === 'rejected') {
-        log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
-      }
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
           log.fail('disconnect', result.reason, { step: `flush-${idx}` });
@@ -1131,13 +1128,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
   try {
-    if (controls.codexReplySync) {
+    const replySync = controls.codexReplySync;
+    if (replySync) {
       // Submission/execution monitoring must not render a second reply. The
       // app-server snapshot synchronizer is the sole owner of turn deliveries.
       const finalState = await processAgentStream(handle, eventStream, scope,
         idleTimeoutMs, recordSession, async () => {}, () => Boolean(runCodexThreadId && runCodexTurnId &&
           controls.codexUserInput?.isWaiting(runCodexThreadId, runCodexTurnId)));
-      await controls.codexReplySync.runNow();
+      if (handle.detached) return;
+      await replySync.runNow();
       // A failure before turn/start has no turn to mirror (e.g. queue rejected).
       // Surface only that submission error, never duplicate a turn's answer.
       if (!runCodexTurnId && finalState.terminal === 'error') {
@@ -1675,11 +1674,13 @@ async function processAgentStream(
   const inFlightTools = new Set<string>();
   const blockingInputs = new Set<string | number>();
   const armOrPauseIdle = (): void => {
+    if (handle.detached) return;
     if (!idleTimeoutMs) return;
     if (timer) clearTimeout(timer);
     timer = undefined;
     if (inFlightTools.size > 0 || blockingInputs.size > 0 || waitingForInput?.()) return;
     timer = setTimeout(() => {
+      if (handle.detached) return;
       if (waitingForInput?.()) { armOrPauseIdle(); return; }
       idleFired = true;
       handle.interrupted = true;
@@ -1693,7 +1694,7 @@ async function processAgentStream(
 
   try {
     for await (const evt of events) {
-      if (handle.interrupted) break;
+      if (handle.interrupted || (handle.detached && evt.type !== 'system')) break;
 
       state = updateRunRuntime(state, { nowMs: Date.now(), activity: true });
 
@@ -1755,6 +1756,9 @@ async function processAgentStream(
     clearInterval(statusPoll);
     await statusPollInFlight;
   }
+
+  // Detaching is not a task terminal event; never publish a false completion.
+  if (handle.detached) return state;
 
   // If state already reached a terminal event (done/error/etc.) before the
   // watchdog or interrupt could land, don't clobber it — that real terminal

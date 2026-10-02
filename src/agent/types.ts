@@ -55,6 +55,8 @@ export interface AgentRun {
   readonly runId: string;
   readonly events: AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
+  /** Release this observer on bridge shutdown, without cancelling the task. */
+  detach?(): Promise<void>;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer

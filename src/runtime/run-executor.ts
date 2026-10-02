@@ -186,7 +186,7 @@ export class RunExecutor {
       startedAt,
       now: this.now,
     }), async () => {
-      await cleanup(!handle.interrupted);
+      await cleanup(!handle.interrupted && !handle.detached);
     });
 
     return {

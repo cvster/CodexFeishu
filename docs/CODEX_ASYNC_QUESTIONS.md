@@ -19,13 +19,17 @@ not replayed when the bridge starts.
 
 ## Submit
 
-For a bridge-created turn, use its existing stdio app-server connection. For an
-existing Desktop turn, use the shared writer app-server selected by
+For the standard runtime's first/follow-up turns and existing Desktop turns,
+use the shared writer app-server selected by
 `CODEX_QUEUE_REMOTE` (or the default daemon proxy). Read its live turn again
 before submitting, then call public `turn/steer` with `threadId`,
 `expectedTurnId`, `clientUserMessageId` and one text input. Verify the returned
 turn ID. Never fall back to `thread/resume`, `turn/start`, `codex queue`, or
 Desktop's private IPC to deliver an answer.
+
+Explicit legacy stdio compatibility runs still answer through their original
+connection. Normal fresh tasks now use the durable queue lifecycle documented
+in `CODEX_TASK_LIFECYCLE.md`.
 
 The structured answer text envelope is Desktop-specific compatibility, not a
 documented app-server answer API. Parsing, question IDs and serialization are
@@ -50,7 +54,7 @@ While checking, or when unavailable, display the questions and an explanatory
 warning without submission controls. Retry every ten seconds and update the
 same card when capability changes. A disconnect immediately disables the
 controls. Submission forces a fresh check; endpoint availability is not saved
-across restarts. Direct stdio callbacks are unaffected.
+across restarts. Legacy direct stdio callbacks are unaffected.
 
 A Desktop launched with a private stdio server may have no public endpoint for
 an additional bridge client. Reading saved questions is still possible, but

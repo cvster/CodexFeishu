@@ -260,6 +260,27 @@ export class CodexThreadReader {
     return { threadId: forkId, name, cwd };
   }
 
+  /** Create idle persisted history only. Task execution belongs to the writer. */
+  async createIdleThread(options: { cwd: string; sandbox: string; model?: string; reasoningEffort?: string; developerInstructions?: string }): Promise<string> {
+    await this.ensureStarted();
+    const response = await this.request('thread/start', {
+      cwd: options.cwd, approvalPolicy: 'never', sandbox: options.sandbox,
+      historyMode: 'legacy', threadSource: 'lark-channel-bridge',
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.developerInstructions ? { developerInstructions: options.developerInstructions } : {}),
+      config: { shell_environment_policy: { inherit: 'all' },
+        ...(options.reasoningEffort ? { model_reasoning_effort: options.reasoningEffort } : {}) },
+    });
+    const id = stringValue(recordValue(recordValue(response.result)?.thread)?.id);
+    if (!id) throw new Error('thread/start returned no thread id');
+    // A metadata update materializes lazy idle history without starting any
+    // model turn. Validate it before closing the creator. The standalone CLI
+    // store does not implement paginated list_turns on all supported builds.
+    await this.request('thread/name/set', { threadId: id, name: 'Codex会话' });
+    await this.readThread(id);
+    return id;
+  }
+
   async persistedTurnTerminal(
     snapshot: CodexThreadSnapshot,
     turnId: string,
@@ -271,7 +292,16 @@ export class CodexThreadReader {
     this.stopped = true;
     const child = this.child;
     this.reset(new Error('Codex thread reader stopped'));
-    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    if (child && child.exitCode === null && child.signalCode === null) {
+      // The next queue client may open the same store immediately. Wait for
+      // this owned read/creator process to release its SQLite resources.
+      const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+      child.kill('SIGTERM');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, 2000); })]);
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
   }
 
   private async ensureStarted(): Promise<void> {

@@ -87,6 +87,8 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   let emittedExecutionInfo: string | undefined;
   let settled = false;
   let started = false;
+  let detached = false;
+  let cancellation: Promise<void> | undefined;
   let settle!: () => void;
   const completed = new Promise<void>((resolve) => {
     settle = resolve;
@@ -97,7 +99,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
     try {
       const baseline = await reader.readThread(options.threadId);
       if (controller.signal.aborted) {
-        yield interrupted(options.threadId);
+        if (!detached) yield interrupted(options.threadId);
         return;
       }
       const knownTurns = new Set(baseline.turns.map((turn) => turn.id));
@@ -125,7 +127,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
         });
       }
       if (controller.signal.aborted) {
-        yield interrupted(options.threadId);
+        if (!detached) yield interrupted(options.threadId);
         return;
       }
       registerCodexQueuedTurnClaim(
@@ -275,12 +277,14 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
         await abortableDelay(options.pollIntervalMs ?? POLL_INTERVAL_MS, controller.signal);
       }
 
-      yield interrupted(options.threadId);
+      if (!detached) yield interrupted(options.threadId);
     } catch (err) {
+      if (detached) return;
       if (controller.signal.aborted) yield interrupted(options.threadId);
       else yield terminalError(`Codex queue 失败：${errorMessage(err)}`);
     } finally {
       releaseCodexQueuedTurnClaim(options.clientUserMessageId);
+      await cancellation;
       await reader.stop();
       await settingsClient.stop();
       settled = true;
@@ -291,29 +295,40 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
   return {
     runId: options.runId,
     events,
+    async detach() {
+      if (settled) return;
+      detached = true;
+      controller.abort();
+      if (!started) { settled = true; settle(); return; }
+      // Do not kill the submission CLI: it may already have committed the
+      // message. Drain its acknowledgement, then close only our read clients.
+      // Never turn/interrupt or thread/queue/delete on service shutdown.
+      await completed;
+    },
     async stop() {
       if (settled) return;
+      if (cancellation) { await cancellation; await completed; return; }
       if (!started) {
         settled = true;
         settle();
         return;
       }
-      controller.abort();
-      if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
-        activeChild.kill('SIGTERM');
-      }
-      try {
-        if (selectedTurnId) {
-          await reader.interruptTurn(options.threadId, selectedTurnId);
-        } else if (queuedSubmissionId) {
-          await reader.deleteQueuedTurn(options.threadId, queuedSubmissionId);
+      cancellation = (async () => {
+        if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+          activeChild.kill('SIGTERM');
         }
-      } catch (err) {
-        log.warn('agent', 'queue-stop-failed', {
-          threadId: options.threadId,
-          message: errorMessage(err),
-        });
-      }
+        try {
+          if (selectedTurnId) {
+            await settingsClient.interruptTurn(options.threadId, selectedTurnId);
+          } else if (queuedSubmissionId) {
+            await settingsClient.deleteQueuedTurn(options.threadId, queuedSubmissionId);
+          }
+        } catch (err) {
+          log.warn('agent', 'queue-stop-failed', { threadId: options.threadId, message: errorMessage(err) });
+        }
+      })();
+      controller.abort();
+      await cancellation;
       await completed;
     },
     async waitForExit(timeoutMs: number): Promise<boolean> {

@@ -3,6 +3,7 @@ import type { AgentRun } from '../agent/types';
 export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
+  detached?: boolean;
 }
 
 export class ActiveRuns {
@@ -107,6 +108,23 @@ export class ActiveRuns {
     this.reservations.clear();
     for (const h of all) h.interrupted = true;
     await Promise.allSettled(all.map((h) => h.run.stop()));
+  }
+
+  /** Service lifecycle is not a user cancellation. Durable runs keep executing. */
+  async disconnectAll(): Promise<void> {
+    const all = [...this.handles.values()];
+    this.handles.clear();
+    this.reservations.clear();
+    await Promise.allSettled(all.map(async (h) => {
+      if (h.run.detach) {
+        h.detached = true;
+        await h.run.detach();
+      } else {
+        // Non-durable adapters (e.g. Claude/legacy exec) retain their lifecycle.
+        h.interrupted = true;
+        await h.run.stop();
+      }
+    }));
   }
 
   async waitForAll(timeoutMs = 300_000): Promise<void> {

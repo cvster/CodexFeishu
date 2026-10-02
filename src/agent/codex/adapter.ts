@@ -19,6 +19,7 @@ import type {
 import { buildCodexArgs } from './argv';
 import { createCodexAppServerRun } from './app-server-run';
 import { createCodexQueueRun } from './queue';
+import { createCodexQueuedFreshRun } from './queued-fresh-run';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { archiveCodexThread, setCodexThreadName } from '../../session/codex-history';
 import { codexBridgeClientMessageId } from '../../session/codex-origin';
@@ -151,6 +152,15 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     if (!opts.threadId && this.useAppServerForFreshThreads) {
+      if (this.useQueueForExistingThreads) return createCodexQueuedFreshRun({
+        runId: opts.runId, binary: this.binary, profileStateDir: this.profileStateDir,
+        codexHome: this.codexHome, inheritCodexHome: this.inheritCodexHome,
+        cwd: opts.cwd, sandbox: opts.sandbox ?? this.sandbox, prompt: opts.prompt,
+        developerInstructions: buildBridgeSystemPrompt(this.botIdentity),
+        clientUserMessageId: codexBridgeClientMessageId(opts.runId),
+        images: opts.images, model: opts.model, reasoningEffort: opts.reasoningEffort,
+        remote: this.appServerRemote, env: buildLarkChannelEnv(this.larkChannel),
+      });
       return createCodexAppServerRun({
         runId: opts.runId,
         binary: this.binary,

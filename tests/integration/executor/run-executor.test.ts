@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter, AgentRun, AgentRunOptions } from '../../../src/agent/types';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
@@ -19,6 +19,22 @@ afterEach(async () => {
 });
 
 describe('RunExecutor', () => {
+  it('releases detached observers without post-exit fallback cancellation', async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const task: AgentRun = { runId: 'durable',
+      events: (async function* () { yield { type: 'system' as const, threadId: 'thread' }; await gate; })(),
+      detach: vi.fn(async () => { finish(); }), stop: vi.fn(async () => {}),
+      waitForExit: vi.fn(async () => false) };
+    const h = await createHarness({ agent: { id: 'codex', displayName: 'Codex',
+      isAvailable: async () => true, run: () => task } });
+    const execution = await h.executor.submit({ scopeId: 'scope-1', policy: policy(h.tmp.workspace) });
+    const draining = collect(execution.subscribe());
+    await h.activeRuns.disconnectAll(); await draining;
+    expect(task.detach).toHaveBeenCalledOnce(); expect(task.stop).not.toHaveBeenCalled();
+    expect(task.waitForExit).not.toHaveBeenCalled();
+    expect(h.pool.snapshot().active).toBe(0);
+  });
   it('generates one runId and wires it through adapter, record, and active runs', async () => {
     const h = await createHarness({
       events: [{ type: 'done', terminationReason: 'normal' }],

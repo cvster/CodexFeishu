@@ -44,6 +44,15 @@ describe('/reconnect profile lifecycle', () => {
     expect(h.restart).toHaveBeenCalledWith({ wait: true });
   });
 
+  it('detaches durable Codex tasks on reconnect without calling stop', async () => {
+    const h = await createHarness(); const run = new ManualRun('durable');
+    const detach = vi.fn(async () => {});
+    h.activeRuns.register('chat-1', Object.assign(run, { detach }));
+    await h.command('/reconnect');
+    expect(detach).toHaveBeenCalledOnce(); expect(run.stopCalls).toBe(0);
+    expect(h.restart).toHaveBeenCalledWith({ wait: false });
+  });
+
   it('starts the replacement bridge with replacement controls before swapping globals', async () => {
     const source = await readFile(new URL('../../../src/cli/commands/start.ts', import.meta.url), 'utf8');
 
@@ -63,7 +72,8 @@ describe('/reconnect profile lifecycle', () => {
     expect(disconnectBlock).not.toContain('resumeNewRuns');
     expect(disconnectBlock).toContain('await Promise.allSettled([');
     expect(disconnectBlock).toContain('channel.disconnect()');
-    expect(disconnectBlock).toContain('activeRuns.stopAll()');
+    expect(disconnectBlock).toContain('activeRuns.disconnectAll()');
+    expect(disconnectBlock).not.toContain('activeRuns.stopAll()');
     expect(source).toContain('sessionCatalogIdentity: await commandSessionCatalogIdentity({');
   });
 });

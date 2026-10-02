@@ -1947,14 +1947,15 @@ function formatAgo(ms: number): string {
 async function handleReconnect(args: string, ctx: CommandContext): Promise<void> {
   const wait = args.trim().split(/\s+/).filter(Boolean).includes('--wait');
   log.info('command', 'reconnect', { wait });
-  await reply(ctx, wait ? '⏳ 将在当前运行结束后重连…' : '⏳ 正在停止当前运行并重连…');
+  await reply(ctx, wait ? '⏳ 将在当前运行结束后重连…' : ctx.agent.id === 'codex'
+    ? '⏳ 正在重连，已提交的 Codex 任务继续运行…' : '⏳ 正在停止当前运行并重连…');
   let resumeNewRuns: (() => void) | undefined;
   try {
     resumeNewRuns = ctx.activeRuns.pauseNewRuns('reconnect-in-progress');
     if (wait) {
       await ctx.activeRuns.waitForAll();
     } else {
-      await ctx.activeRuns.stopAll();
+      await ctx.activeRuns.disconnectAll();
     }
     await ctx.controls.restart({ wait });
     log.info('command', 'reconnect-ok');

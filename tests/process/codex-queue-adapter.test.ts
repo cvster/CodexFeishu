@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCodexQueueRun } from '../../src/agent/codex/queue.js';
+import { CodexAdapter } from '../../src/agent/codex/adapter.js';
 import type { AgentEvent } from '../../src/agent/types.js';
 
 describe('CodexAdapter native queue mode', () => {
@@ -12,6 +13,50 @@ describe('CodexAdapter native queue mode', () => {
 
   afterEach(async () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it('creates/materializes idle first-thread history then queues, without starting a bridge-owned turn', async () => {
+    const fake = await createQueueCodex(); cleanup.push(fake.dir);
+    const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run({
+      runId: 'fresh-queue', cwd: fake.dir, prompt: 'first Feishu message', model: 'gpt-6.1-sol', reasoningEffort: 'high',
+    });
+    const events = await collect(run.events);
+    expect(events[0]).toMatchObject({ type: 'system', threadId: 'thread-existing', model: 'gpt-6.1-sol', reasoningEffort: 'high' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    const requests = (await readFile(join(fake.dir, 'requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(requests.map(r => r.method)).toContain('thread/start');
+    expect(requests.map(r => r.method)).not.toContain('turn/start');
+    const start = requests.find(r => r.method === 'thread/start');
+    expect(start.params).toMatchObject({ historyMode: 'legacy', model: 'gpt-6.1-sol', config: { model_reasoning_effort: 'high' } });
+    expect(await readFile(join(fake.dir, 'materialized.txt'), 'utf8')).toBe('ready');
+    expect(run.detach).toBeTypeOf('function');
+  });
+
+  it.each(['existing', 'fresh'] as const)('detaches %s execution without interrupting or deleting the accepted submission', async (kind) => {
+    const fake = await createQueueCodex('inProgress'); cleanup.push(fake.dir);
+    const opts = { runId: 'detach', cwd: fake.dir, prompt: 'keep running',
+      ...(kind === 'existing' ? { threadId: 'thread-existing' } : {}) };
+    const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run(opts);
+    const seen: AgentEvent[] = [];
+    const drain = (async () => { for await (const event of run.events) seen.push(event); })();
+    await vi.waitFor(() => expect(seen).toContainEqual(expect.objectContaining({ type: 'system', turnId: 'turn-queued' })));
+    await run.detach!(); await drain;
+    const requests = await readFile(join(fake.dir, 'requests.jsonl'), 'utf8');
+    expect(requests).not.toContain('turn/interrupt'); expect(requests).not.toContain('thread/queue/delete');
+    expect(seen.some(e => e.type === 'done' || e.type === 'error')).toBe(false);
+    expect(JSON.parse(await readFile(join(fake.dir, 'state.json'), 'utf8')).prompt).toBe('keep running');
+    expect(await run.waitForExit(0)).toBe(true);
+  });
+
+  it('explicit stop still interrupts through the shared writer, not the history reader', async () => {
+    const fake = await createQueueCodex('inProgress'); cleanup.push(fake.dir);
+    const run = createCodexQueueRun({ runId: 'stop', binary: fake.path, profileStateDir: fake.dir,
+      inheritCodexHome: true, cwd: fake.dir, sandbox: 'workspace-write', prompt: 'stop me',
+      threadId: 'thread-existing', clientUserMessageId: 'stop-test' });
+    const seen: AgentEvent[] = []; const drain = (async () => { for await (const e of run.events) seen.push(e); })();
+    await vi.waitFor(() => expect(seen).toContainEqual(expect.objectContaining({ turnId: 'turn-queued' })));
+    await run.stop(); await drain;
+    expect(await readFile(join(fake.dir, 'interrupted.txt'), 'utf8')).toBe('proxy');
   });
 
   it('queues into an existing thread and returns the new turn without resuming the writer', async () => {
@@ -172,7 +217,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 
 async function createQueueCodex(
   turnStatus: 'completed' | 'interrupted' | 'provisional-interrupted' |
-    'provisional-completed-interrupted' = 'completed',
+    'provisional-completed-interrupted' | 'inProgress' = 'completed',
   startUnloaded = false,
 ): Promise<{ dir: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-queue-test-'));
@@ -192,6 +237,7 @@ const settingsPath = ${JSON.stringify(join(dir, 'settings.json'))};
 let queuedReads = 0;
 let terminalWritten = false;
 if (args[0] === 'queue') {
+  if (existsSync(${JSON.stringify(join(dir, 'started.txt'))}) && !existsSync(${JSON.stringify(join(dir, 'materialized.txt'))})) process.exit(7);
   const prompt = args[args.indexOf('--message') + 1];
   writeFileSync(statePath, JSON.stringify({ prompt }));
   writeFileSync(rolloutPath, JSON.stringify({
@@ -211,9 +257,20 @@ let socket;
 let loaded = ${JSON.stringify(!startUnloaded)};
 const send = value => socket ? socket.send(JSON.stringify(value)) : console.log(JSON.stringify(value));
 function handle(req) {
+  appendFileSync(${JSON.stringify(join(dir, 'requests.jsonl'))}, JSON.stringify(req) + '\\n');
   if (req.method === 'initialize') {
     send({ id: req.id, result: { userAgent: 'fake' } });
     return;
+  }
+  if (req.method === 'thread/start') {
+    writeFileSync(${JSON.stringify(join(dir, 'started.txt'))}, 'idle');
+    send({ id: req.id, result: { thread: { id: 'thread-existing' } } }); return;
+  }
+  if (req.method === 'thread/name/set') { send({ id: req.id, result: {} }); return; }
+  if (req.method === 'turn/interrupt') {
+    if (args[1] !== 'proxy') process.exit(8);
+    writeFileSync(${JSON.stringify(join(dir, 'interrupted.txt'))}, args[1]);
+    send({ id: req.id, result: {} }); return;
   }
   if (req.method === 'thread/settings/update') {
     if (args[1] !== 'proxy') process.exit(5);
@@ -237,6 +294,7 @@ function handle(req) {
     return;
   }
   if (req.method !== 'thread/read') return;
+  if (existsSync(${JSON.stringify(join(dir, 'started.txt'))}) && req.params.includeTurns) writeFileSync(${JSON.stringify(join(dir, 'materialized.txt'))}, 'ready');
   const queued = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : undefined;
   if (queued) queuedReads += 1;
   const configuredStatus = ${JSON.stringify(turnStatus)};
