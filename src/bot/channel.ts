@@ -76,7 +76,7 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import { isSoloUserBotChat } from './group';
-import { syncCodexThreadNameFromChat } from './thread-name';
+import { CodexNameSync } from './thread-name';
 import { startAaSessionGroupSync } from './aa-session-groups';
 import { startCodexTurnSync } from './codex-turn-sync';
 import { startCodexUserInput } from './codex-user-input';
@@ -236,7 +236,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
   const lastRunModelByScope = new Map<string, string>();
-  const syncedCodexThreadNames = new Map<string, string>();
   // The channel SDK logs markdown/card update failures but can resolve the
   // stream normally. Keep a per-message marker so we can send the complete
   // final answer as a fresh message instead of leaving a half-rendered card.
@@ -353,7 +352,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
-          syncedCodexThreadNames,
           streamDeliveryFailures,
           agent,
           scope,
@@ -506,6 +504,21 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   controls.withAaSessionGroupSyncPaused = aaSessionGroupSync
     ? (operation) => aaSessionGroupSync.withPaused(operation)
     : undefined;
+  let codexNameSync = controls.profileConfig.agentKind === 'codex' && deps.appPaths?.profileDir
+    ? new CodexNameSync({
+        channel, agent, appId: cfg.accounts.app.id,
+        statePath: join(deps.appPaths.profileDir, 'codex-name-sync.json'),
+        knownChats: () => controls.knownChats ?? [],
+      })
+    : undefined;
+  try {
+    await codexNameSync?.load();
+  } catch (err) {
+    // Never reset a damaged baseline and overwrite user names, or take down
+    // the messaging service because the optional name synchronizer failed.
+    log.warn('session', 'name-sync-disabled', { err: String(err) });
+    codexNameSync = undefined;
+  }
   const codexTurnSync =
     sessionCatalog && deps.appPaths?.profileDir
       ? await startCodexTurnSync({
@@ -513,6 +526,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           controls,
           sessionCatalog,
           profileStateDir: deps.appPaths.profileDir,
+          nameSync: codexNameSync,
         })
       : undefined;
 
@@ -808,7 +822,6 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
-  syncedCodexThreadNames: Map<string, string>;
   streamDeliveryFailures: Map<string, Error>;
   scope: string;
   mode: ChatMode;
@@ -829,7 +842,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
-    syncedCodexThreadNames,
     streamDeliveryFailures,
     scope,
     mode,
@@ -1060,21 +1072,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts.replyTo, sendOpts.replyInThread);
       }
       log.info('session', 'set-thread', { threadId: evt.threadId });
-      if (firstMsg.chatType !== 'p2p') {
-        void syncCodexThreadNameFromChat({
-          channel,
-          agent,
-          chatId,
-          threadId: evt.threadId,
-          knownChats: controls.knownChats ?? [],
-          syncedNames: syncedCodexThreadNames,
-        }).catch((err) =>
-          log.warn('session', 'thread-name-sync-failed', {
-            threadId: evt.threadId,
-            err: err instanceof Error ? err.message : String(err),
-          }),
-        );
-      }
     }
   };
 
@@ -1462,24 +1459,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } finally {
     if (handle.interrupted && runCodexThreadId && runCodexTurnId) {
       controls.codexUserInput?.endTurn(runCodexThreadId, runCodexTurnId);
-    }
-    if (firstMsg.chatType !== 'p2p' && runCodexThreadId) {
-      try {
-        await syncCodexThreadNameFromChat({
-          channel,
-          agent,
-          chatId,
-          threadId: runCodexThreadId,
-          knownChats: controls.knownChats ?? [],
-          syncedNames: syncedCodexThreadNames,
-          force: true,
-        });
-      } catch (err) {
-        log.warn('session', 'thread-name-final-sync-failed', {
-          threadId: runCodexThreadId,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
     }
     if (runTraceId) {
       clearCardStreamProgress(runTraceId);

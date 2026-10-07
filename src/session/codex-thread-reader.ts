@@ -37,6 +37,7 @@ export interface CodexThreadTurn {
 
 export interface CodexThreadSnapshot {
   id: string;
+  name?: string;
   status?: { type: string; activeFlags?: string[] };
   rolloutPath?: string;
   updatedAtMs?: number;
@@ -566,6 +567,7 @@ export function normalizeCodexThreadSnapshot(input: unknown): CodexThreadSnapsho
   }
   return {
     id: raw.id,
+    ...(typeof raw.name === 'string' ? { name: raw.name } : {}),
     ...(typeof status?.type === 'string' ? { status: { type: status.type,
       ...(Array.isArray(status.activeFlags)
         ? { activeFlags: status.activeFlags.filter((value): value is string => typeof value === 'string') } : {}) } } : {}),

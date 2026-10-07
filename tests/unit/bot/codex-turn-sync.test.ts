@@ -18,6 +18,28 @@ describe('Codex desktop turn sync', () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
+  it('reuses snapshots for name sync without making name failures block reply delivery', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-name-poll-')); cleanup.push(dir);
+    const channel = createFakeChannel(); const controls = controlsForCodex();
+    const entry: SessionCatalogEntry = { key: 'entry', scopeId: 'oc_group', threadId: 'thread', agentId: 'codex',
+      cwdRealpath: dir, policyFingerprint: 'p', status: 'active', updatedAt: 1 };
+    const snapshot: CodexThreadSnapshot = { id: 'thread', name: '桌面改名', turns: [] };
+    const observe = vi.fn(async () => { throw new Error('rename unavailable'); });
+    const readThread = vi.fn(async () => snapshot);
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
+      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog, profileStateDir: dir,
+      intervalMs: 60_000, nameSync: { observe }, reader: { readThread, stop: async () => {} } });
+    try {
+      await handle.runNow();
+      expect(observe).toHaveBeenCalledWith(snapshot, [entry]);
+      expect(readThread).toHaveBeenCalledTimes(1);
+      snapshot.turns.push(externalTurn('new-turn', 'inProgress', 'hello', 'reply'));
+      await handle.runNow();
+      expect(channel.sent).toHaveLength(2);
+      expect(readThread).toHaveBeenCalledTimes(2);
+    } finally { await handle.stop(); }
+  });
+
   it('passes reconciled turn snapshots to async question UI on the existing polling path', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-async-sync-')); cleanup.push(dir);
     const channel = createFakeChannel(); const controls = controlsForCodex();

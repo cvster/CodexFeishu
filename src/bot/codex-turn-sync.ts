@@ -100,6 +100,7 @@ export interface CodexTurnSyncDeps {
   reader?: CodexTurnReaderLike;
   statePath?: string;
   now?: () => number;
+  nameSync?: { observe(snapshot: CodexThreadSnapshot, entries: SessionCatalogEntry[]): Promise<void> };
 }
 
 export interface CodexTurnSyncHandle {
@@ -227,6 +228,12 @@ async function syncOnce(
     }
     await syncThreadSnapshot(deps.channel, store, snapshot, entries, now(),
       deps.controls.runControlIcons, submitted, deps.controls);
+    // Name failures must not prevent reply delivery or other thread polling.
+    try {
+      await deps.nameSync?.observe(snapshot, entries);
+    } catch (err) {
+      log.warn('codex-turn-sync', 'name-sync-failed', { threadId, err: errorText(err) });
+    }
     let consumedCreationReplay = false;
     for (const entry of entries) {
       if (!entry.recentTurnReplayCount) continue;
