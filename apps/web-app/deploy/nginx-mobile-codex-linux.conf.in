@@ -1,0 +1,62 @@
+limit_req_zone $binary_remote_addr zone=mobile_codex_login:10m rate=5r/m;
+limit_req_zone $binary_remote_addr zone=mobile_codex_pending_delivery:10m rate=10r/s;
+
+map $http_upgrade $mobile_codex_connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+upstream mobile_codex_backend {
+    server 127.0.0.1:3001;
+    keepalive 32;
+}
+
+server {
+    listen 127.0.0.1:8080;
+    listen __PRIVATE_IP__:8080;
+    server_name mobile-codex-local;
+
+    access_log /var/log/nginx/mobile-codex.access.log;
+    error_log /var/log/nginx/mobile-codex.error.log warn;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: wss:" always;
+
+    location = /api/auth/login {
+        limit_req zone=mobile_codex_login burst=10 nodelay;
+        proxy_pass http://mobile_codex_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location ~ ^/api/codex/sessions/[^/]+/pending-delivery$ {
+        limit_req zone=mobile_codex_pending_delivery burst=20 nodelay;
+        proxy_pass http://mobile_codex_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location / {
+        proxy_pass http://mobile_codex_backend;
+        proxy_http_version 1.1;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $mobile_codex_connection_upgrade;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}

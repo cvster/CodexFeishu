@@ -1,0 +1,397 @@
+import { useTranslation } from 'react-i18next';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import type { CSSProperties, Dispatch, RefObject, SetStateAction } from 'react';
+import type { ChatMessage } from '../../types/types';
+import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
+import { getIntrinsicMessageKey } from '../../utils/messageKeys';
+import MessageComponent from './MessageComponent';
+import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
+import AssistantThinkingIndicator from './AssistantThinkingIndicator';
+
+interface ChatMessagesPaneProps {
+  scrollContainerRef: RefObject<HTMLDivElement>;
+  onWheel: () => void;
+  onTouchMove: () => void;
+  isLoadingSessionMessages: boolean;
+  chatMessages: ChatMessage[];
+  selectedSession: ProjectSession | null;
+  currentSessionId: string | null;
+  provider: SessionProvider;
+  setProvider: (provider: SessionProvider) => void;
+  textareaRef: RefObject<HTMLTextAreaElement>;
+  claudeModel: string;
+  setClaudeModel: (model: string) => void;
+  cursorModel: string;
+  setCursorModel: (model: string) => void;
+  codexModel: string;
+  setCodexModel: (model: string) => void;
+  codexReasoningEffort: string;
+  setCodexReasoningEffort: (effort: string) => void;
+  geminiModel: string;
+  setGeminiModel: (model: string) => void;
+  tasksEnabled: boolean;
+  isTaskMasterInstalled: boolean | null;
+  onShowAllTasks?: (() => void) | null;
+  setInput: Dispatch<SetStateAction<string>>;
+  onResendMessage?: (content: string) => void;
+  onDeletePendingMessage?: () => void;
+  isLoadingMoreMessages: boolean;
+  hasMoreMessages: boolean;
+  totalMessages: number;
+  sessionMessagesCount: number;
+  visibleMessageCount: number;
+  visibleMessages: ChatMessage[];
+  loadEarlierMessages: () => void;
+  loadAllMessages: () => void;
+  allMessagesLoaded: boolean;
+  isLoadingAllMessages: boolean;
+  loadAllJustFinished: boolean;
+  showLoadAllOverlay: boolean;
+  isRefreshingLatest: boolean;
+  createDiff: any;
+  onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
+  onShowSettings?: () => void;
+  onGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
+  autoExpandTools?: boolean;
+  showRawParameters?: boolean;
+  showThinking?: boolean;
+  selectedProject: Project;
+  isLoading: boolean;
+  mobileComposerInset?: number;
+  onSwipeUpRefresh?: () => void;
+}
+
+export default function ChatMessagesPane({
+  scrollContainerRef,
+  onWheel,
+  onTouchMove,
+  isLoadingSessionMessages,
+  chatMessages,
+  selectedSession,
+  currentSessionId,
+  provider,
+  setProvider,
+  textareaRef,
+  claudeModel,
+  setClaudeModel,
+  cursorModel,
+  setCursorModel,
+  codexModel,
+  setCodexModel,
+  codexReasoningEffort,
+  setCodexReasoningEffort,
+  geminiModel,
+  setGeminiModel,
+  tasksEnabled,
+  isTaskMasterInstalled,
+  onShowAllTasks,
+  setInput,
+  onResendMessage,
+  onDeletePendingMessage,
+  isLoadingMoreMessages,
+  hasMoreMessages,
+  totalMessages,
+  sessionMessagesCount,
+  visibleMessageCount,
+  visibleMessages,
+  loadEarlierMessages,
+  loadAllMessages,
+  allMessagesLoaded,
+  isLoadingAllMessages,
+  loadAllJustFinished,
+  showLoadAllOverlay,
+  isRefreshingLatest,
+  createDiff,
+  onFileOpen,
+  onShowSettings,
+  onGrantToolPermission,
+  autoExpandTools,
+  showRawParameters,
+  showThinking,
+  selectedProject,
+  isLoading,
+  mobileComposerInset = 0,
+  onSwipeUpRefresh,
+}: ChatMessagesPaneProps) {
+  const { t } = useTranslation('chat');
+  const touchGestureRef = useRef({
+    touchId: null as number | null,
+    startY: 0,
+    currentY: 0,
+    startedAt: 0,
+    armed: false,
+    triggered: false,
+    startBottomGap: Number.POSITIVE_INFINITY,
+  });
+  const containerStyle: CSSProperties | undefined =
+    mobileComposerInset > 0
+      ? {
+          paddingBottom: `calc(${mobileComposerInset}px + env(safe-area-inset-bottom) + 0.75rem)`,
+        }
+      : undefined;
+  const latestUserMessageIndex = visibleMessages.reduce(
+    (latestIndex, message, index) => (message.type === 'user' ? index : latestIndex),
+    -1,
+  );
+
+  // History polling reconstructs ChatMessage objects even when their visible
+  // content is unchanged. Keys based on object identity therefore remounted
+  // the complete transcript every 1.5 seconds, clearing text selection and
+  // breaking the browser's scroll anchoring. Derive keys from message data so
+  // the same logical message keeps the same DOM node across refreshes.
+  const visibleMessageKeys = useMemo(() => {
+    const occurrences = new Map<string, number>();
+
+    return visibleMessages.map((message, index) => {
+      const intrinsicKey = getIntrinsicMessageKey(message);
+      const baseKey = intrinsicKey || `message-fallback-${message.type}-${String(message.timestamp)}-${index}`;
+      const occurrence = occurrences.get(baseKey) || 0;
+      occurrences.set(baseKey, occurrence + 1);
+      return occurrence === 0 ? baseKey : `${baseKey}-duplicate-${occurrence}`;
+    });
+  }, [visibleMessages]);
+
+  const tryTriggerSwipeRefresh = useCallback(() => {
+    const { startY, currentY, startedAt, armed, triggered } = touchGestureRef.current;
+
+    if (!armed || triggered || !onSwipeUpRefresh || isRefreshingLatest) {
+      return false;
+    }
+
+    const swipeDistance = startY - currentY;
+    const elapsed = Date.now() - startedAt;
+
+    if (swipeDistance < 36 || elapsed > 1400) {
+      return false;
+    }
+
+    touchGestureRef.current.triggered = true;
+    onSwipeUpRefresh();
+    return true;
+  }, [isRefreshingLatest, onSwipeUpRefresh]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const getTrackedTouch = (touches: TouchList) => {
+      const { touchId } = touchGestureRef.current;
+      if (touchId === null) {
+        return null;
+      }
+
+      for (let index = 0; index < touches.length; index += 1) {
+        const touch = touches.item(index);
+        if (touch?.identifier === touchId) {
+          return touch;
+        }
+      }
+
+      return null;
+    };
+
+    const handleNativeTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) {
+        return;
+      }
+
+      const bottomGap = Math.max(container.scrollHeight - container.scrollTop - container.clientHeight, 0);
+      const contentFits = container.scrollHeight <= container.clientHeight + 1;
+      const atBottom = contentFits || bottomGap <= 12;
+
+      touchGestureRef.current = {
+        touchId: touch.identifier,
+        startY: touch.clientY,
+        currentY: touch.clientY,
+        startedAt: Date.now(),
+        armed: atBottom,
+        triggered: false,
+        startBottomGap: bottomGap,
+      };
+    };
+
+    const handleNativeTouchMove = (event: TouchEvent) => {
+      const touch = getTrackedTouch(event.touches);
+      if (!touch) {
+        return;
+      }
+
+      touchGestureRef.current.currentY = touch.clientY;
+      onTouchMove();
+      tryTriggerSwipeRefresh();
+    };
+
+    const handleNativeTouchEnd = (event: TouchEvent) => {
+      if (touchGestureRef.current.touchId === null || !getTrackedTouch(event.changedTouches)) {
+        return;
+      }
+
+      tryTriggerSwipeRefresh();
+      touchGestureRef.current.armed = false;
+      touchGestureRef.current.triggered = false;
+      touchGestureRef.current.touchId = null;
+    };
+
+    const touchStartOptions: AddEventListenerOptions = { passive: true, capture: true };
+    const touchOptions: AddEventListenerOptions = { passive: true };
+
+    container.addEventListener('touchstart', handleNativeTouchStart as EventListener, touchStartOptions);
+    window.addEventListener('touchmove', handleNativeTouchMove as EventListener, touchOptions);
+    window.addEventListener('touchend', handleNativeTouchEnd as EventListener, touchOptions);
+    window.addEventListener('touchcancel', handleNativeTouchEnd as EventListener, touchOptions);
+
+    return () => {
+      container.removeEventListener('touchstart', handleNativeTouchStart as EventListener, touchStartOptions);
+      window.removeEventListener('touchmove', handleNativeTouchMove as EventListener, touchOptions);
+      window.removeEventListener('touchend', handleNativeTouchEnd as EventListener, touchOptions);
+      window.removeEventListener('touchcancel', handleNativeTouchEnd as EventListener, touchOptions);
+    };
+  }, [onTouchMove, scrollContainerRef, tryTriggerSwipeRefresh]);
+
+  return (
+    <div
+      ref={scrollContainerRef}
+      onWheel={onWheel}
+      style={containerStyle}
+      className="relative flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-0 py-3 sm:space-y-4 sm:p-4"
+    >
+      {isLoadingSessionMessages && chatMessages.length === 0 ? (
+        <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
+          <div className="flex items-center justify-center space-x-2">
+            <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
+            <p>{t('session.loading.sessionMessages')}</p>
+          </div>
+        </div>
+      ) : chatMessages.length === 0 ? (
+        <ProviderSelectionEmptyState
+          selectedSession={selectedSession}
+          currentSessionId={currentSessionId}
+          provider={provider}
+          setProvider={setProvider}
+          textareaRef={textareaRef}
+          claudeModel={claudeModel}
+          setClaudeModel={setClaudeModel}
+          cursorModel={cursorModel}
+          setCursorModel={setCursorModel}
+          codexModel={codexModel}
+          setCodexModel={setCodexModel}
+          codexReasoningEffort={codexReasoningEffort}
+          setCodexReasoningEffort={setCodexReasoningEffort}
+          geminiModel={geminiModel}
+          setGeminiModel={setGeminiModel}
+          tasksEnabled={tasksEnabled}
+          isTaskMasterInstalled={isTaskMasterInstalled}
+          onShowAllTasks={onShowAllTasks}
+          setInput={setInput}
+        />
+      ) : (
+        <>
+          {/* Loading indicator for older messages (hide when load-all is active) */}
+          {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded && (
+            <div className="py-3 text-center text-gray-500 dark:text-gray-400">
+              <div className="flex items-center justify-center space-x-2">
+                <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
+                <p className="text-sm">{t('session.loading.olderMessages')}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Indicator showing there are more messages to load (hide when all loaded) */}
+          {hasMoreMessages && !isLoadingMoreMessages && !allMessagesLoaded && (
+            <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+              {totalMessages > 0 && (
+                <span>
+                  {t('session.messages.showingOf', { shown: sessionMessagesCount, total: totalMessages })}{' '}
+                  <span className="text-xs">{t('session.messages.scrollToLoad')}</span>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Floating "Load all messages" overlay */}
+          {(showLoadAllOverlay || isLoadingAllMessages || loadAllJustFinished) && (
+            <div className="pointer-events-none sticky top-2 z-20 flex justify-center">
+              {loadAllJustFinished ? (
+                <div className="flex items-center space-x-2 rounded-full bg-green-600 px-4 py-1.5 text-xs font-medium text-white shadow-lg dark:bg-green-500">
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>{t('session.messages.allLoaded')}</span>
+                </div>
+              ) : (
+                <button
+                  className="pointer-events-auto flex items-center space-x-2 rounded-full bg-blue-600 px-4 py-1.5 text-xs font-medium text-white shadow-lg transition-all duration-200 hover:scale-105 hover:bg-blue-700 disabled:cursor-wait disabled:opacity-75 dark:bg-blue-500 dark:hover:bg-blue-600"
+                  onClick={loadAllMessages}
+                  disabled={isLoadingAllMessages}
+                >
+                  {isLoadingAllMessages && (
+                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  )}
+                  <span>
+                    {isLoadingAllMessages
+                      ? t('session.messages.loadingAll')
+                      : <>{t('session.messages.loadAll')} {totalMessages > 0 && `(${totalMessages})`}</>
+                    }
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Performance warning when all messages are loaded */}
+          {allMessagesLoaded && (
+            <div className="border-b border-amber-200 bg-amber-50 py-1.5 text-center text-xs text-amber-600 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
+              {t('session.messages.perfWarning')}
+            </div>
+          )}
+
+          {/* Legacy message count indicator (for non-paginated view) */}
+          {!hasMoreMessages && chatMessages.length > visibleMessageCount && (
+            <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+              {t('session.messages.showingLast', { count: visibleMessageCount, total: chatMessages.length })} |
+              <button className="ml-1 text-blue-600 underline hover:text-blue-700" onClick={loadEarlierMessages}>
+                {t('session.messages.loadEarlier')}
+              </button>
+              {' | '}
+              <button
+                className="text-blue-600 underline hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                onClick={loadAllMessages}
+              >
+                {t('session.messages.loadAll')}
+              </button>
+            </div>
+          )}
+
+          {visibleMessages.map((message, index) => {
+            const prevMessage = index > 0 ? visibleMessages[index - 1] : null;
+            const isLatestUserMessage = message.type === 'user' && index === latestUserMessageIndex;
+            return (
+              <MessageComponent
+                key={visibleMessageKeys[index]}
+                message={message}
+                prevMessage={prevMessage}
+                isLatestUserMessage={isLatestUserMessage}
+                onResendMessage={onResendMessage}
+                onDeletePendingMessage={onDeletePendingMessage}
+                createDiff={createDiff}
+                onFileOpen={onFileOpen}
+                onShowSettings={onShowSettings}
+                onGrantToolPermission={onGrantToolPermission}
+                autoExpandTools={autoExpandTools}
+                showRawParameters={showRawParameters}
+                showThinking={showThinking}
+                selectedProject={selectedProject}
+                provider={provider}
+              />
+            );
+          })}
+        </>
+      )}
+
+      {isLoading && <AssistantThinkingIndicator selectedProvider={provider} />}
+    </div>
+  );
+}
