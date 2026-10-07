@@ -16,6 +16,14 @@ if [[ ! -d "$target_root" ]]; then
 fi
 
 copied=0
+if [[ ! -f "$source_root/server/codex-core/index.js" ]]; then
+  echo "Shared Codex core is not prepared. Run pnpm build from the monorepo root before applying web overrides." >&2
+  exit 1
+fi
+if [[ ! -f "$source_root/shared/codex-core-models.js" ]]; then
+  echo "Shared model module is not prepared. Run pnpm build from the monorepo root." >&2
+  exit 1
+fi
 while IFS= read -r -d '' source_file; do
   relative_path="${source_file#"$source_root"/}"
   destination="$target_root/$relative_path"

@@ -1,4 +1,5 @@
 import { modelLabel, supportedModels } from '../agent/models';
+import { CODEX_STANDARD_REASONING_VALUES } from '../../packages/codex-core/src/models';
 
 interface ButtonSpec {
   text: string;
@@ -436,7 +437,7 @@ export function newChatCreationCard(
               name: 'reasoning_effort',
               label: { tag: 'plain_text', content: '推理程度' },
               initial_option: reasoningEffort,
-              options: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map((value) => ({
+              options: CODEX_STANDARD_REASONING_VALUES.map((value) => ({
                 text: { tag: 'plain_text', content: value },
                 value,
               })),

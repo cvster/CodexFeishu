@@ -1,153 +1,35 @@
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { CodexThreadReader, resolveSharedCodexEndpoint } from './codex-core/index.js';
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-
+/** GPL web adapter around the shared MIT public app-server client. */
 export function createCodexAppServerClient({
   cliPath = process.env.MOBILE_CODEX_CLI,
-  cliArgs = ['app-server', '--stdio'],
-  cwd = process.cwd(),
-  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
-  spawnImpl = spawn,
+  cwd = process.cwd(), requestTimeoutMs = 30_000,
+  spawnImpl, sharedServer = false, remote,
 } = {}) {
   if (!cliPath || typeof cliPath !== 'string') {
     throw new Error('MOBILE_CODEX_CLI is required for Codex app-server requests.');
   }
-
-  const child = spawnImpl(cliPath, cliArgs, {
-    cwd: path.resolve(cwd),
-    env: process.env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
+  const reader = new CodexThreadReader({
+    binary: cliPath, cwd: path.resolve(cwd), profileStateDir: os.tmpdir(),
+    inheritCodexHome: true, timeoutMs: requestTimeoutMs, spawnImpl,
+    sharedServer, remote, passive: true,
+    clientInfo: { name: 'mobile-codex-helper', title: 'Codex Web', version: '1.0.0' },
   });
-  const pending = new Map();
-  const notificationWaiters = new Set();
-  let nextRequestId = 0;
-  let stdoutBuffer = '';
-  let stderr = '';
-  let closed = false;
-
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk) => {
-    stderr += chunk;
-  });
-
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk;
-    while (true) {
-      const newlineIndex = stdoutBuffer.indexOf('\n');
-      if (newlineIndex < 0) {
-        break;
-      }
-
-      const line = stdoutBuffer.slice(0, newlineIndex).trim();
-      stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-      if (!line) {
-        continue;
-      }
-
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
-      if (message.id === undefined && typeof message.method === 'string') {
-        for (const waiter of [...notificationWaiters]) {
-          if (waiter.method !== message.method || !waiter.predicate(message.params)) {
-            continue;
-          }
-          notificationWaiters.delete(waiter);
-          clearTimeout(waiter.timer);
-          waiter.resolve(message.params);
-        }
-        continue;
-      }
-
-      const key = String(message.id ?? '');
-      const entry = pending.get(key);
-      if (!entry) {
-        continue;
-      }
-
-      pending.delete(key);
-      clearTimeout(entry.timer);
-      if (message.error) {
-        entry.reject(new Error(message.error.message || JSON.stringify(message.error)));
-      } else {
-        entry.resolve(message.result);
-      }
-    }
-  });
-
-  const rejectPending = (error) => {
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(error);
-    }
-    pending.clear();
-    for (const waiter of notificationWaiters) {
-      clearTimeout(waiter.timer);
-      waiter.reject(error);
-    }
-    notificationWaiters.clear();
+  return {
+    async request(method, params) {
+      if (method === 'initialize') { await reader.connect(); return {}; }
+      return reader.rpc(method, params);
+    },
+    notify(method, params) { if (method !== 'initialized') reader.notify(method, params); },
+    waitForNotification: (...args) => reader.waitForNotification(...args),
+    updateThreadSettings: (...args) => reader.updateThreadSettings(...args),
+    joinActiveThread: (...args) => reader.joinActiveThread(...args),
+    readReconciledThread: (...args) => reader.readReconciledThread(...args),
+    close: () => reader.stop(),
   };
-
-  child.once('error', (error) => rejectPending(error));
-  child.once('exit', (code) => {
-    if (!closed && pending.size > 0) {
-      rejectPending(new Error(`Codex app-server exited with code ${code}${stderr ? `: ${stderr.trim()}` : ''}`));
-    }
-  });
-
-  const request = (method, params) => new Promise((resolve, reject) => {
-    nextRequestId += 1;
-    const id = String(nextRequestId);
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(`${method} timed out${stderr ? `: ${stderr.trim()}` : ''}`));
-    }, requestTimeoutMs);
-    pending.set(id, { resolve, reject, timer });
-    child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
-  });
-
-  const notify = (method, params) => {
-    child.stdin.write(`${JSON.stringify({ method, ...(params === undefined ? {} : { params }) })}\n`);
-  };
-
-  const waitForNotification = (
-    method,
-    predicate = () => true,
-    timeoutMs = 30 * 60_000,
-  ) => new Promise((resolve, reject) => {
-    const waiter = { method, predicate, resolve, reject, timer: null };
-    waiter.timer = setTimeout(() => {
-      notificationWaiters.delete(waiter);
-      reject(new Error(`${method} notification timed out${stderr ? `: ${stderr.trim()}` : ''}`));
-    }, timeoutMs);
-    notificationWaiters.add(waiter);
-  });
-
-  const close = async () => {
-    closed = true;
-    child.stdin.end();
-    await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        child.kill();
-        resolve();
-      }, 3_000);
-      child.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-  };
-
-  return { close, notify, request, waitForNotification };
 }
 
 function normalizeCodexPath(value) {
@@ -251,7 +133,10 @@ export async function archiveCodexAppThread({ sessionId, projectPath }, dependen
     : process.cwd();
   const createClient = dependencies.createClient || createCodexAppServerClient;
   const archiveInStateStore = dependencies.archiveInStateStore || archiveCodexThreadInStateStore;
-  const client = createClient({ cwd });
+  const endpoint = await (dependencies.resolveEndpoint || resolveSharedCodexEndpoint)({
+    remote: process.env.MOBILE_CODEX_QUEUE_REMOTE || process.env.CODEX_QUEUE_REMOTE,
+  });
+  const client = createClient({ cwd, sharedServer: Boolean(endpoint), remote: endpoint });
   try {
     await client.request('initialize', {
       clientInfo: { name: 'mobile-codex-helper', version: '1.0.0' },

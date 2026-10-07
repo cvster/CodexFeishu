@@ -64,6 +64,12 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)
 
+  apps/feishu-bridge: {}
+
+  apps/web-app: {}
+
+  packages/codex-core: {}
+
 packages:
 
   '@clack/core@1.3.1':

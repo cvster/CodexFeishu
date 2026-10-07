@@ -21,6 +21,8 @@ dist/
 
 # Node install cache
 node_modules/
+upstream-overrides/claudecodeui-1.25.2/server/codex-core/
+upstream-overrides/claudecodeui-1.25.2/shared/codex-core-models.js
 
 # Windows extras
 Thumbs.db

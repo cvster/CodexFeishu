@@ -15,6 +15,12 @@ if (-not (Test-Path $targetRoot)) {
 }
 
 $copied = 0
+if (-not (Test-Path (Join-Path $sourceRoot 'server\codex-core\index.js'))) {
+  throw 'Shared Codex core is not prepared. Run pnpm build from the monorepo root before applying web overrides.'
+}
+if (-not (Test-Path (Join-Path $sourceRoot 'shared\codex-core-models.js'))) {
+  throw 'Shared model module is not prepared. Run pnpm build from the monorepo root.'
+}
 Get-ChildItem -Path $sourceRoot -Recurse -File | ForEach-Object {
   $relative = $_.FullName.Substring($sourceRoot.Length + 1)
   $destination = Join-Path $targetRoot $relative

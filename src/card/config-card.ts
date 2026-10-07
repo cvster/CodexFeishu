@@ -1,4 +1,5 @@
 import { modelLabel, supportedModels } from '../agent/models';
+import { CODEX_STANDARD_REASONING_VALUES } from '../../packages/codex-core/src/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
@@ -137,7 +138,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
                     tag: 'select_static',
                     name: 'reasoning_effort',
                     initial_option: opts.reasoningEffort,
-                    options: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map((value) => ({
+                    options: CODEX_STANDARD_REASONING_VALUES.map((value) => ({
                       text: { tag: 'plain_text', content: value },
                       value,
                     })),

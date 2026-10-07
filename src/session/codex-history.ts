@@ -1,14 +1,9 @@
-import { createInterface } from 'node:readline';
-import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
-import {
-  mergeProcessEnv,
-  type SpawnedProcessByStdio,
-} from '../platform/spawn';
+import { mergeProcessEnv } from '../platform/spawn';
 import { spawnCodexProcess as spawnProcess } from '../platform/codex-binary';
 import { normalizeSessionPreview } from './preview';
 
-type CodexAppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
+import { CodexThreadReader } from '../../packages/codex-core/src/thread-client';
 
 export type CodexThreadSourceKind =
   | 'cli'
@@ -82,124 +77,23 @@ const DEFAULT_SOURCE_KINDS: readonly CodexThreadSourceKind[] = [
 export async function listCodexThreadHistory(
   options: ListCodexThreadHistoryOptions,
 ): Promise<CodexThreadHistoryEntry[]> {
-  const child = spawnCodexAppServer(options);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_HISTORY_TIMEOUT_MS;
-  const stderrChunks: Buffer[] = [];
-  let settled = false;
-
-  const result = await new Promise<CodexThreadHistoryEntry[]>((resolve, reject) => {
-    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let requestId = 2;
-    const entries: CodexThreadHistoryEntry[] = [];
-
-    const fail = (err: unknown): void => {
-      if (settled) return;
-      reject(
-        err instanceof CodexHistoryError
-          ? err
-          : new CodexHistoryError('spawn-failed', errorMessage(err)),
-      );
-      cleanup({ kill: true });
-    };
-
-    const cleanup = (options: { kill: boolean }): void => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      rl.close();
-      child.removeListener('error', fail);
-      child.stdin.removeListener('error', fail);
-      child.stderr.removeAllListeners('data');
-      if (options.kill && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-    };
-
-    timer = setTimeout(() => {
-      reject(new CodexHistoryError('timeout', `codex history query timed out after ${timeoutMs}ms`));
-      cleanup({ kill: true });
-    }, timeoutMs);
-
-    child.once('error', fail);
-    child.stdin.once('error', fail);
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderrChunks.push(chunk);
-    });
-
-    rl.on('line', (line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      let msg: unknown;
-      try {
-        msg = JSON.parse(trimmed);
-      } catch {
-        return;
-      }
-      const response = recordValue(msg);
-      if (!response || response.id !== requestId) return;
-      if (response.error) {
-        const err = recordValue(response.error);
-        reject(
-          new CodexHistoryError(
-            'app-server-error',
-            typeof err?.message === 'string' ? err.message : 'codex app-server rejected history query',
-          ),
-        );
-        cleanup({ kill: true });
-        return;
-      }
-      const parsed = parseThreadListResponse(response.result);
-      if (!parsed.ok) {
-        reject(parsed.error);
-        cleanup({ kill: true });
-        return;
-      }
-      entries.push(...parsed.entries.slice(0, Math.max(0, options.limit - entries.length)));
-      if (parsed.nextCursor && entries.length < options.limit) {
-        requestId += 1;
-        try {
-          child.stdin.write(
-            `${JSON.stringify(listRequest(options, requestId, parsed.nextCursor, options.limit - entries.length))}\n`,
-            'utf8',
-            (err?: Error | null) => {
-              if (err) fail(err);
-            },
-          );
-        } catch (err) {
-          fail(err);
-        }
-        return;
-      }
-      resolve(entries);
-      cleanup({ kill: true });
-    });
-
-    child.once('exit', (code) => {
-      if (settled) return;
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-      reject(
-        new CodexHistoryError(
-          'spawn-failed',
-          `codex app-server exited before history response: ${code ?? 'signal'}${stderr ? `: ${stderr}` : ''}`,
-        ),
-      );
-      cleanup({ kill: true });
-    });
-
-    try {
-      child.stdin.write(
-        `${JSON.stringify(initializeRequest())}\n${JSON.stringify(listRequest(options, requestId))}\n`,
-        'utf8',
-        (err?: Error | null) => {
-          if (err) fail(err);
-        },
-      );
-    } catch (err) {
-      fail(err);
+  const client = createHistoryClient(options);
+  const entries: CodexThreadHistoryEntry[] = [];
+  let cursor: string | undefined;
+  const cursors = new Set<string>();
+  try {
+    while (entries.length < options.limit) {
+      const response = await client.rpc('thread/list', listRequest(options, 0, cursor, options.limit - entries.length).params);
+      const parsed = parseThreadListResponse(response);
+      if (!parsed.ok) throw parsed.error;
+      entries.push(...parsed.entries.slice(0, options.limit - entries.length));
+      if (!parsed.nextCursor || cursors.has(parsed.nextCursor)) break;
+      cursor = parsed.nextCursor;
+      cursors.add(cursor);
     }
-  });
-
-  await waitForChildExit(child, 250);
-  return result;
+    return entries;
+  } catch (error) { throw historyError(error); }
+  finally { await client.stop(); }
 }
 
 export async function setCodexThreadName(options: SetCodexThreadNameOptions): Promise<void> {
@@ -207,7 +101,6 @@ export async function setCodexThreadName(options: SetCodexThreadNameOptions): Pr
     options,
     'thread/name/set',
     { threadId: options.threadId, name: options.name },
-    'rename',
   );
 }
 
@@ -220,7 +113,6 @@ export async function archiveCodexThread(options: ArchiveCodexThreadOptions): Pr
     options,
     'thread/archive',
     { threadId: options.threadId },
-    'archive',
   );
 }
 
@@ -278,114 +170,29 @@ async function mutateCodexThread(
   options: ArchiveCodexThreadOptions,
   method: 'thread/name/set' | 'thread/archive',
   params: Record<string, unknown>,
-  operation: 'rename' | 'archive',
 ): Promise<void> {
-  const child = spawnCodexAppServer(options);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_HISTORY_TIMEOUT_MS;
-  const stderrChunks: Buffer[] = [];
-  let settled = false;
-
-  await new Promise<void>((resolve, reject) => {
-    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const cleanup = (kill: boolean): void => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      rl.close();
-      child.removeListener('error', fail);
-      child.stdin.removeListener('error', fail);
-      child.stderr.removeAllListeners('data');
-      if (kill && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-    };
-    const fail = (err: unknown): void => {
-      if (settled) return;
-      reject(
-        err instanceof CodexHistoryError
-          ? err
-          : new CodexHistoryError('spawn-failed', errorMessage(err)),
-      );
-      cleanup(true);
-    };
-
-    timer = setTimeout(() => {
-      reject(new CodexHistoryError('timeout', `codex thread ${operation} timed out after ${timeoutMs}ms`));
-      cleanup(true);
-    }, timeoutMs);
-
-    child.once('error', fail);
-    child.stdin.once('error', fail);
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-    rl.on('line', (line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      let msg: unknown;
-      try {
-        msg = JSON.parse(trimmed);
-      } catch {
-        return;
-      }
-      const response = recordValue(msg);
-      if (!response || response.id !== 2) return;
-      if (response.error) {
-        const err = recordValue(response.error);
-        reject(
-          new CodexHistoryError(
-            'app-server-error',
-            typeof err?.message === 'string'
-              ? err.message
-              : `codex app-server rejected thread ${operation}`,
-          ),
-        );
-        cleanup(true);
-        return;
-      }
-      resolve();
-      cleanup(true);
-    });
-    child.once('exit', (code) => {
-      if (settled) return;
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-      reject(
-        new CodexHistoryError(
-          'spawn-failed',
-          `codex app-server exited before thread ${operation} response: ${code ?? 'signal'}${stderr ? `: ${stderr}` : ''}`,
-        ),
-      );
-      cleanup(false);
-    });
-
-    try {
-      child.stdin.write(
-        `${JSON.stringify(initializeRequest())}\n${JSON.stringify({
-          method,
-          id: 2,
-          params,
-        })}\n`,
-        'utf8',
-        (err?: Error | null) => {
-          if (err) fail(err);
-        },
-      );
-    } catch (err) {
-      fail(err);
-    }
-  });
-
-  await waitForChildExit(child, 250);
+  const client = createHistoryClient(options);
+  try { await client.rpc(method, params); }
+  catch (error) { throw historyError(error); }
+  finally { await client.stop(); }
 }
 
-function spawnCodexAppServer(options: {
-  binary: string;
-  profileStateDir: string;
-  codexHome?: string;
-  inheritCodexHome?: boolean;
-}): CodexAppServerChild {
-  return spawnProcess(options.binary, ['app-server', '--listen', 'stdio://'], {
-    env: codexProcessEnv(options),
-    stdio: ['pipe', 'pipe', 'pipe'],
-  }) as CodexAppServerChild;
+function createHistoryClient(options: ListCodexThreadHistoryOptions | ArchiveCodexThreadOptions): CodexThreadReader {
+  const remote = 'remote' in options ? options.remote : undefined;
+  return new CodexThreadReader({
+    binary: options.binary, profileStateDir: options.profileStateDir,
+    codexHome: options.codexHome, inheritCodexHome: options.inheritCodexHome !== false,
+    timeoutMs: options.timeoutMs ?? DEFAULT_HISTORY_TIMEOUT_MS,
+    sharedServer: Boolean(remote), remote, passive: true,
+  });
+}
+
+function historyError(error: unknown): CodexHistoryError {
+  if (error instanceof CodexHistoryError) return error;
+  const message = errorMessage(error);
+  const code: CodexHistoryErrorCode = /timed out/i.test(message) ? 'timeout'
+    : /spawn|ENOENT|exited/i.test(message) ? 'spawn-failed' : 'app-server-error';
+  return new CodexHistoryError(code, message, { cause: error });
 }
 
 function codexProcessEnv(options: {
@@ -400,21 +207,6 @@ function codexProcessEnv(options: {
     envOverrides.CODEX_HOME = join(options.profileStateDir, 'codex-home');
   }
   return mergeProcessEnv(process.env, envOverrides);
-}
-
-function initializeRequest() {
-  return {
-    method: 'initialize',
-    id: 1,
-    params: {
-      clientInfo: {
-        name: 'lark-channel-bridge',
-        title: 'Lark Channel Bridge',
-        version: '0.2.3',
-      },
-      capabilities: null,
-    },
-  };
 }
 
 function listRequest(
@@ -476,20 +268,6 @@ function normalizeThread(input: unknown): CodexThreadHistoryEntry | undefined {
     source: sourceValue(raw.source),
     ...(stringValue(raw.name) ? { name: stringValue(raw.name) } : {}),
   };
-}
-
-async function waitForChildExit(child: CodexAppServerChild, timeoutMs: number): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-      resolve();
-    }, timeoutMs);
-    child.once('exit', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
 }
 
 function sourceValue(input: unknown): string {

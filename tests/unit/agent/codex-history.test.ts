@@ -78,6 +78,7 @@ describe('Codex thread history provider', () => {
     expect(record.env.CODEX_HOME).toBe('/outer/codex-home');
     expect(record.requests).toMatchObject([
       { method: 'initialize' },
+      { method: 'initialized' },
       {
         method: 'thread/list',
         params: {
@@ -130,6 +131,7 @@ describe('Codex thread history provider', () => {
     };
     expect(record.requests).toMatchObject([
       { method: 'initialize' },
+      { method: 'initialized' },
       { method: 'thread/name/set', params: { threadId: 'thread-new', name: 'Codex任务3' } },
     ]);
   });
@@ -150,6 +152,7 @@ describe('Codex thread history provider', () => {
     };
     expect(record.requests).toMatchObject([
       { method: 'initialize' },
+      { method: 'initialized' },
       { method: 'thread/archive', params: { threadId: 'thread-new' } },
     ]);
   });

@@ -1,5 +1,8 @@
 # mobileCodexHelper Local Deployment Notes
 
+整合仓库中请先在根目录执行 `pnpm build`，再应用本目录的 overrides。
+共享内核、独立服务与许可证边界见 [整合说明](../../docs/MONOREPO.md)。
+
 ## 一键启动
 
 在项目根目录双击 `start-mobile-codex-oneclick.cmd` 即可启动整套服务。脚本会自动优先使用 Codex 自带 Python 运行时，调用 `mobile_codex_control.py --action start --json`，并输出当前状态。
@@ -127,9 +130,9 @@
 - `MOBILE_CODEX_ASCII_ALIAS`
   可选。用于 Windows 非 ASCII 路径兼容；当前运行时默认会落到 `C:\mobileCodexHelper_ascii`
 - `MOBILE_CODEX_TURN_TIMEOUT_MS`
-  可选。app server 新会话首轮等待时间，默认 30 分钟
+  可选。队列消息的回答等待时间（新会话和续聊共用），默认 30 分钟
 - `MOBILE_CODEX_QUEUE_TIMEOUT_MS`
-  可选。已有会话的原生队列投递超时时间，默认 30 秒
+  可选。原生队列投递超时时间（新会话和续聊共用），默认 30 秒
 
 服务启动脚本还会在运行时临时设置：
 

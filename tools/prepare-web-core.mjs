@@ -1,0 +1,11 @@
+import { access, cp, mkdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
+const source = resolve('packages/codex-core/dist');
+await access(resolve(source, 'index.js'));
+const destination = resolve('apps/web-app/upstream-overrides/claudecodeui-1.25.2/server/codex-core');
+await mkdir(destination, { recursive: true });
+await cp(source, destination, { recursive: true });
+await cp(resolve('packages/codex-core/LICENSE'), resolve(destination, 'LICENSE'));
+await cp(resolve('packages/codex-core/THIRD_PARTY_NOTICES.md'), resolve(destination, 'THIRD_PARTY_NOTICES.md'));
+await cp(resolve(source, 'models.js'), resolve('apps/web-app/upstream-overrides/claudecodeui-1.25.2/shared/codex-core-models.js'));
+console.log('Prepared standalone Codex core for the independently deployed web adapter.');

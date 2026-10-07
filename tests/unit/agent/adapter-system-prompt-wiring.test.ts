@@ -12,6 +12,12 @@ vi.mock('../../../src/platform/spawn', async (importOriginal) => {
   return { ...actual, spawnProcess: spawnMock.spawnProcess };
 });
 
+// Codex spawning lives in the shared core; Claude keeps its adapter facade.
+vi.mock('../../../packages/codex-core/src/spawn', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../packages/codex-core/src/spawn')>();
+  return { ...actual, spawnProcess: spawnMock.spawnProcess };
+});
+
 import {
   buildBridgeSystemPrompt,
   prefixBridgeSystemPrompt,

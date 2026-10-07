@@ -47,7 +47,7 @@ import mime from 'mime-types';
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations, getCodexSessions } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
-import { abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter } from './openai-codex.js';
+import { abortCodexSession, isCodexSessionActive, getActiveCodexSessions, reconnectCodexSessionWriter, shutdownCodexObservers } from './openai-codex.js';
 import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGeminiSessions } from './gemini-cli.js';
 import { enqueueCodexCliMessage } from './codex-cli-message-relay.mjs';
 import { executeCodexArchive, executeCodexCommand } from './codex-command-execution.mjs';
@@ -2761,6 +2761,7 @@ async function startServer() {
 
         // Clean up plugin processes on shutdown
         const shutdownPlugins = async () => {
+            await shutdownCodexObservers();
             await stopAllPlugins();
             process.exit(0);
         };

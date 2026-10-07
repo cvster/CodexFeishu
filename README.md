@@ -4,6 +4,8 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 
 [中文 README](./README.zh.md)
 
+Shared core and independent Feishu/web services: [monorepo guide](./docs/MONOREPO.md).
+
 For a product walkthrough, see the [Feishu document](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e).
 
 ## What it does

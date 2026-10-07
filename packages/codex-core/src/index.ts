@@ -8,3 +8,4 @@ export * from './binary';
 export * from './spawn';
 export * from './lifecycle';
 export * from './queue';
+export * from './models';

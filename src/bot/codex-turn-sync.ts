@@ -17,10 +17,7 @@ import {
   type CodexThreadSnapshot,
   type CodexThreadTurn,
 } from '../session/codex-thread-reader';
-import {
-  isInterruptedTurnStatus,
-  isProvisionalInterruptedTurn,
-} from '../session/codex-turn-status';
+import { reconcileCodexThreadSnapshot as reconcileProjectedInterruptions } from '../session/codex-turn-status';
 import {
   codexTurnRunState,
   codexTurnTerminal,
@@ -246,44 +243,6 @@ async function syncOnce(
   await store.flush();
 }
 
-async function reconcileProjectedInterruptions(
-  reader: CodexTurnReaderLike,
-  snapshot: CodexThreadSnapshot,
-  nowMs: number,
-): Promise<CodexThreadSnapshot> {
-  const latest = snapshot.turns.at(-1);
-  if (!latest || !isInterruptedTurnStatus(latest.status)) return snapshot;
-  if (!reader.persistedTurnTerminal) {
-    return isProvisionalInterruptedTurn(snapshot, latest, nowMs)
-      ? replaceTurnStatus(snapshot, latest.id, 'inProgress')
-      : snapshot;
-  }
-  const terminal = await reader.persistedTurnTerminal(snapshot, latest.id);
-  if (terminal) {
-    // The durable event may have landed immediately after the first
-    // thread/read. Refresh once through app-server so the terminal card also
-    // contains the final message/tool items written just before that event.
-    const refreshed = await reader.readThread(snapshot.id);
-    const refreshedTurn = refreshed.turns.find((turn) => turn.id === latest.id);
-    const current = refreshedTurn ? refreshed : snapshot;
-    if (terminal === 'completed' && isInterruptedTurnStatus(refreshedTurn?.status ?? latest.status)) {
-      return replaceTurnStatus(current, latest.id, 'completed');
-    }
-    return current;
-  }
-  return replaceTurnStatus(snapshot, latest.id, 'inProgress');
-}
-
-function replaceTurnStatus(
-  snapshot: CodexThreadSnapshot,
-  turnId: string,
-  status: string,
-): CodexThreadSnapshot {
-  return {
-    ...snapshot,
-    turns: snapshot.turns.map((turn) => turn.id === turnId ? { ...turn, status } : turn),
-  };
-}
 
 async function syncThreadSnapshot(
   channel: LarkChannel,

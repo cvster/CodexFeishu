@@ -6,6 +6,7 @@ import { nextCodexForkName } from './fork-name';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createPersistedCodexThread } from './lifecycle';
+import { reconcileCodexThreadSnapshot } from './turn-status';
 import { parseCodexInputRequest, type CodexInputPrompt, type CodexRequestId } from './user-input';
 import { CodexAsyncAnswerUnconfirmedError } from './async-input';
 import {
@@ -125,6 +126,7 @@ export class CodexThreadReader {
 
   waitForNotification(method: string, predicate = (_params: Record<string, unknown>) => true,
     timeoutMs = 30 * 60_000): Promise<Record<string, unknown>> {
+    if (this.stopped) return Promise.reject(new Error('Codex thread reader is stopped'));
     return new Promise((resolve, reject) => {
       const waiter = { method, predicate, resolve, reject, timer: setTimeout(() => {
         this.notificationWaiters.delete(waiter);
@@ -204,6 +206,10 @@ export class CodexThreadReader {
       const updatedAt = typeof thread.updatedAt === 'number' ? thread.updatedAt : 0;
       return [{ id: thread.id, updatedAtMs: Math.round(updatedAt * 1000) }];
     });
+  }
+
+  async readReconciledThread(threadId: string): Promise<CodexThreadSnapshot> {
+    return reconcileCodexThreadSnapshot(this, await this.readThread(threadId));
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -328,9 +334,10 @@ export class CodexThreadReader {
 
   private async ensureStarted(): Promise<void> {
     if (this.stopped) throw new Error('Codex thread reader is stopped');
+    // A spawned process/open socket is not ready until initialize completes.
+    if (this.starting) return this.starting;
     if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) return;
-    if (this.starting) return this.starting;
     this.starting = this.startProcess().finally(() => {
       this.starting = undefined;
     });

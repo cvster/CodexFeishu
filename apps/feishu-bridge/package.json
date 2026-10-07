@@ -1,0 +1,8 @@
+{
+  "name": "@codexfeishu/feishu-bridge",
+  "version": "0.5.7",
+  "private": true,
+  "license": "MIT",
+  "description": "Compatibility workspace for the independently deployed Feishu service",
+  "scripts": { "build": "pnpm --dir ../.. build", "test": "pnpm --dir ../.. test" }
+}

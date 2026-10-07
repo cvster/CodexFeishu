@@ -15,6 +15,7 @@ function createFakeClient(calls) {
     async request(method, params) {
       calls.push([method, params]);
       if (method === 'thread/start') return { thread: { id: 'new-thread' } };
+      if (method === 'thread/read') return { thread: { id: 'new-thread', turns: [] } };
       return {};
     },
     notify(method) { calls.push([method]); },
@@ -299,7 +300,7 @@ test('旧会话的活动 turn 被投影为 interrupted 时不会争抢 writer', 
   assert.equal(calls.includes('thread/resume'), false);
 });
 
-test('网页自建的空闲会话在共享队列无人消费时才加载 writer', async () => {
+test('共享队列无人消费时不会在观察客户端加载 writer', async () => {
   const calls = [];
   let resumed = false;
   const client = {
@@ -335,7 +336,7 @@ test('网页自建的空闲会话在共享队列无人消费时才加载 writer'
     return child;
   };
 
-  await queueCodexCliThreadMessage({
+  await assert.rejects(queueCodexCliThreadMessage({
     sessionId: 'thread-1',
     projectPath: 'D:\\dorit\\mytest',
     message: '继续',
@@ -343,13 +344,14 @@ test('网页自建的空闲会话在共享队列无人消费时才加载 writer'
     cliPath: 'codex.exe',
     spawnImpl,
     createClient: () => client,
-    resumeFallbackMs: 0,
-  });
+    turnTimeoutMs: 10,
+    pollIntervalMs: 0,
+  }), /Codex queued turn timed out/);
 
-  assert.equal(calls.filter((method) => method === 'thread/resume').length, 1);
+  assert.equal(calls.filter((method) => method === 'thread/resume').length, 0);
 });
 
-test('新会话通过 app-server 创建并启动首轮', async () => {
+test('新会话先持久化并关闭创建者，再通过官方队列启动首轮', async () => {
   const calls = [];
   let createdSessionId = null;
   const result = await runCodexCliThreadTurn({
@@ -361,6 +363,10 @@ test('新会话通过 app-server 创建并启动首轮', async () => {
   }, {
     createClient: () => createFakeClient(calls),
     resolveProjectId: async () => 'project-1',
+    queueThreadMessage: async (payload) => {
+      calls.push(['queue', payload]);
+      return { skipped: false, sessionId: payload.sessionId, queueMessageId: 'first-queue' };
+    },
   });
 
   assert.equal(result.sessionId, 'new-thread');
@@ -372,13 +378,14 @@ test('新会话通过 app-server 创建并启动首轮', async () => {
     approvalPolicy: 'never',
     sandbox: 'danger-full-access',
     threadSource: 'user',
+    historyMode: 'legacy',
+    config: { shell_environment_policy: { inherit: 'all' }, model_reasoning_effort: 'high' },
   });
-  assert.deepEqual(calls.find(([method]) => method === 'turn/start')[1], {
-    threadId: 'new-thread',
-    input: [{ type: 'text', text: '新任务', text_elements: [] }],
-    model: 'gpt-6-sol',
-    effort: 'high',
-  });
+  assert.equal(calls.some(([method]) => method === 'turn/start'), false);
+  assert.ok(calls.findIndex(([method]) => method === 'close') < calls.findIndex(([method]) => method === 'queue'));
+  assert.deepEqual(calls.find(([method]) => method === 'thread/name/set')[1], { threadId: 'new-thread', name: 'Codex会话' });
+  assert.equal(calls.find(([method]) => method === 'queue')[1].message, '新任务');
+  assert.equal(result.queueMessageId, 'first-queue');
 });
 
 test('同一会话的多条消息按顺序执行', async () => {

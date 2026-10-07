@@ -1,214 +1,40 @@
 /**
- * Codex session activity helpers.
- *
- * Message execution is handled by codex-cli-message-relay.mjs through the Codex
- * CLI app-server protocol. This module only inspects rollout state and preserves
- * the small session-status API consumed by the upstream server.
+ * Web-only activity cache. Snapshot normalization, durable terminal verification
+ * and observer reconnect/shutdown semantics are owned by the shared Codex core.
  */
-
-import { promises as fs } from 'fs';
-import os from 'os';
-import path from 'path';
 import { runCodexCliThreadTurn } from './codex-cli-message-relay.mjs';
+import { createCodexAppServerClient } from './codex-app-server-client.mjs';
+import { isCodexSnapshotActive } from './codex-core/index.js';
 
-const codexSessionFileCache = new Map();
-const codexSessionStatusCache = new Map();
-const CODEX_STATUS_CACHE_TTL_MS = 1500;
-const CODEX_STATUS_TAIL_BYTES = 256 * 1024;
-const CODEX_STATUS_TAIL_LINES = 300;
-const CODEX_TERMINAL_EVENT_TYPES = new Set(['task_complete', 'turn_complete', 'session_aborted']);
-const CODEX_ACTIVE_EVENT_TYPES = new Set([
-  'agent_message',
-  'exec_command_begin',
-  'exec_command_end',
-  'patch_apply_begin',
-  'patch_apply_end',
-  'error',
-]);
-const CODEX_ACTIVE_RESPONSE_TYPES = new Set([
-  'message',
-  'reasoning',
-  'function_call',
-  'function_call_output',
-  'custom_tool_call',
-  'custom_tool_call_output',
-]);
-
-function isVisibleCodexUserMessagePayload(payload) {
-  if (!payload || payload.type !== 'user_message') {
-    return false;
-  }
-
-  if (payload.kind && payload.kind !== 'plain') {
-    return false;
-  }
-
-  return typeof payload.message === 'string' && payload.message.trim().length > 0;
-}
-
-function classifyCodexSessionTimelineEntry(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return null;
-  }
-
-  if (entry.type === 'event_msg') {
-    if (isVisibleCodexUserMessagePayload(entry.payload)) {
-      return 'active';
-    }
-
-    const eventType = entry.payload?.type;
-    if (CODEX_TERMINAL_EVENT_TYPES.has(eventType)) {
-      return 'terminal';
-    }
-
-    if (CODEX_ACTIVE_EVENT_TYPES.has(eventType)) {
-      return 'active';
-    }
-
-    return null;
-  }
-
-  if (entry.type === 'response_item') {
-    const responseType = entry.payload?.type;
-    if (CODEX_ACTIVE_RESPONSE_TYPES.has(responseType)) {
-      return 'active';
-    }
-  }
-
-  return null;
-}
-
-async function readJsonlTailLines(
-  filePath,
-  maxBytes = CODEX_STATUS_TAIL_BYTES,
-  maxLines = CODEX_STATUS_TAIL_LINES,
-) {
-  const fileHandle = await fs.open(filePath, 'r');
-
-  try {
-    const stats = await fileHandle.stat();
-    const bytesToRead = Math.min(stats.size, maxBytes);
-    const start = Math.max(0, stats.size - bytesToRead);
-    const buffer = Buffer.alloc(bytesToRead);
-
-    await fileHandle.read(buffer, 0, bytesToRead, start);
-
-    let text = buffer.toString('utf8');
-    if (start > 0) {
-      const firstNewlineIndex = text.indexOf('\n');
-      text = firstNewlineIndex >= 0 ? text.slice(firstNewlineIndex + 1) : '';
-    }
-
-    const lines = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    return lines.slice(-maxLines);
-  } finally {
-    await fileHandle.close();
-  }
-}
-
-async function findCodexSessionRolloutFileInDir(dirPath, sessionId) {
-  let entries = [];
-  try {
-    entries = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-
-  for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name);
-
-    if (entry.isDirectory()) {
-      const nestedMatch = await findCodexSessionRolloutFileInDir(fullPath, sessionId);
-      if (nestedMatch) {
-        return nestedMatch;
-      }
-      continue;
-    }
-
-    if (entry.isFile() && entry.name.endsWith(`-${sessionId}.jsonl`)) {
-      return fullPath;
-    }
-  }
-
-  return null;
-}
-
-async function resolveCodexSessionFile(sessionId) {
-  if (!sessionId) {
-    return null;
-  }
-
-  const cachedPath = codexSessionFileCache.get(sessionId);
-  if (cachedPath) {
-    try {
-      await fs.access(cachedPath);
-      return cachedPath;
-    } catch {
-      codexSessionFileCache.delete(sessionId);
-    }
-  }
-
-  const sessionsRoot = path.join(os.homedir(), '.codex', 'sessions');
-  const matchedPath = await findCodexSessionRolloutFileInDir(sessionsRoot, sessionId);
-  if (matchedPath) {
-    codexSessionFileCache.set(sessionId, matchedPath);
-  }
-
-  return matchedPath;
-}
+const statusCache = new Map();
+const pending = new Map();
+let statusClient;
 
 async function inferCodexSessionActive(sessionId) {
-  const filePath = await resolveCodexSessionFile(sessionId);
-  if (!filePath) {
-    return false;
-  }
-
-  let stats;
-  try {
-    stats = await fs.stat(filePath);
-  } catch {
-    return false;
-  }
-
-  const cachedStatus = codexSessionStatusCache.get(sessionId);
-  if (
-    cachedStatus &&
-    cachedStatus.mtimeMs === stats.mtimeMs &&
-    Date.now() - cachedStatus.checkedAt < CODEX_STATUS_CACHE_TTL_MS
-  ) {
-    return cachedStatus.isActive;
-  }
-
-  const lines = await readJsonlTailLines(filePath);
-  let latestMeaningfulState = null;
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    let entry;
+  if (!sessionId) return false;
+  const cached = statusCache.get(sessionId);
+  if (cached && Date.now() - cached.checkedAt < 1500) return cached.isActive;
+  if (pending.has(sessionId)) return pending.get(sessionId);
+  const request = (async () => {
     try {
-      entry = JSON.parse(lines[index]);
+      statusClient ??= createCodexAppServerClient();
+      const snapshot = await statusClient.readReconciledThread(sessionId);
+      const isActive = isCodexSnapshotActive(snapshot);
+      statusCache.set(sessionId, { isActive, checkedAt: Date.now() });
+      return isActive;
     } catch {
-      continue;
-    }
+      // A transient observer outage isn't evidence the task has stopped.
+      return cached?.isActive ?? false;
+    } finally { pending.delete(sessionId); }
+  })();
+  pending.set(sessionId, request);
+  return request;
+}
 
-    const entryState = classifyCodexSessionTimelineEntry(entry);
-    if (entryState) {
-      latestMeaningfulState = entryState;
-      break;
-    }
-  }
-
-  const isActive = latestMeaningfulState === 'active';
-  codexSessionStatusCache.set(sessionId, {
-    checkedAt: Date.now(),
-    mtimeMs: stats.mtimeMs,
-    isActive,
-  });
-
-  return isActive;
+export async function shutdownCodexObservers() {
+  await statusClient?.close();
+  await Promise.allSettled([...pending.values()]);
+  statusClient = undefined;
 }
 
 // Compatibility entry point for the upstream Agent API. It uses the same CLI

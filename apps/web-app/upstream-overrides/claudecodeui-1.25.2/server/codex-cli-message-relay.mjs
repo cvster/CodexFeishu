@@ -1,12 +1,12 @@
-import { spawn } from 'node:child_process';
-
 import { createCodexAppServerClient } from './codex-app-server-client.mjs';
 import { resolveCodexAppProjectId } from './codex-desktop-projects.mjs';
 import { CodexTurnTerminalVerifier } from './codex-turn-terminal-verifier.mjs';
+import { buildNativeQueueArgs, createPersistedCodexThread, isInterruptedTurnStatus,
+  isProvisionalInterruptedTurn, normalizeCodexThreadSnapshot, resolveSharedCodexEndpoint,
+  spawnCodexProcess } from './codex-core/index.js';
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
-const DEFAULT_QUEUE_RESUME_FALLBACK_MS = 2_500;
 const QUEUED_TURN_POLL_INTERVAL_MS = 750;
 const INTERRUPTED_SETTLE_MS = 3_000;
 const relayQueues = new Map();
@@ -33,14 +33,8 @@ export function buildCodexQueueArgs({
   message,
   remote,
 }) {
-  return [
-    'queue',
-    ...(remote ? ['--remote', remote] : []),
-    '--thread',
-    normalizeRequiredText(sessionId, 'sessionId'),
-    '--message',
-    validateMessage(message),
-  ];
+  return buildNativeQueueArgs({ threadId: normalizeRequiredText(sessionId, 'sessionId'),
+    prompt: validateMessage(message), remote });
 }
 
 export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
@@ -52,7 +46,7 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
     throw new Error('MOBILE_CODEX_CLI is required for Codex queue delivery.');
   }
 
-  const spawnImpl = dependencies.spawnImpl || spawn;
+  const spawnImpl = dependencies.spawnImpl || spawnCodexProcess;
   const timeoutMs = Number(process.env.MOBILE_CODEX_QUEUE_TIMEOUT_MS || DEFAULT_QUEUE_TIMEOUT_MS);
   const createClient = dependencies.createClient || createCodexAppServerClient;
   const client = createClient({ cwd });
@@ -77,10 +71,24 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
         .filter(Boolean),
     );
 
+    const remote = process.env.MOBILE_CODEX_QUEUE_REMOTE || process.env.CODEX_QUEUE_REMOTE;
+    // Apply execution settings only through the actual shared writer, never
+    // through an embedded observer's resume or queue configuration overrides.
+    if (payload.model || payload.modelReasoningEffort) {
+      const endpoint = await (dependencies.resolveEndpoint || resolveSharedCodexEndpoint)({ remote });
+      if (endpoint) {
+        const writer = createClient({ cwd, cliPath, sharedServer: true, remote: endpoint });
+        try {
+          await writer.updateThreadSettings(sessionId, {
+            model: payload.model, reasoningEffort: payload.modelReasoningEffort,
+          });
+        } finally { await writer.close(); }
+      } else (payload.onWarning || console.warn)('No public shared writer: queued input uses the writer’s current model and effort.');
+    }
     const child = spawnImpl(cliPath, buildCodexQueueArgs({
       sessionId,
       message: payload.message,
-      remote: process.env.MOBILE_CODEX_QUEUE_REMOTE,
+      remote,
     }), {
       cwd,
       env: process.env,
@@ -123,10 +131,7 @@ export async function queueCodexCliThreadMessage(payload, dependencies = {}) {
       sessionId,
       message: payload.message,
       knownTurnIds,
-      timeoutMs: Number(process.env.MOBILE_CODEX_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS),
-      resumeFallbackMs: dependencies.resumeFallbackMs ?? Number(
-        process.env.MOBILE_CODEX_QUEUE_RESUME_FALLBACK_MS || DEFAULT_QUEUE_RESUME_FALLBACK_MS,
-      ),
+      timeoutMs: dependencies.turnTimeoutMs ?? Number(process.env.MOBILE_CODEX_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS),
       pollIntervalMs: dependencies.pollIntervalMs ?? QUEUED_TURN_POLL_INTERVAL_MS,
       interruptedSettleMs: dependencies.interruptedSettleMs ?? INTERRUPTED_SETTLE_MS,
       terminalVerifier: dependencies.terminalVerifier ?? new CodexTurnTerminalVerifier(),
@@ -144,7 +149,6 @@ async function waitForQueuedTurn(
     message,
     knownTurnIds,
     timeoutMs,
-    resumeFallbackMs,
     pollIntervalMs,
     interruptedSettleMs,
     terminalVerifier,
@@ -154,13 +158,7 @@ async function waitForQueuedTurn(
     ? timeoutMs
     : DEFAULT_TURN_TIMEOUT_MS;
   const deadline = Date.now() + safeTimeoutMs;
-  const fallbackAt = Date.now() + (
-    Number.isFinite(resumeFallbackMs) && resumeFallbackMs >= 0
-      ? resumeFallbackMs
-      : DEFAULT_QUEUE_RESUME_FALLBACK_MS
-  );
   let selectedTurnId = null;
-  let resumeFallbackAttempted = false;
   let interruptedObservedAt = null;
   let persistedTerminalSeen = null;
 
@@ -169,7 +167,8 @@ async function waitForQueuedTurn(
       threadId: sessionId,
       includeTurns: true,
     });
-    const turns = Array.isArray(snapshot?.thread?.turns) ? snapshot.thread.turns : [];
+    const normalized = normalizeCodexThreadSnapshot({ ...snapshot.thread, id: snapshot.thread?.id || sessionId });
+    const turns = normalized?.turns ?? [];
     const selected = selectedTurnId
       ? turns.find((turn) => turn?.id === selectedTurnId)
       : turns.find((turn) => !knownTurnIds.has(turn?.id) && turnContainsMessage(turn, message));
@@ -178,7 +177,7 @@ async function waitForQueuedTurn(
       if (selected.status === 'completed') return;
       if (isInterruptedTurnStatus(selected.status)) {
         const durableTerminal = await terminalVerifier.terminalFor(
-          snapshot?.thread?.path,
+          normalized?.rolloutPath,
           selected.id,
         );
         if (durableTerminal) {
@@ -199,7 +198,7 @@ async function waitForQueuedTurn(
           // A rollout path without a durable terminal event means the
           // read-only app-server is projecting another writer's live turn.
           // Older/fake servers without a path retain the short settle window.
-          if (!snapshot?.thread?.path && !stillSettling) {
+          if (!normalized?.rolloutPath && !stillSettling && !isProvisionalInterruptedTurn(normalized, selected)) {
             throw new Error(selected.error?.message || 'Codex queued turn interrupted');
           }
         }
@@ -211,54 +210,12 @@ async function waitForQueuedTurn(
       }
     }
 
-    // Sessions created by this web helper may not be loaded by Desktop's
-    // shared daemon after their first turn. Only when the queue remains idle
-    // and no turn is active do we load the thread in this read-only client.
-    // Desktop-owned or busy threads consume the native queue and never enter
-    // this fallback, so their writer lease is not contested.
-    const hasRunningTurn = turns.some((turn) => (
-      turn?.status === 'inProgress' ||
-      turn?.status === 'in_progress' ||
-      turn?.status === 'running'
-    ));
-    const tailTurn = turns.at(-1);
-    let hasUnconfirmedInterruptedTurn = false;
-    if (!selected && tailTurn && isInterruptedTurnStatus(tailTurn.status)) {
-      const durableTerminal = await terminalVerifier.terminalFor(
-        snapshot?.thread?.path,
-        tailTurn.id,
-      );
-      hasUnconfirmedInterruptedTurn = !durableTerminal && (
-        Boolean(snapshot?.thread?.path) ||
-        tailTurn.completedAt === null ||
-        tailTurn.completedAt === undefined
-      );
-    }
-    if (
-      !selected &&
-      !resumeFallbackAttempted &&
-      !hasRunningTurn &&
-      !hasUnconfirmedInterruptedTurn &&
-      Date.now() >= fallbackAt
-    ) {
-      resumeFallbackAttempted = true;
-      try {
-        await client.request('thread/resume', { threadId: sessionId });
-      } catch (error) {
-        if (!/already has an active writer/i.test(String(error?.message || ''))) {
-          throw error;
-        }
-      }
-    }
+    // An observer never resumes a dormant/busy thread as a queue fallback.
+    // Only the external writer may consume queued work.
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
 
   throw new Error(`Codex queued turn timed out after ${safeTimeoutMs}ms`);
-}
-
-function isInterruptedTurnStatus(status) {
-  const normalized = typeof status === 'string' ? status.toLowerCase() : '';
-  return normalized === 'interrupted' || normalized === 'cancelled' || normalized === 'canceled';
 }
 
 function turnContainsMessage(turn, message) {
@@ -284,7 +241,7 @@ export async function runCodexCliThreadTurn(payload, dependencies = {}) {
   const projectId = projectless ? null : await resolveProjectId(projectPath);
   const createClient = dependencies.createClient || createCodexAppServerClient;
   const client = createClient({ cwd });
-  const turnTimeoutMs = Number(process.env.MOBILE_CODEX_TURN_TIMEOUT_MS || DEFAULT_TURN_TIMEOUT_MS);
+  let sessionId;
 
   try {
     await client.request('initialize', {
@@ -293,33 +250,22 @@ export async function runCodexCliThreadTurn(payload, dependencies = {}) {
     });
     client.notify('initialized');
 
-    const threadResult = await client.request('thread/start', {
-      ...(projectless ? {} : { cwd: projectPath }),
+    sessionId = await createPersistedCodexThread(client, {
+      cwd,
       ...(projectId ? { projectId } : {}),
       ...(payload.model ? { model: payload.model } : {}),
-      approvalPolicy: 'never',
       sandbox: 'danger-full-access',
+      reasoningEffort: payload.modelReasoningEffort,
       threadSource: 'user',
     });
-    const sessionId = normalizeRequiredText(threadResult?.thread?.id, 'created sessionId');
-
-    const completion = client.waitForNotification(
-      'turn/completed',
-      (params) => params?.threadId === sessionId,
-      Number.isFinite(turnTimeoutMs) && turnTimeoutMs > 0 ? turnTimeoutMs : DEFAULT_TURN_TIMEOUT_MS,
-    );
-    await client.request('turn/start', {
-      threadId: sessionId,
-      input: [{ type: 'text', text: message, text_elements: [] }],
-      ...(payload.model ? { model: payload.model } : {}),
-      ...(payload.modelReasoningEffort ? { effort: payload.modelReasoningEffort } : {}),
-    });
     payload.onSessionCreated?.(sessionId);
-    await completion;
-    return { skipped: false, sessionId };
   } finally {
     await client.close();
   }
+  // The creator is closed before delivery. Restarting this web process now
+  // only loses an observer, never the writer executing the first task.
+  const queueThreadMessage = dependencies.queueThreadMessage || queueCodexCliThreadMessage;
+  return queueThreadMessage({ ...payload, sessionId, message }, dependencies);
 }
 
 export function enqueueCodexCliMessage(payload, dependencies = {}) {

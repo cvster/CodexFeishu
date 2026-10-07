@@ -35,10 +35,11 @@
   ],
   "scripts": {
     "dev": "tsup --watch",
-    "build": "pnpm build:core && tsup",
+    "build": "pnpm build:core && tsup && node tools/prepare-web-core.mjs",
     "build:core": "tsup --config packages/codex-core/tsup.config.ts && node tools/core-licenses.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:web": "pnpm build:core && node tools/prepare-web-core.mjs && node tools/run-web-tests.mjs",
     "test:unit": "vitest run tests/unit --passWithNoTests",
     "test:integration": "vitest run tests/integration --passWithNoTests",
     "test:process": "vitest run tests/process --passWithNoTests",
