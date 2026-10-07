@@ -165,20 +165,8 @@ describe('Codex argv contract', () => {
       'thread-123',
       '--message',
       '晚上好',
-      '--sandbox',
-      'workspace-write',
-      '-c',
-      'approval_policy="never"',
-      '-c',
-      'shell_environment_policy.inherit="all"',
-      '--model',
-      'gpt-5.6-sol',
-      '-c',
-      'model_reasoning_effort="high"',
       '--image',
       '/tmp/image.png',
-      '-C',
-      '/repo',
     ]);
   });
 

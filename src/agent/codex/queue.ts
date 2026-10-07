@@ -1,6 +1,6 @@
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
-import { access } from 'node:fs/promises';
+import { resolveSharedCodexEndpoint } from '../../../packages/codex-core/src/queue';
 import { homedir } from 'node:os';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
@@ -107,9 +107,7 @@ export function createCodexQueueRun(options: QueueRunOptions): AgentRun {
       // the actual writer before adding input; never resume a competing server.
       const codexHome = options.codexHome ?? options.env?.CODEX_HOME ?? process.env.CODEX_HOME ??
         (options.inheritCodexHome ? join(homedir(), '.codex') : join(options.profileStateDir, 'codex-home'));
-      const sharedEndpointAvailable = Boolean(remote) || await access(
-        join(codexHome, 'app-server-control', 'app-server-control.sock'),
-      ).then(() => true, () => false);
+      const sharedEndpointAvailable = Boolean(await resolveSharedCodexEndpoint({ remote, codexHome }));
       if ((options.model || options.reasoningEffort) && sharedEndpointAvailable) {
         await settingsClient.updateThreadSettings(options.threadId, {
           model: options.model,
