@@ -18,6 +18,42 @@ describe('Codex desktop turn sync', () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
+  it('detects desktop archives before reply/name sync and before accepting a group message', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-archive-sync-')); cleanup.push(dir);
+    const catalog = new SessionCatalog(join(dir, 'catalog.json'));
+    catalog.upsertActive({ scopeId: 'oc_group', agentId: 'codex', cwdRealpath: dir, policyFingerprint: 'p', threadId: 'thread' });
+    const channel = createFakeChannel(); const observe = vi.fn(); const readThread = vi.fn();
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls: controlsForCodex(),
+      sessionCatalog: catalog, profileStateDir: dir, intervalMs: 60_000, nameSync: { observe },
+      reader: { listArchivedThreadIds: async () => ['thread'], readThread, stop: async () => {} } });
+    try {
+      await handle.runNow();
+      expect(await handle.isScopeArchived('oc_group')).toBe(true);
+      expect(readThread).not.toHaveBeenCalled(); expect(observe).not.toHaveBeenCalled();
+      expect(channel.sent).toEqual([]);
+      expect(catalog.entries()[0]?.status).toBe('archived');
+    } finally { await handle.stop(); await catalog.flush(); }
+  });
+
+  it('does not deliver or rename when a group is archived during an in-flight thread read', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-archive-race-')); cleanup.push(dir);
+    const catalog = new SessionCatalog(join(dir, 'catalog.json'));
+    catalog.upsertActive({ scopeId: 'oc_group', agentId: 'codex', cwdRealpath: dir, policyFingerprint: 'p', threadId: 'thread', recentTurnReplayCount: 3 });
+    let release!: () => void; let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const observe = vi.fn(); const channel = createFakeChannel();
+    const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls: controlsForCodex(),
+      sessionCatalog: catalog, profileStateDir: dir, intervalMs: 60_000, nameSync: { observe },
+      reader: { listArchivedThreadIds: async () => [], readThread: async () => {
+        entered(); await pending; return { id: 'thread', turns: [externalTurn('turn', 'completed', 'hello', 'answer')] };
+      }, stop: async () => {} } });
+    try {
+      await started; catalog.archiveCodexThread('thread'); release(); await handle.runNow();
+      expect(channel.sent).toEqual([]); expect(observe).not.toHaveBeenCalled();
+    } finally { release(); await handle.stop(); await catalog.flush(); }
+  });
+
   it('reuses snapshots for name sync without making name failures block reply delivery', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-name-poll-')); cleanup.push(dir);
     const channel = createFakeChannel(); const controls = controlsForCodex();
@@ -27,11 +63,11 @@ describe('Codex desktop turn sync', () => {
     const observe = vi.fn(async () => { throw new Error('rename unavailable'); });
     const readThread = vi.fn(async () => snapshot);
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
-      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog, profileStateDir: dir,
+      sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog, profileStateDir: dir,
       intervalMs: 60_000, nameSync: { observe }, reader: { readThread, stop: async () => {} } });
     try {
       await handle.runNow();
-      expect(observe).toHaveBeenCalledWith(snapshot, [entry]);
+      expect(observe).toHaveBeenCalledWith(snapshot, [entry], expect.any(Function));
       expect(readThread).toHaveBeenCalledTimes(1);
       snapshot.turns.push(externalTurn('new-turn', 'inProgress', 'hello', 'reply'));
       await handle.runNow();
@@ -49,7 +85,7 @@ describe('Codex desktop turn sync', () => {
       cwdRealpath: dir, policyFingerprint: 'p', status: 'active', updatedAt: 1 };
     const snapshot: CodexThreadSnapshot = { id: 'thread', turns: [externalTurn('turn', 'inProgress', 'choose', 'partial')] };
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
-      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog, profileStateDir: dir,
+      sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog, profileStateDir: dir,
       intervalMs: 60_000, reader: { readThread: async () => snapshot, stop: async () => {} } });
     await handle.runNow();
     expect(observeSnapshot).toHaveBeenCalledWith(snapshot);
@@ -68,7 +104,7 @@ describe('Codex desktop turn sync', () => {
     const snapshot: CodexThreadSnapshot = { id: 'thread', turns: [externalTurn('turn', 'inProgress', 'choose', 'partial')] };
     let now = 10_000;
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
-      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog, profileStateDir: dir,
+      sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog, profileStateDir: dir,
       intervalMs: 60_000, now: () => now, reader: { readThread: async () => snapshot, stop: async () => {} } });
     await handle.runNow();
     expect(channel.sent).toHaveLength(2);
@@ -97,7 +133,7 @@ describe('Codex desktop turn sync', () => {
       threadId: 'thread-1',
     } satisfies SessionCatalogEntry;
     const sessionCatalog = {
-      entries: () => [entry],
+      entries: () => [entry], isScopeArchived: () => false,
     } as unknown as SessionCatalog;
     const controls = controlsForCodex();
     let nowMs = 10_000;
@@ -346,7 +382,7 @@ describe('Codex desktop turn sync', () => {
       updatedAt: 1,
       threadId: 'thread-queue-claim',
     } satisfies SessionCatalogEntry;
-    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    const sessionCatalog = { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog;
     let snapshot: CodexThreadSnapshot = {
       id: 'thread-queue-claim',
       turns: [externalTurn('old-turn-claim', 'completed', 'old prompt', 'old answer')],
@@ -398,7 +434,7 @@ describe('Codex desktop turn sync', () => {
     let nowMs = 10_000;
     const reader = { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) };
     const deps = { channel: channel as unknown as LarkChannel, controls: controlsForCodex(),
-      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog,
       profileStateDir: dir, intervalMs: 60_000, reader, now: () => nowMs };
     const handle = await startCodexTurnSync(deps);
     await handle.runNow();
@@ -434,7 +470,7 @@ describe('Codex desktop turn sync', () => {
     const reader = { readThread: vi.fn(async () => snapshot),
       listRecentThreads: vi.fn(async () => [{ id: entry.threadId, updatedAtMs: 1 }]), stop: vi.fn(async () => {}) };
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
-      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog,
       profileStateDir: dir, intervalMs: 60_000, reader });
     await handle.runNow();
     expect(channel.sent).toHaveLength(0);
@@ -462,7 +498,7 @@ describe('Codex desktop turn sync', () => {
     } } }));
     let snapshot: CodexThreadSnapshot = { id: entry.threadId, turns: [bridgeTurn('old')] };
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
-      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog,
       profileStateDir: dir, intervalMs: 60_000,
       reader: { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) } });
     await handle.runNow();
@@ -485,7 +521,7 @@ describe('Codex desktop turn sync', () => {
     const reader = { readThread: vi.fn(async () => snapshot),
       listRecentThreads: vi.fn(async () => [{ id: entry.threadId, updatedAtMs: 1 }]), stop: vi.fn(async () => {}) };
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
-      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog,
       profileStateDir: dir, intervalMs: 60_000, reader, now: () => nowMs });
     await handle.runNow();
     snapshot = { id: entry.threadId, turns: [externalTurn('quick', 'completed', 'desktop input', 'partial tail')] };
@@ -514,7 +550,7 @@ describe('Codex desktop turn sync', () => {
     const snapshot: CodexThreadSnapshot = { id: entry.threadId,
       turns: Array.from({ length: 320 }, (_, index) => bridgeTurn(`old-${index}`)) };
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
-      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      controls: controlsForCodex(), sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog,
       profileStateDir: dir, intervalMs: 60_000,
       reader: { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) } });
     await handle.runNow();
@@ -537,7 +573,7 @@ describe('Codex desktop turn sync', () => {
       policyFingerprint: 'policy', status: 'active', updatedAt: 1, threadId: 'thread-text' } satisfies SessionCatalogEntry;
     let snapshot: CodexThreadSnapshot = { id: entry.threadId, turns: [] };
     const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel, controls,
-      sessionCatalog: { entries: () => [entry] } as unknown as SessionCatalog,
+      sessionCatalog: { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog,
       profileStateDir: dir, intervalMs: 60_000,
       reader: { readThread: vi.fn(async () => snapshot), stop: vi.fn(async () => {}) } });
     await handle.runNow();
@@ -568,7 +604,7 @@ describe('Codex desktop turn sync', () => {
       updatedAt: 1,
       threadId: 'thread-reopen',
     } satisfies SessionCatalogEntry;
-    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    const sessionCatalog = { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog;
     let nowMs = 30_000;
     let revision = 1_000;
     let snapshot: CodexThreadSnapshot = {
@@ -676,7 +712,7 @@ describe('Codex desktop turn sync', () => {
       updatedAt: 1,
       threadId: 'thread-provisional',
     } satisfies SessionCatalogEntry;
-    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    const sessionCatalog = { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog;
     let nowMs = 100_000;
     let snapshot: CodexThreadSnapshot = {
       id: 'thread-provisional',
@@ -748,7 +784,7 @@ describe('Codex desktop turn sync', () => {
       updatedAt: 1,
       threadId: 'thread-terminal-refresh',
     } satisfies SessionCatalogEntry;
-    const sessionCatalog = { entries: () => [entry] } as unknown as SessionCatalog;
+    const sessionCatalog = { entries: () => [entry], isScopeArchived: () => false } as unknown as SessionCatalog;
     const baseline: CodexThreadSnapshot = {
       id: entry.threadId,
       turns: [externalTurn('old-terminal-refresh', 'completed', 'old prompt', 'old answer')],

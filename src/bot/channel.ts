@@ -998,6 +998,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     sessionCatalog,
     workspaces,
     executor,
+    checkSessionArchived: controls.codexReplySync?.isScopeArchived
+      ? () => controls.codexReplySync!.isScopeArchived!(scope)
+      : undefined,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     observability: {

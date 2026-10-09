@@ -36,3 +36,24 @@ test uses an installed CLI with an isolated offline provider (no model call)
 to verify idle history can be read by a new process after the creator exits:
 set `CODEX_IDLE_TEST_BINARY` and run
 `pnpm test tests/process/codex-idle-materialization.test.ts`.
+
+## Archived Feishu groups stay closed
+
+A true Codex archive (from Feishu, Desktop, or another client) is distinct
+from retiring a bridge binding during workspace changes or AA version upgrades.
+The synchronizer checks the public `thread/list` archive filter, exhausting
+pagination, before reply/name synchronization. Ordinary group input performs
+a fresh check before submission; a failed lookup rejects input with a retry
+notice instead of starting a new thread.
+
+Archive tombstones live in `<session-catalog-path>.archives.json`, beside the
+existing catalog. They survive history GC and bridge restarts. Keep this file
+when backing up or migrating a profile. A malformed archive ledger prevents
+startup rather than silently reopening groups. Existing archived bindings are
+reconciled against Codex's archived list on first observation.
+
+After archival, the retained group only replies that the conversation is
+archived. It does not submit tasks, reopen the conversation, or recreate its
+AA group. Stale creation cards cannot create a group for a known archived
+thread. Only an explicit resume selection of another unarchived thread clears
+the group's tombstone; late system events from the old task are ignored.

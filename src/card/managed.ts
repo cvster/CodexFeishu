@@ -29,17 +29,23 @@ export async function sendManagedCard(
   channel: LarkChannel,
   recipientId: string,
   card: object,
-  opts: { replyTo?: string; replyInThread?: boolean } = {},
+  opts: { replyTo?: string; replyInThread?: boolean; isActive?: () => boolean } = {},
 ): Promise<ManagedCardSendResult> {
+  const checkActive = () => {
+    if (opts.isActive && !opts.isActive()) throw new Error('会话已归档或已重新绑定。');
+  };
+  checkActive();
   const sendOpts = opts.replyTo
     ? { replyTo: opts.replyTo, ...(opts.replyInThread ? { replyInThread: true } : {}) }
     : undefined;
   const { cardId } = await channel.createCard(card);
+  checkActive();
   let messageId: string;
   try {
     ({ messageId } = await channel.send(recipientId, { cardId }, sendOpts));
   } catch (err) {
     if (!sendOpts || !isInvalidCardIdReply(err)) throw err;
+    checkActive();
     log.warn('card', 'managed-reply-card-id-retry-as-message', {
       err: err instanceof Error ? err.message : String(err),
       replyTo: opts.replyTo,

@@ -8,6 +8,7 @@ import { ProcessPool } from '../../../src/bot/process-pool';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { SessionStore } from '../../../src/session/store';
+import { SessionCatalog } from '../../../src/session/catalog';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
@@ -19,6 +20,42 @@ afterEach(async () => {
 });
 
 describe('IM run flow', () => {
+  it.each(['persisted', 'external', 'unavailable'])('does not submit or create a session after archive: %s', async (mode) => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const catalog = new SessionCatalog(join(h.tmp.profile, 'catalog.json'));
+    if (mode === 'persisted') {
+      catalog.upsertActive({ scopeId: 'chat-1', agentId: 'codex', cwdRealpath: h.tmp.workspace, policyFingerprint: 'p', threadId: 'old' });
+      catalog.archiveCodexThread('old');
+    }
+    const result = await startRunFlow({ scopeId: 'chat-1',
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' }, prompt: '继续', attachments: [],
+      access: { ok: true, reason: 'allowed-user' }, capability: claudeCapability(h.profileConfig),
+      profileConfig: h.profileConfig, sessions: h.sessions, sessionCatalog: catalog,
+      workspaces: h.workspaces, executor: h.executor, now: 1000,
+      checkSessionArchived: async () => { if (mode === 'unavailable') throw new Error('offline'); return mode === 'external'; },
+    });
+    expect(result).toMatchObject({ ok: false, rejectReason: {
+      code: mode === 'unavailable' ? 'archive-check-unavailable' : 'session-archived',
+      userVisible: mode === 'unavailable' ? '暂时无法确认会话归档状态，请稍后重试。' : '会话已归档。请通过控制台手动绑定未归档的会话。',
+    } });
+    expect(h.agent.runOptions).toEqual([]);
+    await catalog.flush();
+  });
+
+  it('rechecks archival after the initial lookup and before any task spawn', async () => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const catalog = new SessionCatalog(join(h.tmp.profile, 'catalog.json'));
+    catalog.upsertActive({ scopeId: 'chat-1', agentId: 'codex', cwdRealpath: h.tmp.workspace, policyFingerprint: 'p', threadId: 'old' });
+    const result = await startRunFlow({ scopeId: 'chat-1',
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' }, prompt: '继续', attachments: [],
+      access: { ok: true, reason: 'allowed-user' }, capability: claudeCapability(h.profileConfig),
+      profileConfig: h.profileConfig, sessions: h.sessions, sessionCatalog: catalog,
+      workspaces: h.workspaces, executor: h.executor, now: 1000,
+      checkSessionArchived: async () => { catalog.archiveCodexThread('old'); return false; },
+    });
+    expect(result).toMatchObject({ ok: false, rejectReason: { code: 'session-archived' } });
+    expect(h.agent.runOptions).toEqual([]); await catalog.flush();
+  });
   it('rejects missing cwd without falling back to the user home', async () => {
     const h = await createHarness();
 

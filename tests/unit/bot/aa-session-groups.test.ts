@@ -12,6 +12,33 @@ import {
 } from '../../../src/bot/aa-session-groups.js';
 
 describe('AA session automatic groups', () => {
+  it('never recreates a group for a previously archived AA thread', async () => {
+    const create = vi.fn();
+    const profileConfig = createDefaultProfileConfig({ agentKind: 'codex',
+      accounts: { app: { id: 'app', secret: 'secret', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
+    await syncAaSessionGroupsOnce({
+      channel: { listChats: async () => [], rawClient: { im: { v1: { chat: { create } } } } } as unknown as LarkChannel,
+      controls: { profileConfig, botOwnerId: 'ou_owner' } as Controls,
+      sessionCatalog: { entries: () => [], isThreadArchived: (id: string) => id === 'old' } as unknown as SessionCatalog,
+      workspaces: {} as WorkspaceStore, profileStateDir: process.cwd(),
+      historyProvider: async () => [{ threadId: 'old', name: 'AA旧任务', cwd: process.cwd(), preview: '', createdAtMs: 1, updatedAtMs: 2, source: 'exec' }],
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('checks current archive state at the AA group creation boundary', async () => {
+    const create = vi.fn(); const check = vi.fn(async () => true);
+    const profileConfig = createDefaultProfileConfig({ agentKind: 'codex',
+      accounts: { app: { id: 'app', secret: 'secret', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
+    await syncAaSessionGroupsOnce({
+      channel: { listChats: async () => [], rawClient: { im: { v1: { chat: { create } } } } } as unknown as LarkChannel,
+      controls: { profileConfig, botOwnerId: 'ou_owner', codexReplySync: { isThreadArchived: check } } as unknown as Controls,
+      sessionCatalog: { entries: () => [], isThreadArchived: () => false } as unknown as SessionCatalog,
+      workspaces: {} as WorkspaceStore, profileStateDir: process.cwd(),
+      historyProvider: async () => [{ threadId: 'external-archive', name: 'AA旧任务', cwd: process.cwd(), preview: '', createdAtMs: 1, updatedAtMs: 2, source: 'exec' }],
+    });
+    expect(check).toHaveBeenCalledWith('external-archive'); expect(create).not.toHaveBeenCalled();
+  });
   it('pauses scans during native fork naming and resumes them after an error', async () => {
     const historyProvider = vi.fn(async () => []);
     const profileConfig = createDefaultProfileConfig({ agentKind: 'codex',
@@ -216,6 +243,19 @@ describe('AA session automatic groups', () => {
         recentTurnReplayCount: null,
       }),
     );
+  });
+
+  it('does not reuse a previous group archived by the awaited status lookup', async () => {
+    const h = createHarness([historyThread('old', 'AA任务2', 2), historyThread('new', 'AA任务3', 3)], {
+      knownChats: [{ id: 'oc_existing', name: 'AA任务2' }], entries: [catalogEntry('oc_existing', 'old')],
+    });
+    let closed = false;
+    Object.assign(h.sessionCatalog, { isScopeArchived: () => closed });
+    h.deps.controls.codexReplySync = { observeTurn() {}, runNow: async () => {},
+      isThreadArchived: async () => { closed = true; return false; } };
+    await syncAaSessionGroupsOnce(h.deps);
+    expect(h.channel.rawClient.im.v1.chat.update).not.toHaveBeenCalled();
+    expect(h.sessionCatalog.upsertActive).not.toHaveBeenCalled(); expect(h.created).toEqual([]);
   });
 
   it('does not let a binding from a chat invisible to the current bot suppress creation', async () => {

@@ -112,7 +112,8 @@ export async function syncAaSessionGroupsOnce(deps: AaSessionGroupSyncDeps): Pro
       .map((entry) => entry.threadId as string),
   );
   const candidates = latestVersionSessions(history).filter(
-    (thread) => isAaSession(thread) && !boundThreadIds.has(thread.threadId),
+    (thread) => isAaSession(thread) && !boundThreadIds.has(thread.threadId) &&
+      !deps.sessionCatalog.isThreadArchived?.(thread.threadId),
   );
   if (candidates.length === 0) return;
 
@@ -120,6 +121,7 @@ export async function syncAaSessionGroupsOnce(deps: AaSessionGroupSyncDeps): Pro
   const historyByThreadId = new Map(history.map((thread) => [thread.threadId, thread]));
 
   for (const thread of candidates) {
+    if (deps.sessionCatalog.isThreadArchived?.(thread.threadId)) continue;
     // Another timer/manual action may have bound it while this sync was awaiting I/O.
     if (deps.sessionCatalog.entries().some(
       (entry) =>
@@ -137,7 +139,7 @@ export async function syncAaSessionGroupsOnce(deps: AaSessionGroupSyncDeps): Pro
     }
     const previous = findPreviousVersionBinding(
       thread,
-      deps.sessionCatalog.entries(),
+      deps.sessionCatalog.entries().filter((entry) => !deps.sessionCatalog.isScopeArchived?.(entry.scopeId)),
       historyByThreadId,
       currentBotAppId,
       knownChatIds,
@@ -176,6 +178,9 @@ export async function syncAaSessionGroupsOnce(deps: AaSessionGroupSyncDeps): Pro
         continue;
       }
       try {
+        if (await deps.controls.codexReplySync?.isThreadArchived?.(thread.threadId) ||
+            deps.sessionCatalog.isThreadArchived?.(thread.threadId) ||
+            deps.sessionCatalog.isScopeArchived?.(previous.scopeId)) continue;
         if (oldChat?.name.trim() !== name) {
           await renameChat(deps.channel, previous.scopeId, name);
         }
@@ -227,6 +232,8 @@ export async function syncAaSessionGroupsOnce(deps: AaSessionGroupSyncDeps): Pro
     const name = uniqueGroupName(thread.name!, usedNames);
     let created;
     try {
+      if (await deps.controls.codexReplySync?.isThreadArchived?.(thread.threadId) ||
+          deps.sessionCatalog.isThreadArchived?.(thread.threadId)) continue;
       created = await createBoundChat({
         channel: deps.channel,
         name,

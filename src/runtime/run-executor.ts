@@ -16,6 +16,10 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  /** Synchronous cancellation check around pool/preflight waits. */
+  validateBeforeStart?: () => void;
+  /** Fresh external-state check immediately before starting the adapter. */
+  beforeSpawn?: () => Promise<void>;
   scopeId: string;
   policy: RunPolicyAllow;
   sessionId?: string;
@@ -109,11 +113,14 @@ export class RunExecutor {
     };
     let run: AgentRun;
     try {
+      input.validateBeforeStart?.();
       await this.agent.prepareRun?.(runOptions);
+      await input.beforeSpawn?.();
+      input.validateBeforeStart?.();
     } catch (err) {
       release();
       releaseScope();
-      if (err instanceof SpawnFailed) throw err;
+      if (err instanceof SpawnFailed || err instanceof RunRejected) throw err;
       throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
     }
     if (this.activeRuns.newRunsPaused()) {

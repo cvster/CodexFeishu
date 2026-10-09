@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { sendManagedCard, updateManagedCard } from '../../../src/card/managed.js';
 
 describe('managed card sending', () => {
+  it('does not send a minted card if its conversation was archived during creation', async () => {
+    let active = true;
+    const channel = { createCard: vi.fn(async () => { active = false; return { cardId: 'unused' }; }), send: vi.fn() };
+    await expect(sendManagedCard(channel as never, 'oc_chat', {}, { isActive: () => active })).rejects.toThrow('已归档');
+    expect(channel.send).not.toHaveBeenCalled();
+  });
   it('surfaces CardKit creation errors instead of sending a raw card', async () => {
     const channel = {
       createCard: vi.fn(async () => {

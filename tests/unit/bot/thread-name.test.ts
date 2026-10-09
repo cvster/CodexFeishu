@@ -33,7 +33,7 @@ describe('bidirectional Codex / Feishu naming', () => {
       group: (name: string) => { groupName = name; },
       thread: (name: string) => { threadName = name; },
       advance: (ms = 10_000) => { now += ms; },
-      observe: (entries = [entry]) => sync.observe({ id: 'thread', name: threadName, turns: [] }, entries),
+      observe: (entries = [entry], isActive?: (scope: string) => boolean) => sync.observe({ id: 'thread', name: threadName, turns: [] }, entries, isActive),
       restart: async () => { sync = new CodexNameSync(options); await sync.load(); },
     };
   }
@@ -52,6 +52,13 @@ describe('bidirectional Codex / Feishu naming', () => {
     expect(f.setThreadName).toHaveBeenCalledTimes(1); expect(f.update).toHaveBeenCalledTimes(1);
     f.group('群名3'); f.advance(); await f.observe();
     expect(f.setThreadName).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not rename either side when archive happens during the group lookup', async () => {
+    const f = await setup(); let active = true; f.thread('different');
+    f.getChatInfo.mockImplementationOnce(async () => { active = false; return { name: '群名1' }; });
+    await f.observe([f.entry], () => active);
+    expect(f.setThreadName).not.toHaveBeenCalled(); expect(f.update).not.toHaveBeenCalled();
   });
 
   it('keeps the baseline across restarts instead of reverting a desktop rename', async () => {

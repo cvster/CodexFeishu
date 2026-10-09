@@ -51,10 +51,11 @@ export class CodexNameSync {
     }
   }
 
-  async observe(snapshot: CodexThreadSnapshot, entries: SessionCatalogEntry[]): Promise<void> {
+  async observe(snapshot: CodexThreadSnapshot, entries: SessionCatalogEntry[], isActive: (scope: string) => boolean = () => true): Promise<void> {
     if (!this.options.agent.setThreadName) return;
     const seen = new Set<string>();
     for (const entry of entries) {
+      if (!isActive(entry.scopeId)) continue;
       // Topic-scoped threads do not own the parent group's name. Never rename
       // another bot's group from a legacy/cross-host binding.
       if (entry.botAppId !== this.options.appId || entry.status !== 'active' ||
@@ -62,7 +63,7 @@ export class CodexNameSync {
         !/^oc_[A-Za-z0-9]+$/.test(entry.scopeId) || seen.has(entry.scopeId)) continue;
       seen.add(entry.scopeId);
       try {
-        await this.sync(entry.scopeId, snapshot);
+        await this.sync(entry.scopeId, snapshot, () => isActive(entry.scopeId));
       } catch (err) {
         this.retryAfter.set(JSON.stringify([this.options.appId, entry.scopeId, snapshot.id]),
           (this.options.now ?? Date.now)() + CHAT_CHECK_INTERVAL_MS);
@@ -74,13 +75,14 @@ export class CodexNameSync {
     }
   }
 
-  private async sync(chatId: string, snapshot: CodexThreadSnapshot): Promise<void> {
+  private async sync(chatId: string, snapshot: CodexThreadSnapshot, isActive: () => boolean): Promise<void> {
     const key = JSON.stringify([this.options.appId, chatId, snapshot.id]);
     let state = this.states.get(key);
     const threadName = snapshot.name?.trim() ?? '';
     const now = (this.options.now ?? Date.now)();
     if (now < (this.retryAfter.get(key) ?? 0)) return;
     if (this.dirty) await this.flush();
+    if (!isActive()) return;
     // Acknowledgements use the existing 2-second thread polling, even when
     // the next Feishu lookup is throttled. A subsequent rename back to the
     // original name is then a real change, not a delayed write echo.
@@ -103,7 +105,7 @@ export class CodexNameSync {
     // A stale knownChats cache is not evidence of a rename. On lookup failure
     // leave the baseline untouched and retry, never overwrite either side.
     const groupName = (await this.options.channel.getChatInfo(chatId)).name?.trim();
-    if (!groupName) return;
+    if (!groupName || !isActive()) return;
 
     if (!state || (groupName !== state.groupName && groupName !== state.previousGroupName)) {
       // First binding, or a new group rename: group wins this observation.

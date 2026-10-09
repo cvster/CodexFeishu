@@ -38,6 +38,19 @@ describe('CodexThreadReader', () => {
     expect(starts).toHaveLength(1);
   });
 
+  it('queries all archived pages through public read-only RPC without resuming a thread', async () => {
+    const fake = await createFakeCodex(); cleanup.push(fake.dir);
+    const reader = new CodexThreadReader({ binary: fake.path, profileStateDir: fake.dir, inheritCodexHome: true, timeoutMs: 2_000 });
+    try { await expect(reader.listArchivedThreadIds()).resolves.toEqual(['archived-a', 'archived-b']); }
+    finally { await reader.stop(); }
+    const requests = (await readFile(fake.requestsPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const lists = requests.filter((r) => r.method === 'thread/list');
+    expect(lists.map((r) => r.params.cursor ?? null)).toEqual([null, 'page-2']);
+    expect(lists.every((r) => r.params.archived === true && r.params.useStateDbOnly === true)).toBe(true);
+    expect(lists.every((r) => JSON.stringify(r.params.sourceKinds) === JSON.stringify(['cli', 'vscode', 'exec', 'appServer', 'unknown']))).toBe(true);
+    expect(requests.some((r) => ['thread/resume', 'thread/start', 'turn/start'].includes(r.method))).toBe(false);
+  });
+
   it.each(['AA-test (8)', null, 'AA-test'])('forks through app-server and preserves or completes its name: %s', async (name) => {
     const fake = await createFakeCodex(name);
     cleanup.push(fake.dir);
@@ -86,6 +99,12 @@ rl.on('line', (line) => {
     return;
   }
   if (request.method === 'thread/list') {
+    if (request.params.archived && !request.params.searchTerm) {
+      send({ id: request.id, result: request.params.cursor
+        ? { data: [{ id: 'archived-b' }], nextCursor: null }
+        : { data: [{ id: 'archived-a' }], nextCursor: 'page-2' } });
+      return;
+    }
     send({ id: request.id, result: { data: request.params.searchTerm
       ? [{ name: request.params.archived ? 'AA-test (2)' : 'AA-test (1)' }]
       : [{ id: 'thread-b', updatedAt: 12 }] } });

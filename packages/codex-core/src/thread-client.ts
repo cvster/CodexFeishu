@@ -212,6 +212,31 @@ export class CodexThreadReader {
     return reconcileCodexThreadSnapshot(this, await this.readThread(threadId));
   }
 
+  /** Read-only archive lookup. Exhaust pagination; never infer from runtime status. */
+  async listArchivedThreadIds(): Promise<string[]> {
+    const ids = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const result = await this.rpc('thread/list', { archived: true, useStateDbOnly: true,
+        sourceKinds: ['cli', 'vscode', 'exec', 'appServer', 'unknown'],
+        limit: 100, ...(cursor ? { cursor } : {}) });
+      if (!Array.isArray(result.data)) throw new Error('thread/list returned malformed archive data');
+      for (const item of result.data) {
+        const thread = recordValue(item);
+        if (typeof thread?.id !== 'string') throw new Error('thread/list returned malformed archive id');
+        ids.add(thread.id);
+      }
+      if (result.nextCursor != null && typeof result.nextCursor !== 'string') {
+        throw new Error('thread/list returned malformed archive cursor');
+      }
+      cursor = typeof result.nextCursor === 'string' && result.nextCursor ? result.nextCursor : undefined;
+      if (cursor && cursors.has(cursor)) throw new Error('thread/list repeated archive cursor');
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    return [...ids];
+  }
+
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     if (this.stopped) return;
     await this.ensureStarted();

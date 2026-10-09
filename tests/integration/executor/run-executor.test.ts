@@ -19,6 +19,19 @@ afterEach(async () => {
 });
 
 describe('RunExecutor', () => {
+  it.each(['pool', 'prepare'])('revalidates after %s wait without leaking reservations', async (phase) => {
+    const run = vi.fn(); const agent = { id: 'codex', displayName: 'Codex', isAvailable: async () => true,
+      prepareRun: async () => { if (phase === 'prepare') archived = true; }, run } as unknown as AgentAdapter;
+    let archived = false; const h = await createHarness({ agent });
+    const unblock = phase === 'pool' ? await h.pool.acquire() : undefined;
+    const submission = h.executor.submit({ scopeId: 'scope-1', policy: policy(h.tmp.workspace),
+      validateBeforeStart: () => { if (archived) throw new RunRejected('session-archived', '会话已归档'); },
+    });
+    if (phase === 'pool') { archived = true; unblock?.(); }
+    await expect(submission).rejects.toMatchObject({ code: 'session-archived' });
+    expect(run).not.toHaveBeenCalled(); expect(h.pool.snapshot().active).toBe(0);
+    const release = h.activeRuns.reserve('scope-1'); expect(release).toBeTypeOf('function'); release?.();
+  });
   it('releases detached observers without post-exit fallback cancellation', async () => {
     let finish!: () => void;
     const gate = new Promise<void>(resolve => { finish = resolve; });

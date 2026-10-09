@@ -190,6 +190,9 @@ describe('Bridge command contracts', () => {
       method: 'im.v1.chat.delete',
       params: { path: { chat_id: 'oc_fake_1' } },
     });
+    await h.run(`/panel session-group ${sessionToken}`);
+    expect(h.channel.createdChats).toHaveLength(1);
+    expect(lastMarkdown(h.channel)).toContain('会话已归档');
   });
 
   it('restricts production private chat to workspace-group creation', async () => {
@@ -213,6 +216,33 @@ describe('Bridge command contracts', () => {
       h.run('/new chat setup', { dmGroupCreationOnly: true }),
     ).resolves.toBe(true);
     expect(JSON.stringify(lastContent(h.channel))).toContain('new.chat.form');
+  });
+
+  it('checks a cached creation card against external archives before creating a group', async () => {
+    const h = await createHarness(); h.controls.profileConfig.agentKind = 'codex';
+    h.controls.profileConfig.codex = { binaryPath: 'codex' };
+    const cwd = await realpath(h.tmp.workspace);
+    await h.run('/panel sessions', { codexHistoryProvider: async () => [{
+      threadId: 'external-archive', name: '旧卡片', cwd, preview: '', source: 'appServer', createdAtMs: 1, updatedAtMs: 2,
+    }] });
+    const token = extractActionToken(JSON.stringify(lastContent(h.channel)), 'panel.session-group');
+    h.controls.codexReplySync = { observeTurn() {}, runNow: async () => {}, isThreadArchived: async () => true };
+    await h.run(`/panel session-group ${token}`);
+    expect(h.channel.createdChats).toEqual([]);
+    expect(lastMarkdown(h.channel)).toContain('会话已归档');
+  });
+
+  it('cancels group creation if archive happens during the naming lookup', async () => {
+    const h = await createHarness(); h.controls.profileConfig.agentKind = 'codex';
+    h.controls.profileConfig.codex = { binaryPath: 'codex' };
+    const cwd = await realpath(h.tmp.workspace);
+    await h.run('/panel sessions', { codexHistoryProvider: async () => [{
+      threadId: 'late-archive', name: '待建群', cwd, preview: '', source: 'appServer', createdAtMs: 1, updatedAtMs: 2,
+    }] });
+    const token = extractActionToken(JSON.stringify(lastContent(h.channel)), 'panel.session-group');
+    Object.assign(h.channel, { listChats: async () => { h.sessionCatalog.archiveCodexThread('late-archive'); return []; } });
+    await h.run(`/panel session-group ${token}`);
+    expect(h.channel.createdChats).toEqual([]); expect(lastMarkdown(h.channel)).toContain('会话已归档');
   });
 
   it('forks a non-AA session into its own group without rebinding the source', async () => {
@@ -395,6 +425,7 @@ describe('Bridge command contracts', () => {
     expect(h.sessionCatalog.activeFor(identity)).toBeUndefined();
     expect(h.workspaces.cwdFor('chat-1')).toBe(cwd);
     expect(lastMarkdown(h.channel)).toContain('Codex 会话已归档');
+    expect(h.sessionCatalog.isScopeArchived('chat-1')).toBe(true);
     expect(lastMarkdown(h.channel)).toContain('im:chat:operate_as_owner');
   });
 
@@ -416,6 +447,8 @@ describe('Bridge command contracts', () => {
     ).resolves.toBe(true);
 
     expect(h.agent.archivedThreads).toEqual(['thread-keep-group']);
+    expect(h.sessionCatalog.isScopeArchived('chat-1')).toBe(true);
+    expect(lastMarkdown(h.channel)).not.toContain('下一条消息将开启新会话');
     expect(h.sessionCatalog.activeFor(identity)).toBeUndefined();
     expect(h.sessions.getRaw('chat-1')).toBeUndefined();
     expect(h.workspaces.cwdFor('chat-1')).toBe(cwd);

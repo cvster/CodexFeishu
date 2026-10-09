@@ -110,6 +110,8 @@ export interface Controls {
   refreshMirroredRunCard?(scope: string, messageId: string): Promise<boolean>;
   /** Codex replies have one owner, keyed by thread/turn/scope, for all input sources. */
   codexReplySync?: {
+    isThreadArchived?(threadId: string): Promise<boolean>;
+    isScopeArchived?(scope: string): Promise<boolean>;
     observeTurn(scope: string, threadId: string, turnId: string, replyTo: string, replyInThread?: boolean): void;
     runNow(): Promise<void>;
   };
@@ -706,6 +708,16 @@ async function createGroupForPanelSession(
     await reply(ctx, '此会话操作已过期，请刷新“现有会话”后重试。');
     return false;
   }
+  try {
+    if (ctx.sessionCatalog?.isThreadArchived(target.threadId) ||
+        await ctx.controls.codexReplySync?.isThreadArchived?.(target.threadId)) {
+      await reply(ctx, '会话已归档，不会为此会话创建群。');
+      return false;
+    }
+  } catch {
+    await reply(ctx, '暂时无法确认会话归档状态，请稍后重试。');
+    return false;
+  }
   const alreadyBound = ctx.sessionCatalog?.entries().find(
     (entry) => entry.status === 'active' && entry.agentId === 'codex' && entry.threadId === target.threadId &&
       entry.botAppId === ctx.controls.profileConfig.accounts.app.id,
@@ -730,6 +742,10 @@ async function createGroupForPanelSession(
     ? target.name
     : uniqueSessionGroupName(target.name || target.preview,
       (await refreshKnownChatsForNaming(ctx)).map((chat) => chat.name));
+  if (ctx.sessionCatalog?.isThreadArchived(target.threadId)) {
+    await reply(ctx, '会话已归档，不会为此会话创建群。');
+    return false;
+  }
   let created;
   try {
     created = await createBoundChat({ channel: ctx.channel, name, inviteOpenId: ctx.msg.senderId });
@@ -783,7 +799,7 @@ async function archivePanelSession(ctx: CommandContext, token: string): Promise<
   if (!ctx.agent.archiveThread) return reply(ctx, '当前 Codex 适配器不支持归档会话。');
   try {
     await ctx.agent.archiveThread(target.threadId);
-    ctx.sessionCatalog?.archiveThread(target.threadId);
+    ctx.sessionCatalog?.archiveCodexThread(target.threadId);
     await ctx.sessionCatalog?.flush();
     panelCandidates.delete(token);
     await reply(ctx, `✓ 会话 \`${target.threadId.slice(0, 8)}…\` 已归档，完整记录仍然保留。`);
@@ -806,7 +822,7 @@ async function finishPanelGroup(ctx: CommandContext, token: string): Promise<voi
       await reply(ctx, `❌ Codex 会话归档失败，群保持不变：${errorText(err)}`);
       return;
     }
-    ctx.sessionCatalog?.archiveThread(target.threadId);
+    ctx.sessionCatalog?.archiveCodexThread(target.threadId);
   }
   try {
     await dissolveChat(ctx.channel, target.chatId);
@@ -1149,6 +1165,18 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
+      if (resolved.threadId) {
+        try {
+          if (ctx.sessionCatalog.isThreadArchived(resolved.threadId) ||
+              await ctx.controls.codexReplySync?.isThreadArchived?.(resolved.threadId)) {
+            await reply(ctx, '会话已归档，请重新选择未归档的会话。');
+            return;
+          }
+        } catch {
+          await reply(ctx, '暂时无法确认会话归档状态，请稍后重试。');
+          return;
+        }
+      }
       ctx.activeRuns.interrupt(ctx.scope);
       if (ctx.sessionCatalogIdentity.agentId === 'codex') {
         ctx.sessionCatalog.upsertActive({
@@ -1157,6 +1185,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           threadId: resolved.threadId!,
+          rebindArchivedScope: true,
           botAppId: ctx.controls.profileConfig.accounts.app.id,
         });
       } else {
@@ -1731,7 +1760,8 @@ async function handleFinish(args: string, ctx: CommandContext): Promise<void> {
   }
 
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
-    ctx.sessionCatalog.archiveActive({ ...ctx.sessionCatalogIdentity, now: Date.now() });
+    if (catalogEntry?.threadId) ctx.sessionCatalog.archiveCodexThread(catalogEntry.threadId);
+    else ctx.sessionCatalog.archiveActive({ ...ctx.sessionCatalogIdentity, now: Date.now() });
     await ctx.sessionCatalog.flush();
   }
   ctx.sessions.remove(ctx.scope);
@@ -1744,7 +1774,7 @@ async function handleFinish(args: string, ctx: CommandContext): Promise<void> {
       stoppedRuns: groupScopes.length,
       dissolved: false,
     });
-    await reply(ctx, '✓ 当前 Codex 会话已归档，群和工作目录已保留。下一条消息将开启新会话。');
+    await reply(ctx, '✓ 当前 Codex 会话已归档，群和工作目录已保留。后续消息只会提示已归档，不会自动开启新会话或创建群。');
     return;
   }
 

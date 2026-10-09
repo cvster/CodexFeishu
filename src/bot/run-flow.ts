@@ -31,6 +31,7 @@ export interface StartRunFlowInput {
   profileConfig: ProfileConfig;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  checkSessionArchived?: () => Promise<boolean>;
   workspaces: WorkspaceStore;
   executor: RunExecutor;
   now: number;
@@ -46,7 +47,9 @@ export interface StartRunFlowInput {
 export type RunFlowRejectCode =
   | WorkingDirectoryRejectReason
   | RunPolicyReject['rejectReason']['code']
-  | RunRejectedCode;
+  | RunRejectedCode
+  | 'session-archived'
+  | 'archive-check-unavailable';
 
 export type StartRunFlowResult =
   | {
@@ -76,6 +79,15 @@ export interface RecordRunSessionEventInput {
 }
 
 export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
+  try {
+    if (input.sessionCatalog?.isScopeArchived(input.scopeId) || await input.checkSessionArchived?.()) {
+      return { ok: false, rejectReason: { code: 'session-archived',
+        userVisible: '会话已归档。请通过控制台手动绑定未归档的会话。' } };
+    }
+  } catch {
+    return { ok: false, rejectReason: { code: 'archive-check-unavailable',
+      userVisible: '暂时无法确认会话归档状态，请稍后重试。' } };
+  }
   const requestedCwd =
     input.workspaces.cwdFor(input.scopeId) ?? input.profileConfig.workspaces.default ?? '';
   const workspace = await resolveWorkingDirectory(requestedCwd);
@@ -140,7 +152,21 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
 
   let execution: RunExecution;
   try {
+    const validateBeforeStart = () => {
+      if (input.sessionCatalog?.isScopeArchived(input.scopeId) ||
+          (threadId && input.sessionCatalog?.isThreadArchived(threadId))) {
+        throw new RunRejected('session-archived', '会话已归档。请通过控制台手动绑定未归档的会话。');
+      }
+    };
+    validateBeforeStart();
     execution = await input.executor.submit({
+      validateBeforeStart,
+      beforeSpawn: input.checkSessionArchived ? async () => {
+        let archived: boolean;
+        try { archived = await input.checkSessionArchived!(); }
+        catch { throw new RunRejected('archive-check-unavailable', '暂时无法确认会话归档状态，请稍后重试。'); }
+        if (archived) throw new RunRejected('session-archived', '会话已归档。请通过控制台手动绑定未归档的会话。');
+      } : undefined,
       scopeId: input.scopeId,
       policy,
       sessionId,
@@ -170,7 +196,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         rejectReason: {
           code: err.code,
           userVisible:
-            err.code === 'reconnect-in-progress'
+            err.code === 'session-archived' || err.code === 'archive-check-unavailable'
+              ? err.message
+              : err.code === 'reconnect-in-progress'
               ? '当前 bot 正在重连，稍后会继续处理新消息。'
               : err.code === 'run-already-active'
                 ? '当前会话已有运行在执行，请稍后再试或先停止当前运行。'
@@ -207,6 +235,9 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
     return;
   }
   if (input.capability.agentId === 'codex' && input.event.threadId) {
+    // A late system event from a stopped/archived run must not reopen its group.
+    if (input.sessionCatalog?.isScopeArchived(input.scopeId) ||
+        input.sessionCatalog?.isThreadArchived(input.event.threadId)) return;
     input.sessionCatalog?.upsertActive({
       scopeId: input.scopeId,
       agentId: 'codex',

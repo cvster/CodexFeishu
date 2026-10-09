@@ -79,6 +79,7 @@ interface StoredState {
 }
 
 export interface CodexTurnReaderLike {
+  listArchivedThreadIds?(): Promise<string[]>;
   readThread(threadId: string): Promise<CodexThreadSnapshot>;
   listRecentThreads?(limit?: number): Promise<CodexThreadRevision[]>;
   persistedTurnTerminal?(
@@ -97,10 +98,12 @@ export interface CodexTurnSyncDeps {
   reader?: CodexTurnReaderLike;
   statePath?: string;
   now?: () => number;
-  nameSync?: { observe(snapshot: CodexThreadSnapshot, entries: SessionCatalogEntry[]): Promise<void> };
+  nameSync?: { observe(snapshot: CodexThreadSnapshot, entries: SessionCatalogEntry[], isActive?: (scope: string) => boolean): Promise<void> };
 }
 
 export interface CodexTurnSyncHandle {
+  isThreadArchived(threadId: string): Promise<boolean>;
+  isScopeArchived(scope: string): Promise<boolean>;
   runNow(): Promise<void>;
   observeTurn(scope: string, threadId: string, turnId: string, replyTo: string, replyInThread?: boolean): void;
   refreshMessage(scope: string, messageId: string): Promise<boolean>;
@@ -116,7 +119,8 @@ export interface CodexTurnSyncHandle {
 export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<CodexTurnSyncHandle> {
   const codex = deps.controls.profileConfig.codex;
   if (deps.controls.profileConfig.agentKind !== 'codex' || !codex?.binaryPath) {
-    return { runNow: async () => {}, observeTurn: () => {}, refreshMessage: async () => false, stop: async () => {} };
+    return { isThreadArchived: async (threadId) => deps.sessionCatalog.isThreadArchived(threadId),
+      isScopeArchived: async (scope) => deps.sessionCatalog.isScopeArchived(scope), runNow: async () => {}, observeTurn: () => {}, refreshMessage: async () => false, stop: async () => {} };
   }
 
   const reader = deps.reader ?? new CodexThreadReader(readerOptions(deps, codex));
@@ -145,6 +149,22 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
   timer.unref?.();
 
   return {
+    async isThreadArchived(threadId) {
+      if (deps.sessionCatalog.isThreadArchived(threadId)) return true;
+      if (!reader.listArchivedThreadIds) throw new Error('Archive lookup unavailable');
+      const archived = await reconcileArchives(deps, reader, true);
+      if (!archived.has(threadId)) return false;
+      deps.sessionCatalog.archiveCodexThread(threadId);
+      await deps.sessionCatalog.flush();
+      return true;
+    },
+    async isScopeArchived(scope) {
+      if (deps.sessionCatalog.isScopeArchived(scope)) return true;
+      if (!deps.sessionCatalog.entries().some((e) => e.agentId === 'codex' && e.scopeId === scope)) return false;
+      if (!reader.listArchivedThreadIds) throw new Error('Archive lookup unavailable');
+      await reconcileArchives(deps, reader);
+      return deps.sessionCatalog.isScopeArchived(scope);
+    },
     runNow,
     observeTurn(scope, threadId, turnId, replyTo, replyInThread) {
       if (stopped) return;
@@ -153,6 +173,9 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
       void runNow();
     },
     async refreshMessage(scope, messageId) {
+      if (deps.sessionCatalog.isScopeArchived(scope)) throw new Error('会话已归档。');
+      await reconcileArchives(deps, reader);
+      if (deps.sessionCatalog.isScopeArchived(scope)) throw new Error('会话已归档。');
       // Use the same lock as polling: concurrent refreshes and periodic pushes
       // must never race to allocate a CardKit sequence or overwrite newer output.
       while (running) await running.catch(() => {});
@@ -167,10 +190,12 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
               ?.find((entry) => entry.scopeId === scope);
             if (!binding) throw new Error('Card conversation is no longer bound to this group');
             const snapshot = await reconcileProjectedInterruptions(reader, await reader.readThread(threadId), now());
+            if (currentEntries(deps, threadId, [binding]).length === 0) throw new Error('会话已归档或已重新绑定。');
             const turn = snapshot.turns.find((item) => item.id === turnId);
             if (!turn) throw new Error('Original card turn is unavailable');
             await syncTurnToScope(deps.channel, store, threadId, turn, stored, scope, now(),
-              binding.cwdRealpath, deps.controls.runControlIcons, true, deps.controls);
+              binding.cwdRealpath, deps.controls.runControlIcons, true, deps.controls,
+              false, () => currentEntries(deps, threadId, [binding]).length > 0);
             refreshed = true;
             return;
           }
@@ -203,6 +228,7 @@ async function syncOnce(
   now: () => number,
   submitted: Map<string, SubmittedTurn>,
 ): Promise<void> {
+  await reconcileArchives(deps, reader);
   const bindings = activeCodexBindings(deps.sessionCatalog.entries());
   for (const [threadId, entries] of bindings) {
     // thread/list timestamps have coarse resolution and may advance before
@@ -223,11 +249,16 @@ async function syncOnce(
       });
       continue;
     }
-    await syncThreadSnapshot(deps.channel, store, snapshot, entries, now(),
-      deps.controls.runControlIcons, submitted, deps.controls);
+    const liveEntries = currentEntries(deps, threadId, entries);
+    if (liveEntries.length === 0) continue;
+    await syncThreadSnapshot(deps.channel, store, snapshot, liveEntries, now(),
+      deps.controls.runControlIcons, submitted, deps.controls,
+      (scope) => currentEntries(deps, threadId, liveEntries).some((entry) => entry.scopeId === scope));
     // Name failures must not prevent reply delivery or other thread polling.
     try {
-      await deps.nameSync?.observe(snapshot, entries);
+      const nameEntries = currentEntries(deps, threadId, liveEntries);
+      if (nameEntries.length > 0) await deps.nameSync?.observe(snapshot, nameEntries,
+        (scope) => currentEntries(deps, threadId, nameEntries).some((entry) => entry.scopeId === scope));
     } catch (err) {
       log.warn('codex-turn-sync', 'name-sync-failed', { threadId, err: errorText(err) });
     }
@@ -243,6 +274,26 @@ async function syncOnce(
   await store.flush();
 }
 
+function currentEntries(deps: CodexTurnSyncDeps, threadId: string, previous: SessionCatalogEntry[]): SessionCatalogEntry[] {
+  const keys = new Set((activeCodexBindings(deps.sessionCatalog.entries()).get(threadId) ?? []).map((e) => e.key));
+  return previous.filter((entry) => keys.has(entry.key));
+}
+
+async function reconcileArchives(deps: CodexTurnSyncDeps, reader: CodexTurnReaderLike, force = false): Promise<Set<string>> {
+  // Optional only for test/legacy injected readers; production implements it.
+  if (!reader.listArchivedThreadIds || (!force && deps.sessionCatalog.entries().length === 0)) return new Set();
+  const archived = new Set(await reader.listArchivedThreadIds());
+  let changed = false;
+  for (const entry of deps.sessionCatalog.entries()) {
+    if (entry.agentId !== 'codex' || !entry.threadId || !archived.has(entry.threadId) ||
+        deps.sessionCatalog.isThreadArchived(entry.threadId)) continue;
+    deps.sessionCatalog.archiveCodexThread(entry.threadId);
+    changed = true;
+  }
+  if (changed) await deps.sessionCatalog.flush();
+  return archived;
+}
+
 
 async function syncThreadSnapshot(
   channel: LarkChannel,
@@ -253,6 +304,7 @@ async function syncThreadSnapshot(
   icons?: RunControlIcons,
   submitted = new Map<string, SubmittedTurn>(),
   controls?: Controls,
+  isScopeActive: (scope: string) => boolean = () => true,
 ): Promise<void> {
   const existing = store.state.threads[snapshot.id];
   const firstSnapshot = !existing;
@@ -320,11 +372,12 @@ async function syncThreadSnapshot(
 
     for (const scope of scopes) {
       const delivery = stored.deliveries[scope];
+      if (!isScopeActive(scope)) continue;
       if (delivery?.status === 'skipped') continue;
       try {
         await syncTurnToScope(channel, store, snapshot.id, turn, stored, scope, nowMs,
           bindings.find((entry) => entry.scopeId === scope)?.cwdRealpath, icons, false, controls,
-          replayScopesForTurn.has(scope));
+          replayScopesForTurn.has(scope), () => isScopeActive(scope));
         if (stored.deliveries[scope]) submitted.delete(submissionKey(snapshot.id, turn.id, scope));
       } catch (err) {
         log.warn('codex-turn-sync', 'delivery-failed', {
@@ -393,7 +446,9 @@ async function syncTurnToScope(
   forceUpdate = false,
   controls?: Controls,
   creationReplay = false,
+  isActive: () => boolean = () => true,
 ): Promise<void> {
+  if (!isActive()) return;
   const target = targetFromScope(scope);
   if (!target) return;
   const waitingForInput = controls?.codexUserInput?.isWaiting(threadId, turn.id) ?? false;
@@ -421,6 +476,7 @@ async function syncTurnToScope(
   };
 
   if (!delivery) {
+    if (!isActive()) return;
     const state = renderState({
       firstSeenAtMs: nowMs,
       lastActivityAtMs: nowMs,
@@ -437,7 +493,7 @@ async function syncTurnToScope(
       channel,
       target.chatId,
       renderCard(state, icons),
-      stored.replyTargets?.[scope],
+      { ...stored.replyTargets?.[scope], isActive },
     );
     delivery = {
       status: 'card',
@@ -493,6 +549,7 @@ async function syncTurnToScope(
   // Persist the next CardKit sequence before the API call. If the process dies
   // after Feishu accepts the update, a restart will never reuse that sequence.
   await store.flush();
+  if (!isActive()) return;
   const state = renderState({
     firstSeenAtMs: delivery.firstSeenAtMs,
     lastActivityAtMs: delivery.lastActivityAtMs,

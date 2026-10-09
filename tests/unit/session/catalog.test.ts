@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +10,80 @@ import {
 const cleanups: Array<() => Promise<void>> = [];
 
 describe('agent-aware session catalog', () => {
+  it('keeps true archive tombstones across GC/restart and only clears the group on explicit rebinding', async () => {
+    const file = await path();
+    const catalog = new SessionCatalog(file);
+    const identity = { scopeId: 'oc_archived', agentId: 'codex' as const, cwdRealpath: '/repo', policyFingerprint: 'fp' };
+    catalog.upsertActive({ ...identity, threadId: 'old', now: 1 });
+    catalog.archiveCodexThread('old', 2);
+    catalog.gc({ now: 1_000_000, maxArchivedAgeMs: 1, maxEntriesPerProfile: 0 });
+    await catalog.flush();
+    const loaded = new SessionCatalog(file); await loaded.load();
+    expect(loaded.isScopeArchived('oc_archived')).toBe(true);
+    expect(loaded.isThreadArchived('old')).toBe(true);
+    expect(() => loaded.upsertActive({ ...identity, threadId: 'old' })).toThrow('已归档');
+    expect(() => loaded.upsertActive({ ...identity, threadId: 'new' })).toThrow('已归档');
+    loaded.upsertActive({ ...identity, threadId: 'new', rebindArchivedScope: true });
+    expect(loaded.isScopeArchived('oc_archived')).toBe(false);
+    expect(loaded.isThreadArchived('old')).toBe(true);
+    expect(loaded.activeFor(identity)?.threadId).toBe('new');
+    await loaded.flush();
+  });
+
+  it('does not close a group when retiring a binding or archiving an older thread', async () => {
+    const catalog = new SessionCatalog(await path());
+    const identity = { scopeId: 'oc_group', agentId: 'codex' as const, cwdRealpath: '/repo', policyFingerprint: 'fp' };
+    catalog.upsertActive({ ...identity, threadId: 'old', now: 1 });
+    catalog.archiveActive(identity);
+    expect(catalog.isScopeArchived('oc_group')).toBe(false);
+    catalog.upsertActive({ ...identity, policyFingerprint: 'fp2', threadId: 'new', now: Date.now() + 1 });
+    catalog.archiveCodexThread('old');
+    expect(catalog.isScopeArchived('oc_group')).toBe(false);
+    await catalog.flush();
+  });
+
+  it.each([false, true])('closes the actual current binding even when an older archive has a newer timestamp (same time: %s)', async (sameTime) => {
+    const catalog = new SessionCatalog(await path());
+    const identity = { scopeId: 'oc_group', agentId: 'codex' as const, cwdRealpath: '/repo', policyFingerprint: 'old' };
+    catalog.upsertActive({ ...identity, threadId: 'older', now: 1 });
+    catalog.upsertActive({ ...identity, policyFingerprint: 'current', threadId: 'current', now: sameTime ? 1 : 2 });
+    catalog.archiveCodexThread('older', 3);
+    expect(catalog.isScopeArchived('oc_group')).toBe(false);
+    catalog.archiveCodexThread('current', 4);
+    expect(catalog.isScopeArchived('oc_group')).toBe(true);
+    await catalog.flush();
+  });
+
+  it('surfaces archive-ledger persistence failure instead of claiming durable success', async () => {
+    const file = await path(); const catalog = new SessionCatalog(file);
+    catalog.upsertActive({ scopeId: 'oc_group', agentId: 'codex', cwdRealpath: '/repo', policyFingerprint: 'p', threadId: 'thread' });
+    await catalog.flush();
+    await rm(`${file}.archives.json`); await mkdir(`${file}.archives.json`);
+    catalog.archiveCodexThread('thread');
+    await expect(catalog.flush()).rejects.toBeDefined();
+    expect(catalog.isScopeArchived('oc_group')).toBe(true);
+  });
+
+  it('retires other stale active bindings in a group when its current thread is archived', async () => {
+    const catalog = new SessionCatalog(await path());
+    const base = { scopeId: 'oc_group', agentId: 'codex' as const, cwdRealpath: '/repo' };
+    catalog.upsertActive({ ...base, policyFingerprint: 'old', threadId: 'old', now: 1 });
+    catalog.upsertActive({ ...base, policyFingerprint: 'new', threadId: 'new', now: 2 });
+    catalog.archiveCodexThread('new', 3);
+    expect(catalog.entries().every((e) => e.status === 'archived')).toBe(true);
+    expect(catalog.isThreadArchived('old')).toBe(false);
+    await catalog.flush();
+  });
+
+  it('uses the last established binding when an existing key is reused within the same millisecond', async () => {
+    const catalog = new SessionCatalog(await path());
+    const base = { scopeId: 'oc_group', agentId: 'codex' as const, cwdRealpath: '/repo' };
+    catalog.upsertActive({ ...base, policyFingerprint: 'fp1', threadId: 'first', now: 1 });
+    catalog.upsertActive({ ...base, policyFingerprint: 'fp2', threadId: 'second', now: 2 });
+    catalog.upsertActive({ ...base, policyFingerprint: 'fp1', threadId: 'current', now: 2 });
+    catalog.archiveCodexThread('current', 3);
+    expect(catalog.isScopeArchived('oc_group')).toBe(true); await catalog.flush();
+  });
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });

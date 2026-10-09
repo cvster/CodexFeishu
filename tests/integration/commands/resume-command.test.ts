@@ -226,6 +226,19 @@ describe('agent-aware resume commands', () => {
     expect(lastMarkdown(h.channel)).toContain('已完成');
   });
 
+  it('reopens an archived group only through explicit selection of another live thread', async () => {
+    const h = await createHarness('codex');
+    h.catalog.upsertActive({ ...h.identity, threadId: 'old' });
+    h.catalog.archiveCodexThread('old');
+    h.codexHistory.push(codexThread('new', 'fresh task', 1_700_000_100_000));
+    await h.run('/resume');
+    const [nonce] = resumeArgsFromCard(lastContent(h.channel));
+    await h.dispatchResumeArg(nonce!);
+    expect(h.catalog.isScopeArchived('chat-1')).toBe(false);
+    expect(h.catalog.isThreadArchived('old')).toBe(true);
+    expect(h.catalog.activeFor(h.identity)?.threadId).toBe('new');
+  });
+
   it('keeps Codex resume history details out of group chats like Claude', async () => {
     const h = await createHarness('codex');
     h.codexHistory.push(codexThread('thread-alpha-secret', 'alpha prompt', 1_700_000_100_000));
