@@ -312,6 +312,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   const channel = createLarkChannel(opts);
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
+  const batchTasks = new Set<Promise<void>>();
+  let disconnecting = false;
 
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
@@ -322,7 +324,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     const firstMsg = batch[0];
     if (!firstMsg) return;
     pending.block(scope);
-    void withTrace({ chatId: firstMsg.chatId }, async () => {
+    const task = withTrace({ chatId: firstMsg.chatId }, async () => {
       log.info('flush', 'start', {
         scope,
         batchSize: batch.length,
@@ -370,6 +372,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         log.info('flush', 'end');
       }
     });
+    batchTasks.add(task);
+    void task.finally(() => batchTasks.delete(task)).catch(() => {});
   });
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.
@@ -377,6 +381,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   channel.on({
     message: async (msg) => {
+      if (disconnecting) return;
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
         intakeMessage({
           channel,
@@ -585,8 +590,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   return {
     channel,
     disconnect: async () => {
+      disconnecting = true;
       activeRuns.pauseNewRuns('bridge-disconnect');
+      pending.cancelAll();
       await executor.waitForSubmissions();
+      if (submissions) await Promise.allSettled([...batchTasks]);
       await activeRuns.disconnectAll();
       ownerRefresh.stop();
       knownChatsRefresh.stop();
@@ -824,6 +832,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     if (!await controls.codexSubmissions.receive(scope, emsg, currentThread)) return;
   }
 
+  if (activeRuns.newRunsPaused()) return; // durable pending will resume on reconnect
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }
@@ -878,7 +887,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const resourceItems = batch.flatMap((m) =>
     m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
   );
-  const attachments = await media.resolve(resourceItems, controls.profileConfig.attachments);
+  let attachments: LocalAttachment[];
+  try {
+    attachments = await media.resolve(resourceItems, { ...controls.profileConfig.attachments,
+      failOnResolutionError: Boolean(controls.codexSubmissions) });
+  } catch (error) {
+    if (!controls.codexSubmissions) throw error;
+    for (const record of controls.codexSubmissions.records()) {
+      if (record.status === 'pending' && record.messages.some(m => batch.some(b => b.messageId === m.messageId))) {
+        await controls.codexSubmissions.mark(record.id, { status: 'rejected', error: String(error) });
+      }
+    }
+    await channel.send(chatId, { markdown: '⚠️ 附件下载或读取失败，消息未提交。请重新上传后再试。' },
+      { replyTo: lastMsg.messageId, ...(mode === 'topic' && threadId ? { replyInThread: true } : {}) });
+    return;
+  }
   if (attachments.length > 0) {
     log.info('media', 'resolved', { count: attachments.length });
     for (const attachment of attachments) {
@@ -1032,7 +1055,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } satisfies Parameters<typeof startRunFlow>[0];
   if (agentKind === 'codex' && agent.submit && controls.codexReplySync && controls.codexSubmissions) {
     const result = await submitFeishuCodex(flowInput, batch, controls.codexSubmissions, controls, sendOpts);
-    if (result.status !== 'accepted') await channel.send(chatId, { markdown: result.status === 'unknown'
+    if (result.status !== 'accepted' && result.status !== 'deferred') await channel.send(chatId, { markdown: result.status === 'unknown'
       ? `⚠️ 消息接收结果暂时无法确认，未自动重发：${result.message}`
       : `⚠️ 消息提交失败：${result.message}` }, sendOpts);
     return;

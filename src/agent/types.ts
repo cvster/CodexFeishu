@@ -40,6 +40,8 @@ export interface AgentRunOptions {
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   images?: readonly string[];
+  /** All accepted local attachments; submission must not silently lose files. */
+  attachmentPaths?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;
   /**

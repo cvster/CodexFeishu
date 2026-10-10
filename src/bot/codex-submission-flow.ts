@@ -5,12 +5,13 @@ import { resolveModelArg } from '../agent/models';
 import { codexBridgeClientMessageId } from '../session/codex-origin';
 import { CodexSubmissionStore, type CodexSubmissionRecord } from '../session/codex-submissions';
 import { RunRejected } from '../runtime/errors';
+import { log } from '../core/logger';
 import { prepareRunFlow, recordRunSessionEvent, type StartRunFlowInput } from './run-flow';
 import type { CodexSubmissionResult } from '../../packages/codex-core/src/submission';
 
 export async function submitFeishuCodex(input: StartRunFlowInput, batch: NormalizedMessage[],
   store: CodexSubmissionStore, controls: Controls, reply: { replyTo: string; replyInThread?: boolean }):
-  Promise<CodexSubmissionResult | { status: 'rejected'; message: string }> {
+  Promise<CodexSubmissionResult | { status: 'rejected' | 'deferred'; message: string }> {
   const prepared = await prepareRunFlow(input);
   const incoming = store.records().filter(r => r.messages.some(m => batch.some(b => b.messageId === m.messageId)));
   if (!prepared.ok) {
@@ -46,6 +47,7 @@ export async function submitFeishuCodex(input: StartRunFlowInput, batch: Normali
       model: resolveModelArg('codex', input.profileConfig.preferences.model),
       reasoningEffort: input.profileConfig.preferences.reasoningEffort ?? 'high',
       images: prepared.policy.attachments.filter(a => a.kind === 'image' && a.decision === 'accepted' && a.path).map(a => a.path!),
+      attachmentPaths: prepared.policy.attachments.filter(a => a.decision === 'accepted' && a.path).map(a => a.path!),
     }, async value => {
       validate();
       recordRunSessionEvent({ scopeId: input.scopeId, botAppId: input.profileConfig.accounts.app.id,
@@ -69,10 +71,14 @@ export async function submitFeishuCodex(input: StartRunFlowInput, batch: Normali
       ? { status: 'accepted', queueId: result.queueId,
         ...(result.clientUserMessageId ? { clientUserMessageId: result.clientUserMessageId } : {}) }
       : { status: result.status, error: result.message });
-    await controls.codexReplySync?.runNow();
+    void controls.codexReplySync?.runNow().catch(error => log.warn('submission', 'reply-sync-kick-failed', { message: String(error) }));
     return result;
   } catch (error) {
     const latest = store.records().find(r => r.id === record.id);
+    if (!sendPermissionGranted && error instanceof RunRejected && error.code === 'reconnect-in-progress') {
+      await store.mark(record.id, { status: 'pending', error: 'Waiting for bridge reconnect' });
+      return { status: 'deferred', message: 'Waiting for bridge reconnect' };
+    }
     const unknown = sendPermissionGranted || latest?.status === 'accepted' || latest?.status === 'completed';
     await store.mark(record.id, { status: unknown ? 'unknown' : 'rejected', error: String(error) }).catch(() => {});
     return { status: unknown ? 'unknown' : 'rejected', submissionId: record.id,

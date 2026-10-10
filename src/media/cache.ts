@@ -18,6 +18,7 @@ export type LocalAttachment = NormalizedAttachment;
 
 export interface MediaResolveOptions extends Partial<AttachmentPolicyOptions> {
   cacheMaxBytes?: number;
+  failOnResolutionError?: boolean;
 }
 
 export interface ResourceRequest {
@@ -48,6 +49,7 @@ export class MediaCache {
         if (file) candidates.push(file);
       } catch (err) {
         log.fail('media', err, { fileKey: item.resource.fileKey });
+        if (options.failOnResolutionError) throw new Error('附件下载或读取失败，请重新上传后再试。', { cause: err });
       }
     }
     const normalized = normalizeAttachments(candidates, options);

@@ -29,6 +29,7 @@ export interface SubmitRunInput {
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   images?: readonly string[];
+  attachmentPaths?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;
   observability?: {
@@ -95,7 +96,7 @@ export class RunExecutor {
       validate();
       const opts = { runId: input.submissionId ?? this.createRunId(), prompt: input.policy.prompt,
         cwd: input.policy.cwdRealpath, threadId: input.threadId, model: input.model,
-        reasoningEffort: input.reasoningEffort, images: input.images, sandbox: input.policy.sandbox };
+        reasoningEffort: input.reasoningEffort, images: input.images, attachmentPaths: input.attachmentPaths, sandbox: input.policy.sandbox };
       await this.agent.prepareRun?.(opts);
       await input.beforeSpawn?.(); validate();
       return await this.agent.submit(opts, async prepared => {

@@ -1,4 +1,5 @@
 import { access } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CodexSubmissionResult } from '../../../packages/codex-core/src/submission';
@@ -19,7 +20,7 @@ export async function submitCodexMessage(options: CodexSubmitOptions,
   beforeSend: (prepared: { threadId: string; knownTurnIds: string[]; transport: 'rpc' | 'cli' }) => Promise<void>):
   Promise<CodexSubmissionResult> {
   if (!options.cwd) throw new Error('cwd is required for Codex submission');
-  for (const path of options.images ?? []) await access(path);
+  for (const path of new Set([...(options.images ?? []), ...(options.attachmentPaths ?? [])])) await access(path, constants.R_OK);
   const home = options.codexHome ?? options.env?.CODEX_HOME ?? process.env.CODEX_HOME ??
     (options.inheritCodexHome ? join(homedir(), '.codex') : join(options.profileStateDir, 'codex-home'));
   const env = mergeProcessEnv(process.env, { ...(options.env ?? {}), CODEX_HOME: home });

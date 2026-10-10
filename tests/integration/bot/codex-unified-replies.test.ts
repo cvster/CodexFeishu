@@ -9,6 +9,7 @@ import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import { createFakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile } from '../../helpers/tmp-profile.js';
+import { CodexSubmissionStore } from '../../../src/session/codex-submissions';
 
 const mock = vi.hoisted(() => ({ channel: undefined as unknown, observed: [] as string[], delivered: false,
   observeTurn: vi.fn(), runNow: vi.fn(), stop: vi.fn() }));
@@ -33,6 +34,37 @@ afterEach(async () => {
 });
 
 describe('unified Codex reply owner', () => {
+  it('releases the actual group debounce queue while global reply sync remains blocked', async () => {
+    const h = await harness(false, true);
+    let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+    mock.runNow.mockImplementation(() => blocked);
+    try {
+      await h.message('m1'); await vi.waitFor(() => expect(h.submit).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      await h.message('m2'); await vi.waitFor(() => expect(h.submit).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    } finally { release(); }
+  });
+
+  it('keeps a never-sent request pending after disconnect during prepare and restores it once', async () => {
+    const h = await harness(false, true);
+    let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+    const preparing = vi.fn(() => blocked); h.agent.prepareRun = preparing;
+    await h.message('restart'); await vi.waitFor(() => expect(preparing).toHaveBeenCalled(), { timeout: 3000 });
+    const stopping = h.bridge.disconnect(); release(); await stopping;
+    const saved = new CodexSubmissionStore(join(h.tmp.profile, 'codex-submissions.json')); await saved.load();
+    expect(saved.records()[0]?.status).toBe('pending'); expect(h.submit).not.toHaveBeenCalled();
+    const restored = await harness(false, true, saved.records());
+    await vi.waitFor(() => expect(restored.submit).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  });
+
+  it('rejects restored media when download fails instead of submitting a prompt with lost attachments', async () => {
+    const original = { messageId: 'lost-image', chatId: 'oc_group', chatType: 'group', senderId: 'ou_user',
+      content: 'inspect', rawContentType: 'image', resources: [{ type: 'image', fileKey: 'missing' }],
+      mentionedBot: true, createTime: Date.now(), mentions: [], mentionAll: false } as NormalizedMessage;
+    const h = await harness(false, true, [{ id: 'lost-image', scope: 'oc_group', messages: [original],
+      status: 'pending', createdAtMs: Date.now(), updatedAtMs: Date.now() }]);
+    await vi.waitFor(() => expect(h.channel.sent).toHaveLength(1), { timeout: 3000 });
+    expect(h.submit).not.toHaveBeenCalled(); expect(JSON.stringify(h.channel.sent)).toContain('附件');
+  });
   it('submits raw input and leaves every answer to the synchronizer, even with CoT enabled', async () => {
     const h = await harness(false);
     await h.message();
@@ -56,7 +88,7 @@ describe('unified Codex reply owner', () => {
   });
 });
 
-async function harness(fail: boolean) {
+async function harness(fail: boolean, acceptance = false, restored: any[] = []) {
   const tmp = await createTmpProfile('codex-unified-output-');
   cleanups.push(() => tmp.cleanup());
   const channel = createFakeChannel();
@@ -69,6 +101,7 @@ async function harness(fail: boolean) {
     getConnectionStatus: () => ({ state: 'connected', reconnectAttempts: 0 }),
     listChats: async () => [], getChatInfo: async () => ({ name: 'test' }),
     addReaction: async () => 'reaction', removeReaction: async () => {},
+    downloadResourceToFile: async () => { throw new Error('resource expired'); },
   });
   mock.observeTurn.mockImplementation((_scope: string, _thread: string, turn: string) => mock.observed.push(turn));
   mock.runNow.mockImplementation(async () => {
@@ -93,6 +126,15 @@ async function harness(fail: boolean) {
     : [{ type: 'system', threadId: 'thread-one' },
        { type: 'system', threadId: 'thread-one', turnId: 'turn-one' },
        { type: 'text', delta: 'legacy stream answer' }, { type: 'done', threadId: 'thread-one', terminationReason: 'normal' }] });
+  const submit = vi.fn(async (opts: any, beforeSend: any) => {
+    await beforeSend({ threadId: 'thread-one', knownTurnIds: [], transport: 'rpc' });
+    return { status: 'accepted' as const, submissionId: opts.runId, threadId: 'thread-one', transport: 'rpc' as const };
+  });
+  if (acceptance) Object.assign(agent, { submit });
+  if (restored.length) {
+    const store = new CodexSubmissionStore(join(tmp.profile, 'codex-submissions.json')); await store.load();
+    for (const record of restored) await store.prepare(record);
+  }
   const bridge = await startChannel({ cfg: profileConfig, controls, agent,
     sessions: new SessionStore(join(tmp.profile, 'sessions.json')),
     sessionCatalog: new SessionCatalog(join(tmp.profile, 'catalog.json')),
@@ -102,7 +144,8 @@ async function harness(fail: boolean) {
   });
   expect(controls.codexReplySync).toBeDefined();
   cleanups.push(() => bridge.disconnect());
-  return { channel, agent, message: () => handlers.message?.({ messageId: 'om_input', chatId: 'oc_group',
+  return { channel, agent: agent as typeof agent & { prepareRun?: () => Promise<void> }, submit, bridge, tmp,
+    message: (id = 'om_input') => handlers.message?.({ messageId: id, chatId: 'oc_group',
     chatType: 'group', senderId: 'ou_user', senderName: 'User', content: '原样输入',
     rawContentType: 'text', resources: [], mentionedBot: true, createTime: Date.now(),
     mentions: [], mentionAll: false,

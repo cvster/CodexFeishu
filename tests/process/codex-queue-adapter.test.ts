@@ -26,6 +26,8 @@ describe('CodexAdapter native queue mode', () => {
     expect(prepared[0]).toMatchObject({ threadId: 'thread-existing', knownTurnIds: [], transport: 'cli' });
     await expect(adapter.submit({ runId: 'bad-image', cwd: fake.dir, prompt: 'image', threadId: 'thread-existing',
       images: [join(fake.dir, 'missing.png')] }, async () => {})).rejects.toThrow();
+    await expect(adapter.submit({ runId: 'bad-file', cwd: fake.dir, prompt: 'file', threadId: 'thread-existing',
+      attachmentPaths: [join(fake.dir, 'missing.txt')] }, async () => {})).rejects.toThrow();
     expect(JSON.parse(await readFile(join(fake.dir, 'state.json'), 'utf8')).prompt).toBe('do not wait');
     const requests = await readFile(join(fake.dir, 'requests.jsonl'), 'utf8');
     expect(requests).not.toContain('turn/interrupt'); expect(requests).not.toContain('thread/queue/delete');
