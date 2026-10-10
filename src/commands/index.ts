@@ -1704,7 +1704,12 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     const codex = ctx.controls.profileConfig.codex;
     if (threadId && codex?.binaryPath) {
       const remote = await resolveSharedCodexEndpoint({ remote: process.env.CODEX_QUEUE_REMOTE, codexHome: codex.codexHome });
-      if (!remote) { await reply(ctx, '⚠️ 没有可用的公开共享连接，请在 Codex 桌面停止任务。'); return; }
+      if (!remote) {
+        await reply(ctx, process.platform === 'win32'
+          ? '⚠️ windows不支持桥接停止会话，请在 Codex 桌面停止任务。'
+          : '⚠️ 没有可用的公开共享连接，请在 Codex 桌面停止任务。');
+        return;
+      }
       const writer = new CodexThreadReader({ binary: codex.binaryPath, profileStateDir: commandProfilePaths(ctx).profileDir,
         codexHome: codex.codexHome, inheritCodexHome: codex.inheritCodexHome !== false, sharedServer: true, passive: true, remote });
       try { ok = await stopCodexSubmissions(scope, threadId, ctx.controls.codexSubmissions, writer); }

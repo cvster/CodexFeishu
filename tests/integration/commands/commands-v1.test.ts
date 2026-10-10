@@ -10,6 +10,7 @@ import { SessionStore } from '../../../src/session/store.js';
 import { SessionCatalog, type SessionCatalogIdentity } from '../../../src/session/catalog.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { CodexThreadReader } from '../../../src/session/codex-thread-reader.js';
+import { CodexSubmissionStore } from '../../../src/session/codex-submissions.js';
 import { registerLiveRunCardRefresh } from '../../../src/card/run-refresh.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
@@ -718,6 +719,31 @@ describe('Bridge command contracts', () => {
     ).resolves.toBe(true);
 
     expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+  });
+
+  it.each(['win32', 'linux'] as const)('explains unavailable stop control appropriately on %s without losing unsent cancellation', async (platform) => {
+    const h = await createHarness();
+    prepareForkSource(h);
+    h.controls.profileConfig.codex!.codexHome = join(h.tmp.root, 'no-shared-server');
+    const store = new CodexSubmissionStore(join(h.tmp.profile, 'submissions.json'));
+    await store.load();
+    await store.receive('chat-1', message('pending input', { chatId: 'chat-1', senderId: 'ou-admin' }), 'source-thread');
+    h.controls.codexSubmissions = store;
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const remote = process.env.CODEX_QUEUE_REMOTE;
+    try {
+      Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
+      delete process.env.CODEX_QUEUE_REMOTE;
+      await expect(h.run('/stop', { chatMode: 'group', fromCardAction: true })).resolves.toBe(true);
+      expect(lastMarkdown(h.channel)).toContain(platform === 'win32'
+        ? 'windows不支持桥接停止会话，请在 Codex 桌面停止任务。'
+        : '没有可用的公开共享连接，请在 Codex 桌面停止任务。');
+      expect(store.records().map(record => record.status)).toEqual(['cancelled']);
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor);
+      if (remote === undefined) delete process.env.CODEX_QUEUE_REMOTE;
+      else process.env.CODEX_QUEUE_REMOTE = remote;
+    }
   });
 
   it('does not expose access allowlists through the Lark /config form', async () => {
