@@ -8,3 +8,9 @@ It does not depend on Feishu, web authentication, UI, or either service's config
 Each service creates its own client and retains its own config and shutdown lifecycle.
 Closing an observer never interrupts a turn or deletes queued input. Native queue
 execution belongs to the external writer. Only explicit Stop/Archive can cancel work.
+
+`submitCodexInput` waits only for queue acceptance, not for reply completion.
+It probes the experimental public queue API before writing, falls back to the
+official CLI only before a write attempt, and returns `unknown` after a lost
+acknowledgement without retrying or cancelling accepted work. Reply observers
+remain independent of submission lifetime.
