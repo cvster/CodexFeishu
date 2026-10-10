@@ -10,12 +10,59 @@ import type { CodexThreadSnapshot } from '../../../src/session/codex-thread-read
 import { startCodexTurnSync } from '../../../src/bot/codex-turn-sync.js';
 import { registerCodexQueuedTurnClaim } from '../../../src/session/codex-origin.js';
 import { createFakeChannel } from '../../helpers/fake-channel.js';
+import { CodexSubmissionStore } from '../../../src/session/codex-submissions';
 
 describe('Codex desktop turn sync', () => {
   const cleanup: string[] = [];
 
   afterEach(async () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it('delivers a fast completed submission on the first snapshot and preserves one card across restart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-fast-submit-')); cleanup.push(dir);
+    const catalog = new SessionCatalog(join(dir, 'catalog.json'));
+    catalog.upsertActive({ scopeId: 'oc_group', agentId: 'codex', cwdRealpath: dir, policyFingerprint: 'p', threadId: 'thread' });
+    const submissions = new CodexSubmissionStore(join(dir, 'submissions.json')); await submissions.load();
+    const record = { id: 'submission', scope: 'oc_group', messages: [{ messageId: 'm1' } as any],
+      status: 'sending' as const, createdAtMs: 1, updatedAtMs: 1, threadId: 'thread',
+      clientUserMessageId: 'bridge-client', prompt: 'hello', knownTurnIds: ['old'], replyTo: 'm1' };
+    await submissions.prepare(record);
+    const turn = externalTurn('fast', 'completed', 'hello\n', 'last answer');
+    turn.items[0]!.clientId = 'bridge-client';
+    const snapshot = { id: 'thread', turns: [externalTurn('old', 'completed', 'old', 'old answer'), turn] };
+    const channel = createFakeChannel();
+    const deps = { channel: channel as unknown as LarkChannel, controls: controlsForCodex(), sessionCatalog: catalog,
+      profileStateDir: dir, intervalMs: 60_000, submissionStore: submissions,
+      reader: { readThread: async () => snapshot, stop: async () => {} } };
+    let handle = await startCodexTurnSync(deps);
+    try {
+      await handle.runNow(); expect(channel.sent).toHaveLength(1);
+      expect(channel.sent[0]?.options).toMatchObject({ replyTo: 'm1' });
+      expect(submissions.records()[0]).toMatchObject({ turnId: 'fast', status: 'completed' });
+      await handle.stop(); handle = await startCodexTurnSync(deps); await handle.runNow();
+      expect(channel.sent).toHaveLength(1);
+    } finally { await handle.stop(); await catalog.flush(); }
+  });
+
+  it('uses client IDs to distinguish identical submissions and does not echo CLI newline input', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-client-match-')); cleanup.push(dir);
+    const catalog = new SessionCatalog(join(dir, 'catalog.json'));
+    catalog.upsertActive({ scopeId: 'oc_group', agentId: 'codex', cwdRealpath: dir, policyFingerprint: 'p', threadId: 'thread' });
+    const submissions = new CodexSubmissionStore(join(dir, 'submissions.json')); await submissions.load();
+    for (const id of ['1', '2']) await submissions.prepare({ id, scope: 'oc_group', messages: [{ messageId: `m${id}` } as any],
+      status: 'accepted', createdAtMs: 1, updatedAtMs: 1, threadId: 'thread', clientUserMessageId: `client-${id}`,
+      prompt: 'same', knownTurnIds: [], replyTo: `m${id}`, transport: 'rpc' });
+    const turns = ['1', '2'].map(id => { const t = externalTurn(`turn-${id}`, 'completed', 'same\n', `answer ${id}`);
+      t.items[0]!.clientId = `client-${id}`; return t; });
+    const channel = createFakeChannel(); const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(), sessionCatalog: catalog, profileStateDir: dir, intervalMs: 60_000,
+      submissionStore: submissions, reader: { readThread: async () => ({ id: 'thread', turns }), stop: async () => {} } });
+    try {
+      await handle.runNow(); expect(channel.sent).toHaveLength(2);
+      expect(channel.sent.map(s => (s.options as { replyTo?: string })?.replyTo)).toEqual(['m1', 'm2']);
+      expect(submissions.records().map(r => r.turnId)).toEqual(['turn-1', 'turn-2']);
+    } finally { await handle.stop(); await catalog.flush(); }
   });
 
   it('detects desktop archives before reply/name sync and before accepting a group message', async () => {

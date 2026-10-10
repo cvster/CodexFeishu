@@ -5,6 +5,8 @@ import type { LarkChannel } from '@larksuite/channel';
 import type { Controls } from '../commands';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
+import type { CodexSubmissionRecord, CodexSubmissionStore } from '../session/codex-submissions';
+import { resolveSharedCodexEndpoint } from '../../packages/codex-core/src/queue';
 import type { SessionCatalog, SessionCatalogEntry } from '../session/catalog';
 import {
   isClaimedCodexBridgeTurn,
@@ -99,12 +101,14 @@ export interface CodexTurnSyncDeps {
   statePath?: string;
   now?: () => number;
   nameSync?: { observe(snapshot: CodexThreadSnapshot, entries: SessionCatalogEntry[], isActive?: (scope: string) => boolean): Promise<void> };
+  submissionStore?: CodexSubmissionStore;
 }
 
 export interface CodexTurnSyncHandle {
   isThreadArchived(threadId: string): Promise<boolean>;
   isScopeArchived(scope: string): Promise<boolean>;
   runNow(): Promise<void>;
+  registerSubmission(record: CodexSubmissionRecord): Promise<void>;
   observeTurn(scope: string, threadId: string, turnId: string, replyTo: string, replyInThread?: boolean): void;
   refreshMessage(scope: string, messageId: string): Promise<boolean>;
   stop(): Promise<void>;
@@ -120,10 +124,11 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
   const codex = deps.controls.profileConfig.codex;
   if (deps.controls.profileConfig.agentKind !== 'codex' || !codex?.binaryPath) {
     return { isThreadArchived: async (threadId) => deps.sessionCatalog.isThreadArchived(threadId),
-      isScopeArchived: async (scope) => deps.sessionCatalog.isScopeArchived(scope), runNow: async () => {}, observeTurn: () => {}, refreshMessage: async () => false, stop: async () => {} };
+      isScopeArchived: async (scope) => deps.sessionCatalog.isScopeArchived(scope), runNow: async () => {}, registerSubmission: async () => {}, observeTurn: () => {}, refreshMessage: async () => false, stop: async () => {} };
   }
 
-  const reader = deps.reader ?? new CodexThreadReader(readerOptions(deps, codex));
+  let kick = (): void => {};
+  const reader = deps.reader ?? await createSyncReader(deps, codex, () => kick());
   const store = new CodexTurnSyncStore(
     deps.statePath ?? join(deps.profileStateDir, 'codex-turn-sync.json'),
   );
@@ -132,17 +137,21 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
   let stopped = false;
   let running: Promise<void> | undefined;
   const submitted = new Map<string, SubmittedTurn>();
+  const preparing = new Map<string, CodexSubmissionRecord>();
 
   const runNow = async (): Promise<void> => {
     if (stopped) return;
     if (running) return running.catch((err) => log.fail('codex-turn-sync', err, { step: 'poll' }));
-    running = syncOnce(deps, reader, store, now, submitted)
+    running = syncOnce(deps, reader, store, now, submitted,
+      () => [...preparing.values(), ...(deps.submissionStore?.records() ?? [])])
       .catch((err) => log.fail('codex-turn-sync', err, { step: 'poll' }))
       .finally(() => {
         running = undefined;
       });
     return running;
   };
+
+  kick = () => { void runNow(); };
 
   void runNow();
   const timer = setInterval(() => void runNow(), deps.intervalMs ?? DEFAULT_POLL_INTERVAL_MS);
@@ -166,6 +175,12 @@ export async function startCodexTurnSync(deps: CodexTurnSyncDeps): Promise<Codex
       return deps.sessionCatalog.isScopeArchived(scope);
     },
     runNow,
+    async registerSubmission(record) {
+      if (stopped) throw new Error('Reply synchronizer stopped');
+      preparing.set(record.id, structuredClone(record));
+      // The outbox is the durable source; no response polling holds submission.
+      if (deps.submissionStore) preparing.delete(record.id);
+    },
     observeTurn(scope, threadId, turnId, replyTo, replyInThread) {
       if (stopped) return;
       submitted.set(submissionKey(threadId, turnId, scope),
@@ -227,6 +242,7 @@ async function syncOnce(
   store: CodexTurnSyncStore,
   now: () => number,
   submitted: Map<string, SubmittedTurn>,
+  records: () => CodexSubmissionRecord[],
 ): Promise<void> {
   await reconcileArchives(deps, reader);
   const bindings = activeCodexBindings(deps.sessionCatalog.entries());
@@ -251,9 +267,23 @@ async function syncOnce(
     }
     const liveEntries = currentEntries(deps, threadId, entries);
     if (liveEntries.length === 0) continue;
+    const matched = associateSubmissions(snapshot, records());
+    for (const { record, turn } of matched) {
+      if (!record.replyTo || !liveEntries.some(e => e.scopeId === record.scope)) continue;
+      submitted.set(submissionKey(threadId, turn.id, record.scope), {
+        scope: record.scope, threadId, turnId: turn.id, replyTo: record.replyTo, replyInThread: record.replyInThread,
+      });
+    }
     await syncThreadSnapshot(deps.channel, store, snapshot, liveEntries, now(),
       deps.controls.runControlIcons, submitted, deps.controls,
       (scope) => currentEntries(deps, threadId, liveEntries).some((entry) => entry.scopeId === scope));
+    for (const { record, turn } of matched) {
+      if (!deps.submissionStore || record.status === 'completed') continue;
+      if (record.turnId !== turn.id || isCodexTurnTerminal(turn.status)) {
+        await deps.submissionStore.mark(record.id, { turnId: turn.id,
+          ...(isCodexTurnTerminal(turn.status) ? { status: 'completed', completedAtMs: now() } : {}) });
+      }
+    }
     // Name failures must not prevent reply delivery or other thread polling.
     try {
       const nameEntries = currentEntries(deps, threadId, liveEntries);
@@ -580,6 +610,27 @@ function externalUserText(turn: CodexThreadTurn): string {
   return user ? textFromUnknown(user.content).trim() : '';
 }
 
+function associateSubmissions(snapshot: CodexThreadSnapshot, all: CodexSubmissionRecord[]):
+  Array<{ record: CodexSubmissionRecord; turn: CodexThreadTurn }> {
+  const records = [...new Map(all.map(r => [r.id, r])).values()].filter(r => r.threadId === snapshot.id &&
+    r.prompt !== undefined && r.status !== 'rejected' && r.status !== 'cancelled');
+  const result: Array<{ record: CodexSubmissionRecord; turn: CodexThreadTurn }> = [];
+  for (const record of records) {
+    const exact = snapshot.turns.find(t => t.id === record.turnId ||
+      (record.clientUserMessageId && t.items.some(i => i.type === 'userMessage' && i.clientId === record.clientUserMessageId)));
+    if (exact) { result.push({ record, turn: exact }); continue; }
+    if (record.transport !== 'cli') continue;
+    const candidates = snapshot.turns.filter(t => !record.knownTurnIds?.includes(t.id) &&
+      (t.startedAtMs === undefined || t.startedAtMs >= record.createdAtMs - 5_000) &&
+      externalUserText(t) === record.prompt?.trim());
+    // Text is only a provenance fallback, never the submission completion gate.
+    if (candidates.length !== 1 || records.filter(r => r.transport === 'cli' && r.prompt?.trim() === record.prompt?.trim() &&
+      !r.turnId).length !== 1) continue;
+    result.push({ record, turn: candidates[0]! });
+  }
+  return result;
+}
+
 function isBridgeTurn(threadId: string, turn: CodexThreadTurn): boolean {
   const user = turn.items.find((item) => item.type === 'userMessage');
   if (isCodexBridgeClientMessageId(user?.clientId)) return true;
@@ -646,6 +697,32 @@ function readerOptions(
     profileStateDir: deps.profileStateDir,
     ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
     ...(codex.inheritCodexHome !== undefined ? { inheritCodexHome: codex.inheritCodexHome } : {}),
+  };
+}
+
+async function createSyncReader(deps: CodexTurnSyncDeps,
+  codex: NonNullable<Controls['profileConfig']['codex']>, onChange: () => void): Promise<CodexTurnReaderLike> {
+  const opts = readerOptions(deps, codex);
+  const fallback = new CodexThreadReader(opts);
+  const remote = await resolveSharedCodexEndpoint({ remote: process.env.CODEX_QUEUE_REMOTE,
+    ...(codex.codexHome ? { codexHome: codex.codexHome } : {}) });
+  if (!remote) return fallback;
+  const shared = new CodexThreadReader({ ...opts, sharedServer: true, passive: true, remote,
+    onNotification: method => { if (method === 'turn/completed' || method === 'thread/status/changed' ||
+      method === 'thread/queue/changed' || method.startsWith('item/')) onChange(); } });
+  try { await shared.connect(); }
+  catch { await shared.stop(); return fallback; }
+  return {
+    async readThread(threadId) {
+      try { return await shared.readThread(threadId); }
+      catch (error) {
+        log.warn('codex-turn-sync', 'shared-reader-fallback', { threadId, err: errorText(error) });
+        return fallback.readThread(threadId);
+      }
+    },
+    listArchivedThreadIds: () => fallback.listArchivedThreadIds(),
+    persistedTurnTerminal: (snapshot, turnId) => fallback.persistedTurnTerminal(snapshot, turnId),
+    async stop() { await Promise.all([shared.stop(), fallback.stop()]); },
   };
 }
 
