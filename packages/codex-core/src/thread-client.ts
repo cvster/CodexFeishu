@@ -6,6 +6,7 @@ import { nextCodexForkName } from './fork-name';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createPersistedCodexThread } from './lifecycle';
+import type { CodexSubmissionInput, QueuedCodexSubmission } from './submission';
 import { reconcileCodexThreadSnapshot } from './turn-status';
 import { parseCodexInputRequest, type CodexInputPrompt, type CodexRequestId } from './user-input';
 import { CodexAsyncAnswerUnconfirmedError } from './async-input';
@@ -77,7 +78,7 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-class CodexRpcError extends Error {}
+class CodexRpcError extends Error { override name = 'CodexRpcError'; }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -108,6 +109,31 @@ export class CodexThreadReader {
   constructor(private readonly options: CodexThreadReaderOptions) {}
 
   async connect(): Promise<void> { await this.ensureStarted(); }
+
+  async listQueuedSubmissions(threadId: string): Promise<QueuedCodexSubmission[]> {
+    if (!this.options.sharedServer) throw new Error('Queue reads require the shared writer daemon');
+    const items: QueuedCodexSubmission[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    do {
+      const result = await this.rpc('thread/queue/list', { threadId, ...(cursor ? { cursor } : {}) });
+      if (!Array.isArray(result.data)) throw new Error('Invalid queue list response');
+      for (const item of result.data) items.push(normalizeQueuedSubmission(item));
+      cursor = typeof result.nextCursor === 'string' ? result.nextCursor : undefined;
+      if (cursor && seen.has(cursor)) throw new Error('Queue pagination cursor repeated');
+      if (cursor) seen.add(cursor);
+    } while (cursor);
+    return items;
+  }
+
+  async addQueuedSubmission(input: CodexSubmissionInput): Promise<QueuedCodexSubmission> {
+    if (!this.options.sharedServer) throw new Error('Queue writes require the shared writer daemon');
+    const result = await this.rpc('thread/queue/add', { threadId: input.threadId,
+      clientUserMessageId: input.clientUserMessageId,
+      input: [{ type: 'text', text: input.prompt, text_elements: [] },
+        ...(input.images ?? []).map(path => ({ type: 'localImage', path }))] });
+    return normalizeQueuedSubmission(result.queuedSubmission);
+  }
 
   /** Public RPC seam for adapters; never retries a potentially accepted write. */
   async rpc(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
@@ -648,6 +674,13 @@ function readerEnv(options: CodexThreadReaderOptions): NodeJS.ProcessEnv {
   if (options.codexHome) overrides.CODEX_HOME = options.codexHome;
   else if (!options.inheritCodexHome) overrides.CODEX_HOME = join(options.profileStateDir, 'codex-home');
   return mergeProcessEnv(process.env, overrides);
+}
+
+function normalizeQueuedSubmission(input: unknown): QueuedCodexSubmission {
+  const raw = recordValue(input);
+  if (typeof raw?.id !== 'string' || !Array.isArray(raw.input)) throw new Error('Invalid queued submission response');
+  return { id: raw.id, input: raw.input,
+    ...(typeof raw.clientUserMessageId === 'string' ? { clientUserMessageId: raw.clientUserMessageId } : {}) };
 }
 
 function recordValue(input: unknown): Record<string, unknown> | undefined {
