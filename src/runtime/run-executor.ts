@@ -5,6 +5,7 @@ import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
+import type { CodexSubmissionResult } from '../../packages/codex-core/src/submission';
 
 export interface RunExecutorDeps {
   agent: AgentAdapter;
@@ -16,6 +17,7 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  submissionId?: string;
   /** Synchronous cancellation check around pool/preflight waits. */
   validateBeforeStart?: () => void;
   /** Fresh external-state check immediately before starting the adapter. */
@@ -49,6 +51,7 @@ export interface RunExecution {
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
 
 export class RunExecutor {
+  private readonly submissions = new Set<Promise<CodexSubmissionResult>>();
   private readonly agent: AgentAdapter;
   private readonly pool: ProcessPool;
   private readonly activeRuns: ActiveRuns;
@@ -63,6 +66,42 @@ export class RunExecutor {
     this.createRunId = deps.createRunId ?? randomUUID;
     this.now = deps.now ?? Date.now;
     this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
+  }
+
+  submitMessage(input: SubmitRunInput, beforeSend: (prepared: { threadId: string; knownTurnIds: string[];
+    transport: 'rpc' | 'cli' }) => Promise<void>): Promise<CodexSubmissionResult> {
+    const task = this.submitMessageImpl(input, beforeSend);
+    this.submissions.add(task);
+    void task.finally(() => this.submissions.delete(task)).catch(() => {});
+    return task;
+  }
+
+  async waitForSubmissions(): Promise<void> { await Promise.allSettled([...this.submissions]); }
+
+  private async submitMessageImpl(input: SubmitRunInput, beforeSend: (prepared: { threadId: string; knownTurnIds: string[];
+    transport: 'rpc' | 'cli' }) => Promise<void>): Promise<CodexSubmissionResult> {
+    if (!this.agent.submit) throw new Error('Agent does not support acceptance-only submission');
+    if (this.activeRuns.newRunsPaused()) throw new RunRejected('reconnect-in-progress', 'Bridge is disconnecting');
+    const releaseScope = this.activeRuns.reserve(input.scopeId);
+    if (!releaseScope) throw new RunRejected('run-already-active', 'Submission already in progress');
+    let release: (() => void) | undefined;
+    try {
+      release = await this.pool.acquire();
+      const validate = () => {
+        if (input.policy.expiresAt <= this.now()) throw new RunRejected('policy-expired', 'Submission policy expired');
+        if (this.activeRuns.newRunsPaused()) throw new RunRejected('reconnect-in-progress', 'Bridge is disconnecting');
+        input.validateBeforeStart?.();
+      };
+      validate();
+      const opts = { runId: input.submissionId ?? this.createRunId(), prompt: input.policy.prompt,
+        cwd: input.policy.cwdRealpath, threadId: input.threadId, model: input.model,
+        reasoningEffort: input.reasoningEffort, images: input.images, sandbox: input.policy.sandbox };
+      await this.agent.prepareRun?.(opts);
+      await input.beforeSpawn?.(); validate();
+      return await this.agent.submit(opts, async prepared => {
+        await input.beforeSpawn?.(); validate(); await beforeSend(prepared);
+      });
+    } finally { release?.(); releaseScope(); }
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {

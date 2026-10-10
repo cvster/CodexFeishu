@@ -8,6 +8,16 @@ afterEach(async () => { await Promise.all(dirs.splice(0).map(d => rm(d, { recurs
 async function fixture() { const dir = await mkdtemp(join(tmpdir(), 'bridge-outbox-')); dirs.push(dir); return join(dir, 'state.json'); }
 const message = (id: string) => ({ messageId: id, chatId: 'group', senderId: 'user', chatType: 'group', content: 'same text' }) as any;
 describe('durable Codex intake', () => {
+  it('atomically rejects sending after cancellation and never downgrades a completed turn on late acknowledgement', async () => {
+    const path = await fixture(); const store = new CodexSubmissionStore(path); await store.load();
+    await store.receive('group', message('m1'));
+    await store.mark('m1', { status: 'cancelled' });
+    await expect(store.mark('m1', { status: 'sending' }, ['pending'])).rejects.toThrow('state changed');
+    await store.receive('group', message('m2'));
+    await store.mark('m2', { status: 'completed', turnId: 'fast', completedAtMs: Date.now() });
+    await store.mark('m2', { status: 'accepted', queueId: 'late' });
+    expect(store.records()[1]).toMatchObject({ status: 'completed', queueId: 'late', turnId: 'fast' });
+  });
   it('persists before acknowledging intake and deduplicates IDs but not text', async () => {
     const path = await fixture(); const store = new CodexSubmissionStore(path); await store.load();
     expect(await store.receive('group', message('m1'), 't1')).toBe(true);

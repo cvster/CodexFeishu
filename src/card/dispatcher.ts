@@ -137,6 +137,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
     try {
       const ok = await runCommandHandler(name ?? '', args, ctx);
+      if (ok && (cmd === 'stop' || cmd === 'panel.stop')) deps.pending.cancel(scope);
       if (!ok) log.warn('cardAction', 'unknown', { cmd });
     } catch (err) {
       log.fail('cardAction', err, { cmd });

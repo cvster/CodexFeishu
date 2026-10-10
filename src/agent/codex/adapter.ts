@@ -24,6 +24,8 @@ import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { archiveCodexThread, setCodexThreadName } from '../../session/codex-history';
 import { codexBridgeClientMessageId } from '../../session/codex-origin';
 import { CodexThreadReader } from '../../session/codex-thread-reader';
+import { submitCodexMessage } from './submission';
+import type { CodexSubmissionResult } from '../../../packages/codex-core/src/submission';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -144,6 +146,13 @@ export class CodexAdapter implements AgentAdapter {
     } finally {
       await reader.stop();
     }
+  }
+
+  async submit(opts: AgentRunOptions, beforeSend: (prepared: { threadId: string; knownTurnIds: string[];
+    transport: 'rpc' | 'cli' }) => Promise<void>): Promise<CodexSubmissionResult> {
+    return submitCodexMessage({ ...opts, sandbox: opts.sandbox ?? this.sandbox, binary: this.binary, profileStateDir: this.profileStateDir,
+      codexHome: this.codexHome, inheritCodexHome: this.inheritCodexHome, remote: this.appServerRemote,
+      env: buildLarkChannelEnv(this.larkChannel), developerInstructions: buildBridgeSystemPrompt(this.botIdentity) }, beforeSend);
   }
 
   run(opts: AgentRunOptions): AgentRun {

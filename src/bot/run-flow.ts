@@ -78,7 +78,12 @@ export interface RecordRunSessionEventInput {
   event: AgentEvent;
 }
 
-export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
+export type PreparedRunFlowResult = Extract<StartRunFlowResult, { ok: false }> | {
+  ok: true; policy: RunPolicyAllow; workspace: Extract<WorkingDirectoryResolveResult, { ok: true }>;
+  cwdRealpath: string; resumeFrom?: string; sessionId?: string; threadId?: string;
+};
+
+export async function prepareRunFlow(input: StartRunFlowInput): Promise<PreparedRunFlowResult> {
   try {
     if (input.sessionCatalog?.isScopeArchived(input.scopeId) || await input.checkSessionArchived?.()) {
       return { ok: false, rejectReason: { code: 'session-archived',
@@ -150,6 +155,13 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     }
   }
 
+  return { ok: true, policy, workspace, cwdRealpath: workspace.cwdRealpath, resumeFrom, sessionId, threadId };
+}
+
+export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
+  const prepared = await prepareRunFlow(input);
+  if (!prepared.ok) return prepared;
+  const { policy, workspace, resumeFrom, sessionId, threadId } = prepared;
   let execution: RunExecution;
   try {
     const validateBeforeStart = () => {

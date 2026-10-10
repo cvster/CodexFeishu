@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { stopCodexSubmissions } from '../bot/codex-submission-stop';
+import { resolveSharedCodexEndpoint } from '../../packages/codex-core/src/queue';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
@@ -105,6 +107,7 @@ import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
 import { applyLarkCliIdentityPolicy, hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
+  codexSubmissions?: import('../session/codex-submissions').CodexSubmissionStore;
   codexUserInput?: import('../bot/codex-user-input').CodexInputHandle;
   /** Refresh a persisted mirrored CardKit delivery using its original sequence owner. */
   refreshMirroredRunCard?(scope: string, messageId: string): Promise<boolean>;
@@ -114,6 +117,7 @@ export interface Controls {
     isScopeArchived?(scope: string): Promise<boolean>;
     observeTurn(scope: string, threadId: string, turnId: string, replyTo: string, replyInThread?: boolean): void;
     runNow(): Promise<void>;
+    registerSubmission?(record: import('../session/codex-submissions').CodexSubmissionRecord): Promise<void>;
   };
   runControlIcons?: RunControlIcons;
   profile: string;
@@ -569,7 +573,7 @@ async function handlePanel(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   if (action === 'stop') {
-    ctx.activeRuns.interrupt(ctx.scope);
+    await handleStop('', ctx);
   }
   if (action === 'new-confirm') {
     ctx.activeRuns.interrupt(ctx.scope);
@@ -1687,7 +1691,28 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
-  const ok = ctx.activeRuns.interrupt(scope);
+  // Unsent intake can be cancelled even when the public writer connection is unavailable.
+  for (const record of ctx.controls.codexSubmissions?.records() ?? []) {
+    if (record.scope === scope && record.status === 'pending') {
+      await ctx.controls.codexSubmissions!.mark(record.id, { status: 'cancelled' });
+    }
+  }
+  let ok = ctx.activeRuns.interrupt(scope);
+  if (!ok && ctx.controls.codexSubmissions) {
+    const threadId = ctx.sessionCatalog?.entries().filter(e => e.scopeId === scope && e.agentId === 'codex' && e.status === 'active')
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0]?.threadId;
+    const codex = ctx.controls.profileConfig.codex;
+    if (threadId && codex?.binaryPath) {
+      const remote = await resolveSharedCodexEndpoint({ remote: process.env.CODEX_QUEUE_REMOTE, codexHome: codex.codexHome });
+      if (!remote) { await reply(ctx, '⚠️ 没有可用的公开共享连接，请在 Codex 桌面停止任务。'); return; }
+      const writer = new CodexThreadReader({ binary: codex.binaryPath, profileStateDir: commandProfilePaths(ctx).profileDir,
+        codexHome: codex.codexHome, inheritCodexHome: codex.inheritCodexHome !== false, sharedServer: true, passive: true, remote });
+      try { ok = await stopCodexSubmissions(scope, threadId, ctx.controls.codexSubmissions, writer); }
+      catch (error) { await reply(ctx, `⚠️ 停止请求未确认：${errorText(error)}`); return; }
+      finally { await writer.stop(); }
+      await ctx.controls.codexReplySync?.runNow();
+    }
+  }
   log.info('command', 'stop', {
     scope,
     targeted: Boolean(targetScope),

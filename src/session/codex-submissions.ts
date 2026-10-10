@@ -79,11 +79,16 @@ export class CodexSubmissionStore {
     });
   }
 
-  async mark(id: string, patch: Partial<Omit<CodexSubmissionRecord, 'id' | 'messages' | 'scope'>>): Promise<void> {
+  async mark(id: string, patch: Partial<Omit<CodexSubmissionRecord, 'id' | 'messages' | 'scope'>>,
+    expectedStates?: readonly CodexSubmissionState[]): Promise<void> {
     await this.transaction(() => {
       const record = this.data.find(r => r.id === id);
       if (!record) throw new Error(`Submission ${id} missing`);
-      Object.assign(record, structuredClone(patch), { updatedAtMs: this.now() });
+      if (expectedStates && !expectedStates.includes(record.status)) throw new Error('Submission state changed before send');
+      // A completed turn is stronger evidence than an acknowledgement arriving later.
+      const next = structuredClone(patch);
+      if (record.status === 'completed' && next.status && next.status !== 'completed') delete next.status;
+      Object.assign(record, next, { updatedAtMs: this.now() });
     });
   }
 

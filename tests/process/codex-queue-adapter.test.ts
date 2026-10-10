@@ -15,6 +15,22 @@ describe('CodexAdapter native queue mode', () => {
     await Promise.all(cleanup.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
+  it('accepts a message without observing an unfinished turn and validates attachments before sending', async () => {
+    const fake = await createQueueCodex('inProgress'); cleanup.push(fake.dir);
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir });
+    const prepared: unknown[] = [];
+    const result = await adapter.submit({ runId: 'accept-only', cwd: fake.dir, prompt: 'do not wait', threadId: 'thread-existing' },
+      async value => { prepared.push(value); });
+    expect(result).toMatchObject({ status: 'accepted', threadId: 'thread-existing', transport: 'cli' });
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]).toMatchObject({ threadId: 'thread-existing', knownTurnIds: [], transport: 'cli' });
+    await expect(adapter.submit({ runId: 'bad-image', cwd: fake.dir, prompt: 'image', threadId: 'thread-existing',
+      images: [join(fake.dir, 'missing.png')] }, async () => {})).rejects.toThrow();
+    expect(JSON.parse(await readFile(join(fake.dir, 'state.json'), 'utf8')).prompt).toBe('do not wait');
+    const requests = await readFile(join(fake.dir, 'requests.jsonl'), 'utf8');
+    expect(requests).not.toContain('turn/interrupt'); expect(requests).not.toContain('thread/queue/delete');
+  });
+
   it('creates/materializes idle first-thread history then queues, without starting a bridge-owned turn', async () => {
     const fake = await createQueueCodex(); cleanup.push(fake.dir);
     const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run({

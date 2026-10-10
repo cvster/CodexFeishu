@@ -1,6 +1,7 @@
 import type { AgentAvailability } from './preflight';
 import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissions';
 import type { CodexInputPrompt, CodexRequestId } from '../session/codex-user-input';
+import type { CodexSubmissionResult } from '../../packages/codex-core/src/submission';
 
 export type { ClaudePermissionMode } from '../config/permissions';
 
@@ -88,6 +89,9 @@ export interface AgentAdapter {
   checkAvailability?(): Promise<AgentAvailability>;
   prepareRun?(opts: AgentRunOptions): Promise<void>;
   run(opts: AgentRunOptions): AgentRun;
+  /** Queue acceptance only; subsequent execution belongs to the shared writer. */
+  submit?(opts: AgentRunOptions, beforeSend: (prepared: { threadId: string; knownTurnIds: string[];
+    transport: 'rpc' | 'cli' }) => Promise<void>): Promise<CodexSubmissionResult>;
   setThreadName?(threadId: string, name: string): Promise<void>;
   archiveThread?(threadId: string): Promise<void>;
   forkThread?(threadId: string): Promise<{ threadId: string; name: string; cwd: string }>;

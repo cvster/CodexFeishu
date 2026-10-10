@@ -79,6 +79,8 @@ import { isSoloUserBotChat } from './group';
 import { CodexNameSync } from './thread-name';
 import { startAaSessionGroupSync } from './aa-session-groups';
 import { startCodexTurnSync } from './codex-turn-sync';
+import { CodexSubmissionStore } from '../session/codex-submissions';
+import { submitFeishuCodex } from './codex-submission-flow';
 import { startCodexUserInput } from './codex-user-input';
 import { registerLiveRunCardRefresh } from '../card/run-refresh';
 import type { AppPaths } from '../config/app-paths';
@@ -215,6 +217,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
   const executor = new RunExecutor({ agent, pool, activeRuns });
+  const submissions = controls.profileConfig.agentKind === 'codex' && agent.submit && deps.appPaths?.profileDir
+    ? new CodexSubmissionStore(join(deps.appPaths.profileDir, 'codex-submissions.json')) : undefined;
+  await submissions?.load();
+  controls.codexSubmissions = submissions;
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -527,6 +533,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           sessionCatalog,
           profileStateDir: deps.appPaths.profileDir,
           nameSync: codexNameSync,
+          submissionStore: submissions,
         })
       : undefined;
 
@@ -537,6 +544,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   controls.codexUserInput = controls.profileConfig.agentKind === 'codex' && sessionCatalog && deps.appPaths?.profileDir
     ? await startCodexUserInput({ channel, controls, sessionCatalog, profileStateDir: deps.appPaths.profileDir })
     : undefined;
+
+  for (const record of submissions?.records() ?? []) {
+    if (record.status !== 'pending') continue;
+    for (const message of record.messages) pending.push(record.scope, message);
+  }
 
   const identity = channel.botIdentity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
@@ -574,6 +586,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
+      await executor.waitForSubmissions();
       await activeRuns.disconnectAll();
       ownerRefresh.stop();
       knownChatsRefresh.stop();
@@ -591,6 +604,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
+        submissions?.flush(),
       ]);
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
@@ -799,9 +813,15 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     dmGroupCreationOnly: true,
   });
   if (handled) {
-    const dropped = pending.cancel(scope);
+    const dropped = controls.codexSubmissions && !/^\/stop(?:\s|$)/.test(emsg.content) ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
+  }
+
+  if (controls.codexSubmissions) {
+    const currentThread = sessionCatalog?.entries().filter(e => e.scopeId === scope && e.status === 'active' && e.agentId === 'codex')
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0]?.threadId;
+    if (!await controls.codexSubmissions.receive(scope, emsg, currentThread)) return;
   }
 
   const size = pending.push(scope, emsg);
@@ -986,7 +1006,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
-  const flow = await startRunFlow({
+  const flowInput = {
     scopeId: scope,
     scope: scopeContext,
     prompt,
@@ -1009,7 +1029,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       source: 'im',
       stage: 'submit',
     },
-  });
+  } satisfies Parameters<typeof startRunFlow>[0];
+  if (agentKind === 'codex' && agent.submit && controls.codexReplySync && controls.codexSubmissions) {
+    const result = await submitFeishuCodex(flowInput, batch, controls.codexSubmissions, controls, sendOpts);
+    if (result.status !== 'accepted') await channel.send(chatId, { markdown: result.status === 'unknown'
+      ? `⚠️ 消息接收结果暂时无法确认，未自动重发：${result.message}`
+      : `⚠️ 消息提交失败：${result.message}` }, sendOpts);
+    return;
+  }
+  const flow = await startRunFlow(flowInput);
   if (!flow.ok) {
     log.info('run-flow', 'rejected', { scope, code: flow.rejectReason.code });
     log.warn('policy', 'denied', {

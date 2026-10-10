@@ -65,6 +65,26 @@ describe('Codex desktop turn sync', () => {
     } finally { await handle.stop(); await catalog.flush(); }
   });
 
+  it.each([1, 2])('suppresses CLI input echo and delivers fast replies with %i identical pending identities', async count => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-cli-origin-')); cleanup.push(dir);
+    const catalog = new SessionCatalog(join(dir, 'catalog.json'));
+    catalog.upsertActive({ scopeId: 'oc_group', agentId: 'codex', cwdRealpath: dir, policyFingerprint: 'p', threadId: 'thread' });
+    const submissions = new CodexSubmissionStore(join(dir, 'outbox.json')); await submissions.load();
+    for (let i = 0; i < count; i++) await submissions.prepare({ id: `s${i}`, scope: 'oc_group',
+      messages: [{ messageId: `m${i}` } as any], status: 'accepted', createdAtMs: 1, updatedAtMs: 1,
+      threadId: 'thread', transport: 'cli', prompt: 'same', knownTurnIds: [], replyTo: `m${i}` });
+    const turns = Array.from({ length: count }, (_, i) => externalTurn(`t${i}`, 'completed', 'same\n', `answer ${i}`));
+    const channel = createFakeChannel(); const handle = await startCodexTurnSync({ channel: channel as unknown as LarkChannel,
+      controls: controlsForCodex(), sessionCatalog: catalog, profileStateDir: dir, intervalMs: 60_000,
+      submissionStore: submissions, reader: { readThread: async () => ({ id: 'thread', turns }), stop: async () => {} } });
+    try {
+      await handle.runNow(); expect(channel.sent).toHaveLength(count);
+      expect(JSON.stringify(channel.sent)).not.toContain('same');
+      if (count === 1) expect(submissions.records()[0]?.turnId).toBe('t0');
+      else expect(submissions.records().every(r => !r.turnId)).toBe(true);
+    } finally { await handle.stop(); await catalog.flush(); }
+  });
+
   it('detects desktop archives before reply/name sync and before accepting a group message', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'codex-archive-sync-')); cleanup.push(dir);
     const catalog = new SessionCatalog(join(dir, 'catalog.json'));

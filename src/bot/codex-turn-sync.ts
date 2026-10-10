@@ -276,7 +276,9 @@ async function syncOnce(
     }
     await syncThreadSnapshot(deps.channel, store, snapshot, liveEntries, now(),
       deps.controls.runControlIcons, submitted, deps.controls,
-      (scope) => currentEntries(deps, threadId, liveEntries).some((entry) => entry.scopeId === scope));
+      (scope) => currentEntries(deps, threadId, liveEntries).some((entry) => entry.scopeId === scope),
+      records().filter(r => r.threadId === threadId && r.transport === 'cli' && r.prompt !== undefined &&
+        r.status !== 'rejected' && r.status !== 'cancelled'));
     for (const { record, turn } of matched) {
       if (!deps.submissionStore || record.status === 'completed') continue;
       if (record.turnId !== turn.id || isCodexTurnTerminal(turn.status)) {
@@ -335,6 +337,7 @@ async function syncThreadSnapshot(
   submitted = new Map<string, SubmittedTurn>(),
   controls?: Controls,
   isScopeActive: (scope: string) => boolean = () => true,
+  cliRecords: CodexSubmissionRecord[] = [],
 ): Promise<void> {
   const existing = store.state.threads[snapshot.id];
   const firstSnapshot = !existing;
@@ -363,6 +366,10 @@ async function syncThreadSnapshot(
     const replayScopesForTurn = new Set(
       scopes.filter((scope) => replayTurnsByScope.get(scope)?.has(turn.id)),
     );
+    // Ambiguous CLI identities cannot choose a reply target, but should still
+    // deliver the answer once and avoid echoing an input already sent in Feishu.
+    const cliScopes = new Set(cliRecords.filter(r => isCliCandidate(r, turn)).map(r => r.scope));
+    if (cliScopes.size > 0) { stored.origin = 'bridge'; store.dirty = true; }
     // The initial snapshot may have no userMessage yet. Re-evaluate source as
     // items hydrate, but never let that reclassification create another card.
     if (stored.origin !== 'bridge' && isBridgeTurn(snapshot.id, turn)) {
@@ -393,6 +400,7 @@ async function syncThreadSnapshot(
       for (const scope of baselineScopes) {
         if (replayTurnsByScope.get(scope)?.has(turn.id)) continue;
         if (submitted.has(submissionKey(snapshot.id, turn.id, scope))) continue;
+        if (cliScopes.has(scope)) continue;
         if (!stored.deliveries[scope]) {
           stored.deliveries[scope] = { status: 'skipped' };
           store.dirty = true;
@@ -620,15 +628,19 @@ function associateSubmissions(snapshot: CodexThreadSnapshot, all: CodexSubmissio
       (record.clientUserMessageId && t.items.some(i => i.type === 'userMessage' && i.clientId === record.clientUserMessageId)));
     if (exact) { result.push({ record, turn: exact }); continue; }
     if (record.transport !== 'cli') continue;
-    const candidates = snapshot.turns.filter(t => !record.knownTurnIds?.includes(t.id) &&
-      (t.startedAtMs === undefined || t.startedAtMs >= record.createdAtMs - 5_000) &&
-      externalUserText(t) === record.prompt?.trim());
+    const candidates = snapshot.turns.filter(t => isCliCandidate(record, t));
     // Text is only a provenance fallback, never the submission completion gate.
     if (candidates.length !== 1 || records.filter(r => r.transport === 'cli' && r.prompt?.trim() === record.prompt?.trim() &&
       !r.turnId).length !== 1) continue;
     result.push({ record, turn: candidates[0]! });
   }
   return result;
+}
+
+function isCliCandidate(record: CodexSubmissionRecord, turn: CodexThreadTurn): boolean {
+  return !record.knownTurnIds?.includes(turn.id) &&
+    (turn.startedAtMs === undefined || turn.startedAtMs >= record.createdAtMs - 5_000) &&
+    externalUserText(turn) === record.prompt?.trim();
 }
 
 function isBridgeTurn(threadId: string, turn: CodexThreadTurn): boolean {
