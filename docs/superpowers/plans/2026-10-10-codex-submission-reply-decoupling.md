@@ -10,6 +10,16 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-10-codex-submission-reply-decoupling-design.md`
 
+## 执行记录
+
+2026-10-10：Task 1–4 已实现。独立审查发现的三项 Important 已以失败→通过测试修复：接收确认不等待全局回复同步、正常断开保留未发送收件、附件恢复失败明确拒绝并检查所有本地路径。
+
+整体验证：810 项通过、1 项跳过；类型检查和构建通过；网页适配器 34 项通过。远程 pc 公开队列只读探测成功。
+
+用户最新要求“旧消息丢掉”，覆盖 Task 5–6 中旧积压恢复/导入步骤：5 条未提交的 AA-ota-driver 旧消息不补发，恢复工具不交付。新收件持久化及 unknown 不重发保护继续保留。
+
+本次直接在既有 main 交付，不再询问执行方式，不创建 PR；仅推送 codexfeishu/main。部署验收单独记录，不由只读审查代替。
+
 ## Global Constraints
 
 - 保留现有消息合并与约 600ms debounce。

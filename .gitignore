@@ -18,3 +18,4 @@ coverage/
 scripts/
 CHANGELOG.md
 tests-smoke/
+.deploy-check/
