@@ -62,6 +62,10 @@ export class PendingQueue {
     this.blocked.clear();
   }
 
+  snapshot(): Array<{ scope: string; messages: NormalizedMessage[] }> {
+    return Array.from(this.map, ([scope, entry]) => ({ scope, messages: [...entry.messages] }));
+  }
+
   /** Pause the debounce timer; pushed messages keep accumulating. */
   block(scope: string): void {
     if (this.blocked.has(scope)) return;
