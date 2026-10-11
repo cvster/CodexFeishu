@@ -34,6 +34,28 @@ afterEach(async () => {
 });
 
 describe('unified Codex reply owner', () => {
+  it('reports a wake-up failure in the original message thread without rejecting accepted input', async () => {
+    const h = await harness(false, true);
+    const submit = h.submit.getMockImplementation()!;
+    h.submit.mockImplementation(async (opts, beforeSend) => ({ ...await submit(opts, beforeSend), continuationWarning: 'start unconfirmed' }));
+    await h.message('wake-warning');
+    await vi.waitFor(() => expect(h.channel.sent).toHaveLength(1), { timeout: 3000 });
+    expect(JSON.stringify(h.channel.sent)).toContain('消息已接收，但队列启动未确认');
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'wake-warning' });
+    const saved = new CodexSubmissionStore(join(h.tmp.profile, 'codex-submissions.json')); await saved.load();
+    expect(saved.records()[0]?.status).toBe('accepted');
+  });
+  it('preserves debounce intake when stopping only the current Codex response', async () => {
+    const h = await harness(false, true);
+    await h.message('keep-next');
+    await h.message('stop-current', '/stop');
+    await vi.waitFor(() => expect(h.submit).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    expect(h.submit.mock.calls[0]?.[0].prompt).toBe('原样输入');
+    await vi.waitFor(() => expect(h.controls.codexSubmissions?.records().map(r => r.status)).toEqual(['accepted']));
+    await h.controls.codexSubmissions?.flush();
+    const saved = new CodexSubmissionStore(join(h.tmp.profile, 'codex-submissions.json')); await saved.load();
+    expect(saved.records().map(r => r.status)).toEqual(['accepted']);
+  });
   it('releases the actual group debounce queue while global reply sync remains blocked', async () => {
     const h = await harness(false, true);
     let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
@@ -144,9 +166,9 @@ async function harness(fail: boolean, acceptance = false, restored: any[] = []) 
   });
   expect(controls.codexReplySync).toBeDefined();
   cleanups.push(() => bridge.disconnect());
-  return { channel, agent: agent as typeof agent & { prepareRun?: () => Promise<void> }, submit, bridge, tmp,
-    message: (id = 'om_input') => handlers.message?.({ messageId: id, chatId: 'oc_group',
-    chatType: 'group', senderId: 'ou_user', senderName: 'User', content: '原样输入',
+  return { channel, agent: agent as typeof agent & { prepareRun?: () => Promise<void> }, submit, bridge, tmp, controls,
+    message: (id = 'om_input', content = '原样输入') => handlers.message?.({ messageId: id, chatId: 'oc_group',
+    chatType: 'group', senderId: 'ou_user', senderName: 'User', content,
     rawContentType: 'text', resources: [], mentionedBot: true, createTime: Date.now(),
     mentions: [], mentionAll: false,
   } as NormalizedMessage) };

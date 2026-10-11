@@ -9,6 +9,25 @@ public `thread/start`, materialize it using `thread/name/set`, validate it with
 used for this idle preparation; `threadSource` remains `lark-channel-bridge`.
 The group name replaces the temporary title through existing name sync.
 
+## Feishu stop only interrupts the current response
+
+In the acceptance-only Codex runtime, `/stop` and the card's stop button use
+the public shared writer's `turn/interrupt` and wait for its acknowledgement.
+They preserve both the durable unsent intake and all accepted queued input.
+After already-received intake settles (bounded to 30 seconds), the bridge reads
+`thread/queue/list` and explicitly starts the queue head via `thread/queue/start`.
+Normal completion lets the writer dispatch the remaining queue in order.
+If the queue is empty at stop time, a subsequently accepted RPC input checks
+the shared writer: an idle thread whose latest turn was interrupted is woken
+with `thread/queue/start`. Active and normally completed threads are left alone.
+A wake-up failure does not invalidate confirmed acceptance or resend input.
+An idle thread is left alone. There is no `thread/resume`, queue deletion, or
+write retry. A continuation failure is reported separately from an interrupt
+failure; preserved messages can be continued from Desktop. Windows without a
+public shared endpoint shows the unsupported-stop warning and changes no input.
+
+## Legacy run adapters
+
 `AgentRun.stop()` means explicit cancellation. It still interrupts a running
 turn or removes an accepted queued submission through the shared writer.
 The history reader must not perform writer mutations, and its connection is

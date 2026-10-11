@@ -14,11 +14,12 @@ export interface QueuedCodexSubmission {
 }
 type SubmissionIdentity = { submissionId: string; threadId: string; transport: 'rpc' | 'cli' };
 export type CodexSubmissionResult = SubmissionIdentity & (
-  | { status: 'accepted'; queueId?: string; clientUserMessageId?: string }
+  | { status: 'accepted'; queueId?: string; clientUserMessageId?: string; continuationWarning?: string }
   | { status: 'rejected' | 'unknown'; message: string }
 );
 export interface CodexSubmissionTransport {
-  shared?: Pick<CodexThreadReader, 'connect' | 'listQueuedSubmissions' | 'addQueuedSubmission'>;
+  shared?: Pick<CodexThreadReader, 'connect' | 'listQueuedSubmissions' | 'addQueuedSubmission'> &
+    Partial<Pick<CodexThreadReader, 'continueQueuedAfterInterruption'>>;
   runCli(input: CodexSubmissionInput): Promise<{ code: number | null; stdout: string; stderr: string }>;
   beforeSend(transport: 'rpc' | 'cli'): Promise<void>;
   timeoutMs?: number;
@@ -46,7 +47,15 @@ export async function submitCodexInput(input: CodexSubmissionInput,
   try {
     if (useRpc) {
       const queued = await bounded(deps.shared!.addQueuedSubmission(input), timeout);
+      let continuationWarning: string | undefined;
+      try { await bounded(deps.shared!.continueQueuedAfterInterruption?.(input.threadId) ?? Promise.resolve(), timeout); }
+      catch (error) {
+        // Acceptance is already confirmed. Never downgrade it to unknown or
+        // send the input again just because the queue wake-up was unconfirmed.
+        continuationWarning = error instanceof Error ? error.message : String(error);
+      }
       return { ...identity, status: 'accepted', queueId: queued.id,
+        ...(continuationWarning ? { continuationWarning } : {}),
         ...(queued.clientUserMessageId ? { clientUserMessageId: queued.clientUserMessageId } : {}) };
     }
     const result = await bounded(deps.runCli(input), timeout);

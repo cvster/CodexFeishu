@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { stopCodexSubmissions } from '../bot/codex-submission-stop';
+import { CodexQueueContinuationError, stopCodexSubmissions, waitForCodexIntake } from '../bot/codex-submission-stop';
 import { resolveSharedCodexEndpoint } from '../../packages/codex-core/src/queue';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -1691,12 +1691,6 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
-  // Unsent intake can be cancelled even when the public writer connection is unavailable.
-  for (const record of ctx.controls.codexSubmissions?.records() ?? []) {
-    if (record.scope === scope && record.status === 'pending') {
-      await ctx.controls.codexSubmissions!.mark(record.id, { status: 'cancelled' });
-    }
-  }
   let ok = ctx.activeRuns.interrupt(scope);
   if (!ok && ctx.controls.codexSubmissions) {
     const threadId = ctx.sessionCatalog?.entries().filter(e => e.scopeId === scope && e.agentId === 'codex' && e.status === 'active')
@@ -1712,8 +1706,13 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
       }
       const writer = new CodexThreadReader({ binary: codex.binaryPath, profileStateDir: commandProfilePaths(ctx).profileDir,
         codexHome: codex.codexHome, inheritCodexHome: codex.inheritCodexHome !== false, sharedServer: true, passive: true, remote });
-      try { ok = await stopCodexSubmissions(scope, threadId, ctx.controls.codexSubmissions, writer); }
-      catch (error) { await reply(ctx, `⚠️ 停止请求未确认：${errorText(error)}`); return; }
+      try { ok = await stopCodexSubmissions(threadId, writer, () => waitForCodexIntake(scope, ctx.controls.codexSubmissions!)); }
+      catch (error) {
+        await reply(ctx, error instanceof CodexQueueContinuationError
+          ? `⚠️ ${error.message}` : `⚠️ 停止请求未确认：${errorText(error)}`);
+        if (error instanceof CodexQueueContinuationError) await ctx.controls.codexReplySync?.runNow();
+        return;
+      }
       finally { await writer.stop(); }
       await ctx.controls.codexReplySync?.runNow();
     }

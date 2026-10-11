@@ -292,6 +292,27 @@ export class CodexThreadReader {
     await this.request('thread/queue/delete', { threadId, queuedSubmissionId });
   }
 
+  /** Explicitly wake the selected queued input after interrupt, with no write retry. */
+  async startQueuedTurn(threadId: string, queuedSubmissionId: string): Promise<string> {
+    if (!this.options.sharedServer) throw new Error('Queue starts require the shared writer daemon');
+    const result = await this.rpc('thread/queue/start', { threadId, queuedSubmissionId });
+    const turn = recordValue(result.turn);
+    if (typeof turn?.id !== 'string' || !turn.id.trim() || turn.status !== 'inProgress') {
+      throw new Error('Invalid queue start response');
+    }
+    return turn.id;
+  }
+
+  /** New input is an explicit continuation; queue/add alone cannot wake Interrupted. */
+  async continueQueuedAfterInterruption(threadId: string): Promise<void> {
+    if (!this.options.sharedServer) throw new Error('Queue continuation requires the shared writer daemon');
+    if ((await this.readThreadStatus(threadId))?.type !== 'idle') return;
+    const snapshot = await this.readThread(threadId);
+    if (snapshot.status?.type !== 'idle' || snapshot.turns.at(-1)?.status !== 'interrupted') return;
+    const [next] = await this.listQueuedSubmissions(threadId);
+    if (next) await this.startQueuedTurn(threadId, next.id);
+  }
+
   async updateThreadSettings(
     threadId: string,
     settings: { model?: string; reasoningEffort?: string },

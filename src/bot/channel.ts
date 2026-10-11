@@ -821,7 +821,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     dmGroupCreationOnly: true,
   });
   if (handled) {
-    const dropped = controls.codexSubmissions && !/^\/stop(?:\s|$)/.test(emsg.content) ? [] : pending.cancel(scope);
+    const dropped = controls.codexSubmissions ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
@@ -1055,6 +1055,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } satisfies Parameters<typeof startRunFlow>[0];
   if (agentKind === 'codex' && agent.submit && controls.codexReplySync && controls.codexSubmissions) {
     const result = await submitFeishuCodex(flowInput, batch, controls.codexSubmissions, controls, sendOpts);
+    if (result.status === 'accepted' && result.continuationWarning) {
+      await channel.send(chatId, { markdown: `⚠️ 消息已接收，但队列启动未确认：${result.continuationWarning}。请在 Codex 桌面检查队列。` }, sendOpts);
+    }
     if (result.status !== 'accepted' && result.status !== 'deferred') await channel.send(chatId, { markdown: result.status === 'unknown'
       ? `⚠️ 消息接收结果暂时无法确认，未自动重发：${result.message}`
       : `⚠️ 消息提交失败：${result.message}` }, sendOpts);

@@ -721,7 +721,45 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
   });
 
-  it.each(['win32', 'linux'] as const)('explains unavailable stop control appropriately on %s without losing unsent cancellation', async (platform) => {
+  it.each([false, true])('stops only the current turn and preserves later submissions (continuation failure: %s)', async failStart => {
+    const h = await createHarness(); prepareForkSource(h);
+    const store = new CodexSubmissionStore(join(h.tmp.profile, 'submissions.json')); await store.load();
+    await store.receive('chat-1', { ...message('next input', { chatId: 'chat-1', senderId: 'ou-admin' }), messageId: 'next-input' }, 'source-thread');
+    await store.mark('next-input', { status: 'accepted', threadId: 'source-thread', queueId: 'next-queue' });
+    h.controls.codexSubmissions = store;
+    const runNow = vi.fn(async () => {});
+    h.controls.codexReplySync = { observeTurn() {}, runNow };
+    const status = vi.spyOn(CodexThreadReader.prototype, 'readThreadStatus').mockResolvedValue({ type: 'idle' })
+      .mockResolvedValueOnce({ type: 'active' });
+    const read = vi.spyOn(CodexThreadReader.prototype, 'readThread').mockResolvedValue({ id: 'source-thread',
+      turns: [{ id: 'live', status: 'inProgress', items: [] }] });
+    const interrupt = vi.spyOn(CodexThreadReader.prototype, 'interruptTurn').mockResolvedValue();
+    const list = vi.spyOn(CodexThreadReader.prototype, 'listQueuedSubmissions').mockResolvedValue([{ id: 'next-queue', input: [] }]);
+    const start = vi.spyOn(CodexThreadReader.prototype, 'startQueuedTurn');
+    if (failStart) start.mockRejectedValue(new Error('connection lost'));
+    else start.mockResolvedValue('next-turn');
+    const stop = vi.spyOn(CodexThreadReader.prototype, 'stop').mockResolvedValue();
+    const remote = process.env.CODEX_QUEUE_REMOTE;
+    process.env.CODEX_QUEUE_REMOTE = 'ws://127.0.0.1:1';
+    try {
+      await expect(h.run('/panel stop', { chatMode: 'group', fromCardAction: true })).resolves.toBe(true);
+      expect(interrupt).toHaveBeenCalledWith('source-thread', 'live');
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(start).toHaveBeenCalledWith('source-thread', 'next-queue');
+      expect(store.records()[0]?.status).toBe('accepted');
+      expect(runNow).toHaveBeenCalledTimes(1);
+      if (failStart) {
+        expect(JSON.stringify(h.channel.sent)).toContain('当前响应已停止，但后续队列继续执行未确认');
+        expect(JSON.stringify(h.channel.sent)).not.toContain('停止请求未确认');
+      }
+    } finally {
+      for (const spy of [status, read, interrupt, list, start, stop]) spy.mockRestore();
+      if (remote === undefined) delete process.env.CODEX_QUEUE_REMOTE;
+      else process.env.CODEX_QUEUE_REMOTE = remote;
+    }
+  });
+
+  it.each(['win32', 'linux'] as const)('explains unavailable stop control appropriately on %s and preserves unsent input', async (platform) => {
     const h = await createHarness();
     prepareForkSource(h);
     h.controls.profileConfig.codex!.codexHome = join(h.tmp.root, 'no-shared-server');
@@ -738,7 +776,7 @@ describe('Bridge command contracts', () => {
       expect(lastMarkdown(h.channel)).toContain(platform === 'win32'
         ? 'windows不支持桥接停止会话，请在 Codex 桌面停止任务。'
         : '没有可用的公开共享连接，请在 Codex 桌面停止任务。');
-      expect(store.records().map(record => record.status)).toEqual(['cancelled']);
+      expect(store.records().map(record => record.status)).toEqual(['pending']);
     } finally {
       Object.defineProperty(process, 'platform', descriptor);
       if (remote === undefined) delete process.env.CODEX_QUEUE_REMOTE;

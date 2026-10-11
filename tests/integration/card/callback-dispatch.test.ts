@@ -10,6 +10,7 @@ import type { Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
+import { CodexSubmissionStore } from '../../../src/session/codex-submissions.js';
 import { FakeAgentAdapter, type FakeAgentRun } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
@@ -19,6 +20,15 @@ const cleanups: Array<() => Promise<void>> = [];
 describe('signed card callback dispatch', () => {
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  it.each(['stop', 'panel.stop'])('preserves unsent Codex intake after a %s card action', async cmd => {
+    const h = await createHarness();
+    const store = new CodexSubmissionStore(`${h.tmp.profile}/submissions.json`); await store.load();
+    h.controls.codexSubmissions = store;
+    h.pending.push('oc_group', { messageId: 'next', content: 'keep next' } as any);
+    await h.dispatch({ cmd });
+    expect(h.pending.cancel('oc_group').map(m => m.messageId)).toEqual(['next']);
   });
 
   it('routes Codex form answers to the live request without queueing or launching a run', async () => {

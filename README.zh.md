@@ -156,7 +156,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/invite group` | 允许当前群使用 bot |
 | `/invite all group` | 允许 bot 所在的所有群使用 |
 | `/remove user @某人`, `/remove admin @某人`, `/remove group` | 移除访问控制条目 |
-| `/stop` | 停止当前 run，也可点卡片停止按钮 |
+| `/stop` | 仅停止当前响应，保留并继续执行后续排队消息；也可点卡片停止按钮（需要公开共享 app-server，Windows 暂不支持桥接停止） |
 | `/timeout [N\|off\|default]` | 设置或清除当前会话的 idle watchdog |
 | `/ps` | 列出本机 bridge 进程 |
 | `/exit <id\|#>` | 停止指定 bridge 进程 |
